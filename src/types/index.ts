@@ -5,9 +5,15 @@ export interface CliConfig {
 }
 
 export interface BootstrapResponse {
+  token: string;
   supabase_url: string;
   supabase_anon_key: string;
   region: string;
+  org_id: string | null;
+  user_id: string;
+  org_role: string | null;
+  expires_at: string;
+  ttl_seconds: number;
 }
 
 export interface ListOptions {

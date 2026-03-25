@@ -1,27 +1,8 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { BootstrapResponse } from '../types/index.js';
 
-interface RegionConfig {
-  url: string;
-  anonKey: string;
-}
-
-// Fallback region configs -- same public values as NEXT_PUBLIC_SUPABASE_* in supaflow-app.
-// Used only when the bootstrap endpoint is unreachable.
-// TODO: Replace placeholder values with actual Supabase project URLs and anon keys.
-export const REGION_CONFIGS: Record<string, RegionConfig> = {
-  us: {
-    url: 'https://cklwdlcrqlsbokeqaqrx.supabase.co',
-    anonKey: '',
-  },
-  eu: {
-    url: '',
-    anonKey: '',
-  },
-};
-
 // Read env vars at call time, not module load time.
-function getEnvOverride(): RegionConfig | null {
+function getEnvOverride(): { url: string; anonKey: string } | null {
   const url = process.env.SUPAFLOW_SUPABASE_URL;
   const key = process.env.SUPAFLOW_SUPABASE_ANON_KEY;
   if (url && key) return { url, anonKey: key };
@@ -43,13 +24,6 @@ export function decodeJwtRegion(token: string): string | undefined {
   }
 }
 
-export function getRegionConfig(region: string | undefined): RegionConfig {
-  if (!region) return REGION_CONFIGS.us;
-  const config = REGION_CONFIGS[region];
-  if (!config) return REGION_CONFIGS.us;
-  return config;
-}
-
 async function fetchBootstrap(apiKey: string): Promise<BootstrapResponse | null> {
   try {
     const response = await fetch(`${getBootstrapUrl()}/api/cli/bootstrap`, {
@@ -59,40 +33,45 @@ async function fetchBootstrap(apiKey: string): Promise<BootstrapResponse | null>
         'Content-Type': 'application/json',
       },
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(`Bootstrap failed (${response.status}): ${body}`);
+    }
     return (await response.json()) as BootstrapResponse;
-  } catch {
-    return null;
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith('Bootstrap failed')) {
+      throw err; // Re-throw auth/validation errors from bootstrap
+    }
+    return null; // Network errors -- bootstrap unreachable
   }
 }
 
 export interface AuthenticatedClient {
   client: SupabaseClient;
-  supabaseUrl: string;
-  anonKey: string;
-  apiKey: string;
+  conn: {
+    supabaseUrl: string;
+    anonKey: string;
+    bearerToken: string; // The JWT used as Supabase bearer token
+  };
 }
 
 export async function createAuthenticatedClient(
   apiKey: string,
   supabaseUrlOverride?: string,
 ): Promise<AuthenticatedClient> {
-  const clientOpts = {
-    global: { headers: { Authorization: `Bearer ${apiKey}` } },
-    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-  };
-
-  const makeResult = (url: string, key: string) => ({
-    client: createClient(url, key, clientOpts),
-    supabaseUrl: url,
-    anonKey: key,
-    apiKey,
+  const makeClient = (url: string, anonKey: string, bearerToken: string): AuthenticatedClient => ({
+    client: createClient(url, anonKey, {
+      global: { headers: { Authorization: `Bearer ${bearerToken}` } },
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    }),
+    conn: { supabaseUrl: url, anonKey, bearerToken },
   });
 
   // 1. Explicit env var override (highest priority)
+  // When using env vars, the apiKey itself is used as bearer token (assumed to be a JWT)
   const envOverride = getEnvOverride();
   if (envOverride) {
-    return makeResult(envOverride.url, envOverride.anonKey);
+    return makeClient(envOverride.url, envOverride.anonKey, apiKey);
   }
 
   // 1b. --supabase-url flag override
@@ -101,18 +80,18 @@ export async function createAuthenticatedClient(
     if (!key) {
       throw new Error('--supabase-url requires SUPAFLOW_SUPABASE_ANON_KEY environment variable.');
     }
-    return makeResult(supabaseUrlOverride, key);
+    return makeClient(supabaseUrlOverride, key, apiKey);
   }
 
   // 2. Bootstrap endpoint (required for normal operation)
+  // Exchanges ak_ API key for a self-signed HS256 JWT with Supabase-compatible claims.
+  // The returned token (not the ak_ key) is used as the Supabase bearer token.
   const bootstrap = await fetchBootstrap(apiKey);
   if (bootstrap) {
-    return makeResult(bootstrap.supabase_url, bootstrap.supabase_anon_key);
+    return makeClient(bootstrap.supabase_url, bootstrap.supabase_anon_key, bootstrap.token);
   }
 
-  // Bootstrap unavailable -- fail explicitly.
-  // The shipped regionConfigs are placeholders and not production-ready.
-  // Users must either set env vars or ensure the bootstrap endpoint is reachable.
+  // Bootstrap unreachable -- fail explicitly.
   throw new Error(
     'Bootstrap endpoint unavailable. Cannot resolve Supabase connection.\n' +
     'Set SUPAFLOW_SUPABASE_URL and SUPAFLOW_SUPABASE_ANON_KEY environment variables,\n' +
@@ -125,7 +104,7 @@ export async function createAuthenticatedClient(
  * Supabase JS .update() adds RETURNING which triggers RLS violation after state='deleted'.
  */
 export async function softDeleteRecord(
-  conn: { supabaseUrl: string; anonKey: string; apiKey: string },
+  conn: { supabaseUrl: string; anonKey: string; bearerToken: string },
   tableName: string,
   recordId: string,
 ): Promise<void> {
@@ -136,7 +115,7 @@ export async function softDeleteRecord(
     headers: {
       'Content-Type': 'application/json',
       apikey: conn.anonKey,
-      Authorization: `Bearer ${conn.apiKey}`,
+      Authorization: `Bearer ${conn.bearerToken}`,
       Prefer: 'return=minimal',
     },
     body: JSON.stringify({ state: 'deleted' }),

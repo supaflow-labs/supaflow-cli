@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { decodeJwtRegion, getRegionConfig, REGION_CONFIGS } from '../../src/lib/client.js';
+import { decodeJwtRegion } from '../../src/lib/client.js';
 
 describe('decodeJwtRegion', () => {
   function makeJwt(payload: Record<string, unknown>): string {
@@ -21,21 +21,9 @@ describe('decodeJwtRegion', () => {
   it('returns undefined for invalid JWT', () => {
     expect(decodeJwtRegion('not-a-jwt')).toBeUndefined();
   });
-});
 
-describe('getRegionConfig', () => {
-  it('returns US config for undefined region', () => {
-    const config = getRegionConfig(undefined);
-    expect(config).toBe(REGION_CONFIGS.us);
-  });
-
-  it('returns EU config for eu region', () => {
-    const config = getRegionConfig('eu');
-    expect(config).toBe(REGION_CONFIGS.eu);
-  });
-
-  it('falls back to US for unknown region', () => {
-    const config = getRegionConfig('ap');
-    expect(config).toBe(REGION_CONFIGS.us);
+  it('returns undefined when no region claims present', () => {
+    const jwt = makeJwt({ sub: 'user_123' });
+    expect(decodeJwtRegion(jwt)).toBeUndefined();
   });
 });

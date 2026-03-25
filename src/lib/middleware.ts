@@ -2,12 +2,12 @@ import type { Command } from 'commander';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { OutputOptions } from '../types/index.js';
 import { readConfig, resolveApiKey, resolveWorkspaceId } from './config.js';
-import { createAuthenticatedClient } from './client.js';
+import { createAuthenticatedClient, type AuthenticatedClient } from './client.js';
 import { CliError, ErrorCode, handleError } from './errors.js';
 
 export interface AuthContext {
   supabase: SupabaseClient;
-  conn: { supabaseUrl: string; anonKey: string; apiKey: string };
+  conn: AuthenticatedClient['conn'];
   workspaceId: string;
   outputOptions: OutputOptions;
 }
@@ -32,7 +32,6 @@ export function withAuth(handler: AuthHandler) {
       }
 
       const authResult = await createAuthenticatedClient(apiKey, opts.supabaseUrl);
-      const conn = { supabaseUrl: authResult.supabaseUrl, anonKey: authResult.anonKey, apiKey: authResult.apiKey };
 
       const workspaceId = resolveWorkspaceId(
         opts.workspace,
@@ -53,7 +52,7 @@ export function withAuth(handler: AuthHandler) {
         verbose: opts.verbose ?? false,
       };
 
-      await handler({ supabase: authResult.client, conn, workspaceId, outputOptions }, ...args.slice(0, -1));
+      await handler({ supabase: authResult.client, conn: authResult.conn, workspaceId, outputOptions }, ...args.slice(0, -1));
     } catch (error) {
       handleError(error, json);
     }
@@ -81,7 +80,6 @@ export function withAuthOnly(handler: AuthOnlyHandler) {
       }
 
       const authResult = await createAuthenticatedClient(apiKey, opts.supabaseUrl);
-      const conn = { supabaseUrl: authResult.supabaseUrl, anonKey: authResult.anonKey, apiKey: authResult.apiKey };
 
       const workspaceId = resolveWorkspaceId(
         opts.workspace,
@@ -95,7 +93,7 @@ export function withAuthOnly(handler: AuthOnlyHandler) {
         verbose: opts.verbose ?? false,
       };
 
-      await handler({ supabase: authResult.client, conn, workspaceId, outputOptions }, ...args.slice(0, -1));
+      await handler({ supabase: authResult.client, conn: authResult.conn, workspaceId, outputOptions }, ...args.slice(0, -1));
     } catch (error) {
       handleError(error, json);
     }
