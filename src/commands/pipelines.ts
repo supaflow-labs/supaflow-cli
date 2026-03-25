@@ -515,4 +515,96 @@ export function registerPipelinesCommands(program: Command): void {
         }
       }),
     );
+
+  // edit
+  pipelines
+    .command('edit <identifier>')
+    .description('Update pipeline configuration')
+    .option('--config <file>', 'JSON file with config overrides')
+    .option('--name <name>', 'Update pipeline name')
+    .option('--description <desc>', 'Update pipeline description')
+    .action(
+      withAuth(async (ctx: AuthContext, identifier: string, opts: {
+        config?: string;
+        name?: string;
+        description?: string;
+      }) => {
+        const { supabase, workspaceId, outputOptions, conn } = ctx;
+
+        // Find pipeline by UUID or api_name via the view
+        let query = supabase
+          .from('pipelines_and_datasources')
+          .select('pipeline_id, pipeline_name, pipeline_api_name, pipeline_state, pipeline_configs, workspace_id')
+          .eq('workspace_id', workspaceId);
+
+        if (isUuid(identifier)) {
+          query = query.eq('pipeline_id', identifier);
+        } else {
+          query = query.eq('pipeline_api_name', identifier);
+        }
+
+        const { data, error } = await query.single();
+        if (error || !data) {
+          throw new CliError(`Pipeline "${identifier}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        const pipelineId = (data as PipelineRow).pipeline_id;
+        const currentConfigs = (data as PipelineRow).pipeline_configs as Record<string, unknown>;
+
+        // Build update payload
+        const jwtPayload = JSON.parse(
+          Buffer.from(conn.bearerToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8'),
+        ) as { user_id?: string; sub?: string };
+        const userId = jwtPayload.user_id || jwtPayload.sub;
+
+        const updateData: Record<string, unknown> = {
+          updated_by: userId,
+        };
+
+        if (opts.name) {
+          updateData.name = opts.name;
+        }
+
+        if (opts.description) {
+          updateData.description = opts.description;
+        }
+
+        if (opts.config) {
+          if (!fs.existsSync(opts.config)) {
+            throw new CliError(`Config file "${opts.config}" not found.`, ErrorCode.NOT_FOUND);
+          }
+          const configOverrides = JSON.parse(fs.readFileSync(opts.config, 'utf-8')) as Record<string, unknown>;
+          // Shallow merge: preserve unchanged fields, apply overrides on top
+          updateData.configs = { ...currentConfigs, ...configOverrides };
+        }
+
+        if (Object.keys(updateData).length === 1) {
+          // Only updated_by set -- nothing substantive to change
+          throw new CliError('Nothing to update. Provide --config, --name, or --description.', ErrorCode.INVALID_INPUT);
+        }
+
+        // pipelines table has no workspace_id column; RLS enforces access
+        const { error: updateError } = await supabase
+          .from('pipelines')
+          .update(updateData)
+          .eq('id', pipelineId);
+
+        if (updateError) {
+          throw new CliError(`Failed to update pipeline: ${updateError.message}`, ErrorCode.API_ERROR);
+        }
+
+        const displayName = opts.name || (data as PipelineRow).pipeline_name;
+
+        if (outputOptions.json) {
+          printOutput(formatGetJson({
+            id: pipelineId,
+            name: displayName,
+            api_name: (data as PipelineRow).pipeline_api_name,
+            updated: Object.keys(updateData).filter((k) => k !== 'updated_by'),
+          }));
+        } else {
+          console.log(`Pipeline "${displayName}" updated.`);
+        }
+      }),
+    );
 }
