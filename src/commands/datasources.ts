@@ -18,6 +18,7 @@ import { parseEnvFile, extractHeader, resolveEnvVars, writeEnvFile } from '../li
 import { shouldShowProperty, filterVisibleFormValues, validateProperty } from '../lib/visibility.js';
 import { pollJobUntilDone } from '../lib/polling.js';
 import { resolveEncryptedConfigs, isEncryptedValue, encryptValue, encodeEnvelope } from '../lib/encryption.js';
+import { softDeleteRecord } from '../lib/client.js';
 
 const DATASOURCE_SELECT = `
   id, name, api_name, state, description,
@@ -396,6 +397,447 @@ export function registerDatasourcesCommands(program: Command): void {
         } else {
           console.log('Connection successful.');
           console.log(`Datasource "${dsName}" created. ID: ${ds.id}`);
+        }
+      }),
+    );
+
+  // -----------------------------------------------------------------------
+  // datasources delete
+  // -----------------------------------------------------------------------
+  datasources
+    .command('delete <identifier>')
+    .description('Delete a datasource')
+    .action(
+      withAuth(async (ctx: AuthContext, identifier: string) => {
+        const { supabase, workspaceId, outputOptions, conn } = ctx;
+
+        let query = supabase
+          .from('datasources_with_access')
+          .select('id, name, api_name')
+          .eq('workspace_id', workspaceId);
+
+        if (isUuid(identifier)) {
+          query = query.eq('id', identifier);
+        } else {
+          query = query.eq('api_name', identifier);
+        }
+
+        const { data: ds, error } = await query.single();
+        if (error || !ds) {
+          throw new CliError(`Datasource "${identifier}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        await softDeleteRecord(conn, 'datasources', ds.id);
+
+        if (outputOptions.json) {
+          printOutput(formatGetJson({ id: ds.id, name: ds.name, state: 'deleted' }));
+        } else {
+          console.log(`Datasource "${ds.name}" deleted.`);
+        }
+      }),
+    );
+
+  // -----------------------------------------------------------------------
+  // datasources disable
+  // -----------------------------------------------------------------------
+  datasources
+    .command('disable <identifier>')
+    .description('Disable a datasource (set state to inactive)')
+    .action(
+      withAuth(async (ctx: AuthContext, identifier: string) => {
+        const { supabase, workspaceId, outputOptions } = ctx;
+
+        let query = supabase
+          .from('datasources_with_access')
+          .select('id, name, api_name, state')
+          .eq('workspace_id', workspaceId);
+
+        if (isUuid(identifier)) {
+          query = query.eq('id', identifier);
+        } else {
+          query = query.eq('api_name', identifier);
+        }
+
+        const { data: ds, error } = await query.single();
+        if (error || !ds) {
+          throw new CliError(`Datasource "${identifier}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        if (ds.state !== 'active') {
+          throw new CliError(
+            `Datasource "${ds.name}" is "${ds.state}", can only disable active datasources.`,
+            ErrorCode.INVALID_INPUT,
+          );
+        }
+
+        const { error: updateError } = await supabase
+          .from('datasources')
+          .update({ state: 'inactive' })
+          .eq('id', ds.id)
+          .eq('workspace_id', workspaceId);
+
+        if (updateError) {
+          throw new CliError(`Failed to disable datasource: ${updateError.message}`, ErrorCode.API_ERROR);
+        }
+
+        if (outputOptions.json) {
+          printOutput(formatGetJson({ id: ds.id, name: ds.name, state: 'inactive' }));
+        } else {
+          console.log(`Datasource "${ds.name}" disabled.`);
+        }
+      }),
+    );
+
+  // -----------------------------------------------------------------------
+  // datasources enable
+  // -----------------------------------------------------------------------
+  datasources
+    .command('enable <identifier>')
+    .description('Enable a datasource (set state to active)')
+    .action(
+      withAuth(async (ctx: AuthContext, identifier: string) => {
+        const { supabase, workspaceId, outputOptions } = ctx;
+
+        let query = supabase
+          .from('datasources_with_access')
+          .select('id, name, api_name, state')
+          .eq('workspace_id', workspaceId);
+
+        if (isUuid(identifier)) {
+          query = query.eq('id', identifier);
+        } else {
+          query = query.eq('api_name', identifier);
+        }
+
+        const { data: ds, error } = await query.single();
+        if (error || !ds) {
+          throw new CliError(`Datasource "${identifier}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        if (ds.state !== 'inactive') {
+          throw new CliError(
+            `Datasource "${ds.name}" is "${ds.state}", can only enable inactive datasources.`,
+            ErrorCode.INVALID_INPUT,
+          );
+        }
+
+        const { error: updateError } = await supabase
+          .from('datasources')
+          .update({ state: 'active' })
+          .eq('id', ds.id)
+          .eq('workspace_id', workspaceId);
+
+        if (updateError) {
+          throw new CliError(`Failed to enable datasource: ${updateError.message}`, ErrorCode.API_ERROR);
+        }
+
+        if (outputOptions.json) {
+          printOutput(formatGetJson({ id: ds.id, name: ds.name, state: 'active' }));
+        } else {
+          console.log(`Datasource "${ds.name}" enabled.`);
+        }
+      }),
+    );
+
+  // -----------------------------------------------------------------------
+  // datasources refresh
+  // -----------------------------------------------------------------------
+  datasources
+    .command('refresh <identifier>')
+    .description('Trigger a schema refresh for a datasource')
+    .action(
+      withAuth(async (ctx: AuthContext, identifier: string) => {
+        const { supabase, workspaceId, outputOptions } = ctx;
+
+        let query = supabase
+          .from('datasources_with_access')
+          .select('id, name, api_name, state')
+          .eq('workspace_id', workspaceId);
+
+        if (isUuid(identifier)) {
+          query = query.eq('id', identifier);
+        } else {
+          query = query.eq('api_name', identifier);
+        }
+
+        const { data: ds, error } = await query.single();
+        if (error || !ds) {
+          throw new CliError(`Datasource "${identifier}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        if (ds.state !== 'active') {
+          throw new CliError(
+            `Datasource "${ds.name}" is "${ds.state}". Schema refresh requires active state.`,
+            ErrorCode.INVALID_INPUT,
+          );
+        }
+
+        const { data: jobId, error: jobError } = await supabase.rpc('create_datasource_job', {
+          p_datasource_id: ds.id,
+          p_job_type: 'datasource_schema_refresh',
+          p_force_refresh: true,
+        });
+
+        if (jobError) {
+          throw new CliError(`Failed to trigger schema refresh: ${jobError.message}`, ErrorCode.API_ERROR);
+        }
+
+        // RPC can return NULL for destination-only connectors with no SOURCE capability
+        if (!jobId) {
+          if (outputOptions.json) {
+            printOutput(formatGetJson({ id: ds.id, name: ds.name, status: 'skipped', message: 'No schema refresh available for this connector type.' }));
+          } else {
+            console.log(`No schema refresh available for "${ds.name}". This connector may not support schema discovery.`);
+          }
+          return;
+        }
+
+        if (!outputOptions.json) {
+          process.stderr.write('Refreshing schema... (this may take up to a minute)\n');
+        }
+
+        const result = await pollJobUntilDone(supabase, jobId as string);
+
+        if (!result.success) {
+          throw new CliError(
+            `Schema refresh failed: ${result.statusMessage || result.jobStatus}`,
+            ErrorCode.API_ERROR,
+          );
+        }
+
+        if (outputOptions.json) {
+          printOutput(formatGetJson({
+            id: ds.id,
+            name: ds.name,
+            job_id: jobId,
+            status: 'completed',
+            message: result.statusMessage,
+          }));
+        } else {
+          console.log(`Schema refresh completed for "${ds.name}".`);
+        }
+      }),
+    );
+
+  // -----------------------------------------------------------------------
+  // datasources edit
+  // -----------------------------------------------------------------------
+  datasources
+    .command('edit <identifier>')
+    .description('Update a datasource from an env file')
+    .requiredOption('--from <file>', 'Path to env file')
+    .option('--skip-test', 'Save without testing connection')
+    .action(
+      withAuth(async (ctx: AuthContext, identifier: string, opts: { from: string; skipTest?: boolean }) => {
+        const { supabase, workspaceId, outputOptions, conn } = ctx;
+        const filePath = opts.from;
+
+        // Step 1: Read and parse env file
+        if (!fs.existsSync(filePath)) {
+          throw new CliError(`File "${filePath}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        const fileContent = fs.readFileSync(filePath, 'utf-8');
+        const header = extractHeader(fileContent);
+        if (!header.connector) {
+          throw new CliError(
+            `File "${filePath}" is missing the "# Connector: <type>" header.`,
+            ErrorCode.INVALID_INPUT,
+          );
+        }
+
+        // Find existing datasource by identifier (UUID or api_name)
+        let findQuery = supabase
+          .from('datasources_with_access')
+          .select('id, name, api_name, state, connector_version_id')
+          .eq('workspace_id', workspaceId);
+
+        if (isUuid(identifier)) {
+          findQuery = findQuery.eq('id', identifier);
+        } else {
+          findQuery = findQuery.eq('api_name', identifier);
+        }
+
+        const { data: existingDs, error: findError } = await findQuery.single();
+        if (findError || !existingDs) {
+          throw new CliError(
+            `Datasource "${identifier}" not found. Use "datasources create" for new datasources.`,
+            ErrorCode.NOT_FOUND,
+          );
+        }
+
+        const rawValues = parseEnvFile(fileContent);
+        const envValues = resolveEnvVars(rawValues);
+
+        // Step 2: Resolve latest connector version
+        const connectors = await fetchConnectors(supabase);
+        const connector = connectors.find(
+          (c) => c.type.toLowerCase() === header.connector!.toLowerCase(),
+        );
+        if (!connector) {
+          throw new CliError(`Connector type "${header.connector}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        const properties = await fetchConnectorProperties(supabase, connector.latest_version_id);
+        const nonOAuth = filterNonOAuth(properties);
+
+        // Step 3: Merge and validate
+        const { merged, warnings, errors: mergeErrors } = mergeEnvWithSchema(envValues, properties);
+
+        if (!outputOptions.json) {
+          for (const w of warnings) {
+            console.error(`Warning: ${w}`);
+          }
+        }
+        if (mergeErrors.length > 0) {
+          throw new CliError(mergeErrors.join('\n'), ErrorCode.INVALID_INPUT);
+        }
+
+        // Step 4: Visibility rules and validation
+        const filtered = filterVisibleFormValues(
+          nonOAuth.map((p) => ({
+            name: p.name,
+            type: p.type,
+            required: p.required,
+            sensitive: p.sensitive || p.encrypted || p.password,
+            hidden: p.hidden,
+            defaultValue: p.defaultValue,
+            enumValues: p.enumValues,
+            minValue: p.minValue,
+            maxValue: p.maxValue,
+            minLength: p.minLength,
+            maxLength: p.maxLength,
+            relatedPropertyNameAndValue: p.relatedPropertyNameAndValue,
+          })),
+          merged,
+        );
+
+        const validationErrors: string[] = [];
+        for (const prop of nonOAuth) {
+          const propShape = { ...prop, sensitive: prop.sensitive || prop.encrypted || prop.password };
+          if (!shouldShowProperty(propShape, merged, nonOAuth.map((p) => ({ ...p, sensitive: p.sensitive || p.encrypted || p.password })))) continue;
+          const value = String(filtered[prop.name] ?? '');
+          const propErrors = validateProperty(propShape, value);
+          validationErrors.push(...propErrors);
+        }
+
+        if (validationErrors.length > 0) {
+          throw new CliError(
+            `Validation failed:\n${validationErrors.map((e) => `  - ${e}`).join('\n')}`,
+            ErrorCode.INVALID_INPUT,
+          );
+        }
+
+        // Auto-encrypt sensitive fields on disk
+        const sensitiveNames = new Set(
+          nonOAuth.filter((p) => p.sensitive || p.encrypted || p.password).map((p) => p.name),
+        );
+        const rawConfigs: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(filtered)) {
+          if (value !== null && value !== undefined) {
+            rawConfigs[key] = value;
+          }
+        }
+
+        let fileModified = false;
+        const fileLines = fileContent.split('\n');
+        const newLines: string[] = [];
+        for (const line of fileLines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) { newLines.push(line); continue; }
+          const eqIdx = trimmed.indexOf('=');
+          if (eqIdx === -1) { newLines.push(line); continue; }
+          const key = trimmed.slice(0, eqIdx).trim();
+          const val = trimmed.slice(eqIdx + 1).trim();
+          if (sensitiveNames.has(key) && val && !val.startsWith('enc:') && !val.startsWith('${')) {
+            if (!outputOptions.json) {
+              process.stderr.write(`Encrypting ${key} in ${filePath}...\n`);
+            }
+            const envelope = await encryptValue(supabase, val, workspaceId);
+            const encoded = encodeEnvelope(envelope);
+            newLines.push(`${key}=${encoded}`);
+            rawConfigs[key] = encoded;
+            fileModified = true;
+          } else {
+            newLines.push(line);
+          }
+        }
+        if (fileModified) {
+          fs.writeFileSync(filePath, newLines.join('\n'), 'utf-8');
+        }
+
+        const configs = resolveEncryptedConfigs(rawConfigs);
+
+        // Step 5: Optional connection test
+        if (!opts.skipTest) {
+          if (!outputOptions.json) {
+            process.stderr.write('Testing connection... (this may take up to a minute)\n');
+          }
+
+          const { data: jobId, error: jobError } = await supabase.rpc('create_datasource_test_job', {
+            p_workspace_id: workspaceId,
+            p_connector_version_id: connector.latest_version_id,
+            p_configs: configs,
+            p_job_name: `CLI edit test: ${existingDs.name}`,
+            p_datasource_id: existingDs.id,
+          });
+
+          if (jobError) {
+            throw new CliError(`Failed to create test job: ${jobError.message}`, ErrorCode.API_ERROR);
+          }
+
+          const result = await pollJobUntilDone(supabase, jobId as string);
+          if (!result.success) {
+            throw new CliError(
+              `Connection failed: ${result.statusMessage || result.jobStatus}\nDatasource was not updated. Fix the config and try again.`,
+              ErrorCode.API_ERROR,
+            );
+          }
+
+          if (!outputOptions.json) {
+            console.log('Connection successful.');
+          }
+        }
+
+        // Step 6: Update datasource
+        const dsName = header.name || existingDs.name;
+        const description = header.description || undefined;
+        const jwtPayload = JSON.parse(atob(conn.bearerToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+        const userId = jwtPayload.user_id || jwtPayload.sub;
+
+        // Only update configs, name, state, and audit fields.
+        // Do NOT update connector_version_id -- connector identity is locked
+        // on create, matching the web app behavior.
+        const updateData: Record<string, unknown> = {
+          configs,
+          name: dsName,
+          updated_by: userId,
+          state: opts.skipTest ? existingDs.state : 'active',
+        };
+        if (description) {
+          updateData.description = description;
+        }
+
+        const { error: updateError } = await supabase
+          .from('datasources')
+          .update(updateData)
+          .eq('id', existingDs.id)
+          .eq('workspace_id', workspaceId);
+
+        if (updateError) {
+          throw new CliError(`Failed to update datasource: ${updateError.message}`, ErrorCode.API_ERROR);
+        }
+
+        if (outputOptions.json) {
+          printOutput(formatGetJson({
+            id: existingDs.id,
+            name: dsName,
+            api_name: existingDs.api_name,
+            state: opts.skipTest ? existingDs.state : 'active',
+            tested: !opts.skipTest,
+          }));
+        } else {
+          console.log(`Datasource "${dsName}" updated.${opts.skipTest ? '' : ' Connection tested.'}`);
         }
       }),
     );
