@@ -4,3 +4,6 @@ dist/
 .env
 .env.local
 dev.env
+.idea/
+*.env
+!.env.example

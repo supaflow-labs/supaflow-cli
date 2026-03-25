@@ -113,10 +113,12 @@ describe('writeEnvFile', () => {
         ],
       },
     ];
-    writeEnvFile(filePath, 'my-db', 'postgres', groups);
+    writeEnvFile(filePath, 'my-db', 'postgres', 'PostgreSQL', groups);
     const content = fs.readFileSync(filePath, 'utf-8');
     expect(content).toContain('# Supaflow Datasource: my-db');
     expect(content).toContain('# Connector: postgres');
+    expect(content).toContain('# API Name: mydb');
+    expect(content).toContain('# Description: PostgreSQL datasource');
     expect(content).toContain('host=');
     expect(content).toContain('port=5432');
     expect(content).toContain('sslMode=prefer');

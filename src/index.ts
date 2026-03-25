@@ -6,6 +6,7 @@ import { registerPipelinesCommands } from './commands/pipelines.js';
 import { registerJobsCommands } from './commands/jobs.js';
 import { registerSyncCommands } from './commands/sync.js';
 import { registerEncryptCommand } from './commands/encrypt.js';
+import { registerConnectorsCommands } from './commands/connectors.js';
 
 const program = new Command();
 
@@ -29,5 +30,6 @@ registerPipelinesCommands(program);
 registerJobsCommands(program);
 registerSyncCommands(program);
 registerEncryptCommand(program);
+registerConnectorsCommands(program);
 
 program.parse();

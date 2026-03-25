@@ -3,6 +3,8 @@ import fs from 'node:fs';
 export interface EnvHeader {
   name: string | null;
   connector: string | null;
+  api_name: string | null;
+  description: string | null;
 }
 
 export interface PropertyForEnv {
@@ -37,13 +39,19 @@ export function parseEnvFile(content: string): Record<string, string> {
 export function extractHeader(content: string): EnvHeader {
   let name: string | null = null;
   let connector: string | null = null;
+  let api_name: string | null = null;
+  let description: string | null = null;
   for (const line of content.split('\n')) {
     const nameMatch = line.match(/^#\s*Supaflow Datasource:\s*(.+)/);
     if (nameMatch) name = nameMatch[1].trim();
     const connMatch = line.match(/^#\s*Connector:\s*(.+)/);
     if (connMatch) connector = connMatch[1].trim();
+    const apiMatch = line.match(/^#\s*API Name:\s*(.+)/);
+    if (apiMatch) api_name = apiMatch[1].trim();
+    const descMatch = line.match(/^#\s*Description:\s*(.+)/);
+    if (descMatch) description = descMatch[1].trim();
   }
-  return { name, connector };
+  return { name, connector, api_name, description };
 }
 
 export function resolveEnvVars(values: Record<string, string>): Record<string, string> {
@@ -80,11 +88,16 @@ export function writeEnvFile(
   filePath: string,
   dsName: string,
   connectorType: string,
+  connectorDisplayName: string,
   groups: PropertyGroup[],
 ): void {
   const lines: string[] = [];
   lines.push(`# Supaflow Datasource: ${dsName}`);
   lines.push(`# Connector: ${connectorType}`);
+  // Generate default api_name and description; user can edit these
+  const defaultApiName = dsName.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+  lines.push(`# API Name: ${defaultApiName}`);
+  lines.push(`# Description: ${connectorDisplayName} datasource`);
 
   for (const group of groups) {
     lines.push('');

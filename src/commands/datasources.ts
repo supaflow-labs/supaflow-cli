@@ -119,13 +119,14 @@ export function registerDatasourcesCommands(program: Command): void {
     .description('Scaffold a .env file for a new datasource')
     .requiredOption('--connector <type>', 'Connector type (e.g., postgres, snowflake, s3)')
     .requiredOption('--name <name>', 'Datasource name')
-    .option('--output <file>', 'Output file path (default: <name>.env)')
+    .option('--output <file>', 'Output file path (default: <api_name>.env)')
     .action(
       withAuth(async (ctx: AuthContext, opts: { connector: string; name: string; output?: string }) => {
         const { supabase, outputOptions } = ctx;
         const connectorType = opts.connector.toLowerCase();
         const dsName = opts.name;
-        const filePath = opts.output || `${dsName}.env`;
+        const apiName = generateApiName(dsName);
+        const filePath = opts.output || `${apiName}.env`;
 
         // 1. Find connector by type
         const connectors = await fetchConnectors(supabase);
@@ -154,7 +155,7 @@ export function registerDatasourcesCommands(program: Command): void {
         const groups = groupAndSortProperties(nonOAuth);
 
         // 5. Write env file
-        writeEnvFile(filePath, dsName, connector.type, groups);
+        writeEnvFile(filePath, dsName, connector.type, connector.name, groups);
 
         const requiredCount = nonOAuth.filter((p) => p.required).length;
         const optionalCount = nonOAuth.length - requiredCount;
@@ -162,6 +163,8 @@ export function registerDatasourcesCommands(program: Command): void {
         if (outputOptions.json) {
           printOutput(formatGetJson({
             file: filePath,
+            name: dsName,
+            api_name: apiName,
             connector: connector.type,
             connector_version: connector.latest_version,
             required_properties: requiredCount,
@@ -173,7 +176,7 @@ export function registerDatasourcesCommands(program: Command): void {
           if (requiredNames.length > 0) {
             console.log(`Required: ${requiredNames.join(', ')}`);
           }
-          console.log(`Fill in the values and run: supaflow datasources create --name ${dsName}`);
+          console.log(`Fill in the values and run: supaflow datasources create --from ${filePath}`);
         }
       }),
     );
@@ -181,18 +184,16 @@ export function registerDatasourcesCommands(program: Command): void {
   datasources
     .command('create')
     .description('Create a datasource from an env file (test connection first)')
-    .requiredOption('--name <name>', 'Datasource name')
-    .option('--from <file>', 'Path to env file (default: <name>.env)')
+    .requiredOption('--from <file>', 'Path to env file')
     .action(
-      withAuth(async (ctx: AuthContext, opts: { name: string; from?: string }) => {
+      withAuth(async (ctx: AuthContext, opts: { from: string }) => {
         const { supabase, workspaceId, outputOptions, conn } = ctx;
-        const dsName = opts.name;
-        const filePath = opts.from || `${dsName}.env`;
+        const filePath = opts.from;
 
         // Step 1: Read and parse env file
         if (!fs.existsSync(filePath)) {
           throw new CliError(
-            `File "${filePath}" not found. Run "supaflow datasources init --connector <type> --name ${dsName}" first.`,
+            `File "${filePath}" not found. Run "supaflow datasources init --connector <type> --name <name>" first.`,
             ErrorCode.NOT_FOUND,
           );
         }
@@ -202,6 +203,15 @@ export function registerDatasourcesCommands(program: Command): void {
         if (!header.connector) {
           throw new CliError(
             `File "${filePath}" is missing the "# Connector: <type>" header.`,
+            ErrorCode.INVALID_INPUT,
+          );
+        }
+
+        // Datasource name comes from file header
+        const dsName = header.name;
+        if (!dsName) {
+          throw new CliError(
+            'File is missing the "# Supaflow Datasource: <name>" header.',
             ErrorCode.INVALID_INPUT,
           );
         }
@@ -349,7 +359,8 @@ export function registerDatasourcesCommands(program: Command): void {
         }
 
         // Step 6: Create datasource
-        const apiName = generateApiName(dsName);
+        const apiName = header.api_name || generateApiName(dsName);
+        const description = header.description || `${connector.name} datasource`;
         // Extract user_id from the JWT for created_by/updated_by
         const jwtPayload = JSON.parse(atob(conn.bearerToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
         const userId = jwtPayload.user_id || jwtPayload.sub;
@@ -361,7 +372,7 @@ export function registerDatasourcesCommands(program: Command): void {
             connector_version_id: connector.latest_version_id,
             name: dsName,
             api_name: apiName,
-            description: `${connector.name} datasource`,
+            description,
             configs,
             state: 'active',
             created_by: userId,
