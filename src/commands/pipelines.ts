@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { Command } from 'commander';
 import { withAuth, type AuthContext } from '../lib/middleware.js';
 import {
@@ -11,6 +12,9 @@ import {
 import { resolveIdentifier, isUuid } from '../lib/resolve.js';
 import { softDeleteRecord } from '../lib/client.js';
 import { CliError, ErrorCode } from '../lib/errors.js';
+import { createPipelineConfig } from '../lib/pipeline-config.js';
+import { generateApiName } from '../lib/connector.js';
+import { pollJobUntilDone } from '../lib/polling.js';
 
 interface PipelineRow {
   pipeline_id: string;
@@ -297,6 +301,217 @@ export function registerPipelinesCommands(program: Command): void {
           printOutput(formatGetJson({ id, state: 'deleted' }));
         } else {
           console.log(`Pipeline ${truncateUuid(id)} deleted.`);
+        }
+      }),
+    );
+
+  // create
+  pipelines
+    .command('create')
+    .description('Create a new pipeline')
+    .requiredOption('--name <name>', 'Pipeline name')
+    .requiredOption('--source <id>', 'Source datasource (ID or api_name)')
+    .requiredOption('--destination <id>', 'Destination datasource (ID or api_name)')
+    .requiredOption('--project <id>', 'Project (ID or api_name)')
+    .option('--config <file>', 'JSON file with pipeline config overrides')
+    .option('--objects <file>', 'JSON file with object selections (default: select all discovered)')
+    .option('--description <desc>', 'Pipeline description')
+    .action(
+      withAuth(async (ctx: AuthContext, opts: {
+        name: string;
+        source: string;
+        destination: string;
+        project: string;
+        config?: string;
+        objects?: string;
+        description?: string;
+      }) => {
+        const { supabase, workspaceId, outputOptions, conn } = ctx;
+
+        // 1. Resolve source datasource
+        let srcQuery = supabase
+          .from('datasources_with_access')
+          .select('id, name, connector_type')
+          .eq('workspace_id', workspaceId);
+        srcQuery = isUuid(opts.source) ? srcQuery.eq('id', opts.source) : srcQuery.eq('api_name', opts.source);
+        const { data: src, error: srcError } = await srcQuery.single();
+        if (srcError || !src) {
+          throw new CliError(`Source datasource "${opts.source}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        // 2. Resolve destination datasource
+        let destQuery = supabase
+          .from('datasources_with_access')
+          .select('id, name')
+          .eq('workspace_id', workspaceId);
+        destQuery = isUuid(opts.destination) ? destQuery.eq('id', opts.destination) : destQuery.eq('api_name', opts.destination);
+        const { data: dest, error: destError } = await destQuery.single();
+        if (destError || !dest) {
+          throw new CliError(`Destination datasource "${opts.destination}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        // 3. Resolve project
+        let projQuery = supabase
+          .from('projects')
+          .select('id, name')
+          .eq('workspace_id', workspaceId)
+          .neq('state', 'deleted');
+        projQuery = isUuid(opts.project) ? projQuery.eq('id', opts.project) : projQuery.eq('api_name', opts.project);
+        const { data: proj, error: projError } = await projQuery.single();
+        if (projError || !proj) {
+          throw new CliError(`Project "${opts.project}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        // 4. Get active pipeline version
+        const { data: versionData, error: versionError } = await supabase.rpc('get_active_pipeline_version');
+        if (versionError || !versionData || versionData.length === 0) {
+          throw new CliError('No active pipeline version found.', ErrorCode.API_ERROR);
+        }
+        const versionId = (versionData as Array<{ id: string }>)[0].id;
+
+        // 5. Build pipeline config (defaults + optional overrides from file)
+        let configOverrides: Record<string, unknown> = {};
+        if (opts.config) {
+          if (!fs.existsSync(opts.config)) {
+            throw new CliError(`Config file "${opts.config}" not found.`, ErrorCode.NOT_FOUND);
+          }
+          configOverrides = JSON.parse(fs.readFileSync(opts.config, 'utf-8')) as Record<string, unknown>;
+        }
+        const pipelineConfig = createPipelineConfig(configOverrides);
+
+        // 6. Generate api_name and extract user ID from JWT
+        const apiName = generateApiName(opts.name);
+        const jwtPayload = JSON.parse(
+          Buffer.from(conn.bearerToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8'),
+        ) as { user_id?: string; sub?: string };
+        const userId = jwtPayload.user_id || jwtPayload.sub;
+
+        // 7. Insert pipeline in DRAFT state
+        if (!outputOptions.json) {
+          process.stderr.write('Creating pipeline...\n');
+        }
+
+        const { data: pipeline, error: createError } = await supabase
+          .from('pipelines')
+          .insert({
+            project_id: proj.id,
+            name: opts.name,
+            api_name: apiName,
+            description: opts.description || `${src.name} to ${dest.name}`,
+            source_datasource_id: src.id,
+            destination_datasource_id: dest.id,
+            version_id: versionId,
+            configs: pipelineConfig,
+            state: 'draft',
+            created_by: userId,
+            updated_by: userId,
+          })
+          .select('id')
+          .single();
+
+        if (createError) {
+          throw new CliError(`Failed to create pipeline: ${createError.message}`, ErrorCode.API_ERROR);
+        }
+
+        // 8. Trigger schema discovery on source datasource
+        if (!outputOptions.json) {
+          process.stderr.write('Discovering source schema...\n');
+        }
+
+        const { data: discoveryJobId, error: discoveryError } = await supabase.rpc('create_datasource_job', {
+          p_datasource_id: src.id,
+          p_job_type: 'datasource_schema_refresh',
+          p_force_refresh: false,
+        });
+
+        if (discoveryError) {
+          throw new CliError(`Schema discovery failed: ${discoveryError.message}`, ErrorCode.API_ERROR);
+        }
+
+        if (discoveryJobId) {
+          const discoveryResult = await pollJobUntilDone(supabase, discoveryJobId as string);
+          if (!discoveryResult.success) {
+            throw new CliError(
+              `Schema discovery failed: ${discoveryResult.statusMessage || discoveryResult.jobStatus}`,
+              ErrorCode.API_ERROR,
+            );
+          }
+        }
+
+        // 9. Fetch object selections and save schema mappings
+        if (!outputOptions.json) {
+          process.stderr.write('Selecting objects...\n');
+        }
+
+        let objectMappings: Array<{ fully_qualified_name: string; selected: boolean; fields: unknown }>;
+
+        if (opts.objects) {
+          // User-provided object selection
+          if (!fs.existsSync(opts.objects)) {
+            throw new CliError(`Objects file "${opts.objects}" not found.`, ErrorCode.NOT_FOUND);
+          }
+          objectMappings = JSON.parse(fs.readFileSync(opts.objects, 'utf-8')) as typeof objectMappings;
+        } else {
+          // Default: select all discovered objects (fields: null means snapshot all fields from catalog)
+          const { data: catalog, error: catalogError } = await supabase
+            .from('source_metadata_catalog')
+            .select('fully_qualified_name, source_metadata')
+            .eq('datasource_id', src.id)
+            .eq('deleted', false);
+
+          if (catalogError) {
+            throw new CliError(`Failed to fetch source catalog: ${catalogError.message}`, ErrorCode.API_ERROR);
+          }
+
+          objectMappings = (catalog || []).map((obj) => ({
+            fully_qualified_name: obj.fully_qualified_name as string,
+            selected: true,
+            fields: null,
+          }));
+
+          if (objectMappings.length === 0) {
+            throw new CliError(
+              'No objects discovered in source. Run "supaflow datasources refresh <source>" first.',
+              ErrorCode.INVALID_INPUT,
+            );
+          }
+        }
+
+        const { error: mappingError } = await supabase.rpc('save_pipeline_metadata_mappings', {
+          p_pipeline_id: pipeline.id,
+          p_datasource_id: src.id,
+          p_mappings: objectMappings,
+        });
+
+        if (mappingError) {
+          throw new CliError(`Failed to save object selections: ${mappingError.message}`, ErrorCode.API_ERROR);
+        }
+
+        // 10. Activate pipeline (draft -> active)
+        const { error: activateError } = await supabase
+          .from('pipelines')
+          .update({ state: 'active', updated_by: userId })
+          .eq('id', pipeline.id);
+
+        if (activateError) {
+          throw new CliError(`Failed to activate pipeline: ${activateError.message}`, ErrorCode.API_ERROR);
+        }
+
+        if (outputOptions.json) {
+          printOutput(formatGetJson({
+            id: pipeline.id,
+            name: opts.name,
+            api_name: apiName,
+            source: src.name,
+            destination: dest.name,
+            project: proj.name,
+            objects_selected: objectMappings.length,
+            state: 'active',
+          }));
+        } else {
+          console.log(`Pipeline "${opts.name}" created. ID: ${pipeline.id}`);
+          console.log(`Objects selected: ${objectMappings.length}`);
+          console.log(`Trigger sync: supaflow sync run ${apiName}`);
         }
       }),
     );
