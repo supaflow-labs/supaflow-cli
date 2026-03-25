@@ -402,6 +402,142 @@ export function registerDatasourcesCommands(program: Command): void {
     );
 
   // -----------------------------------------------------------------------
+  // datasources catalog
+  // -----------------------------------------------------------------------
+  datasources
+    .command('catalog <identifier>')
+    .description('List discovered objects for a datasource (or export as objects.json)')
+    .option('--output <file>', 'Write selectable objects JSON file for pipeline creation')
+    .option('--refresh', 'Trigger schema refresh before listing')
+    .action(
+      withAuth(async (ctx: AuthContext, identifier: string, opts: { output?: string; refresh?: boolean }) => {
+        const { supabase, workspaceId, outputOptions } = ctx;
+
+        // Resolve datasource
+        let dsQuery = supabase
+          .from('datasources_with_access')
+          .select('id, name, api_name, state')
+          .eq('workspace_id', workspaceId);
+
+        if (isUuid(identifier)) {
+          dsQuery = dsQuery.eq('id', identifier);
+        } else {
+          dsQuery = dsQuery.eq('api_name', identifier);
+        }
+
+        const { data: ds, error: dsError } = await dsQuery.single();
+        if (dsError || !ds) {
+          throw new CliError(`Datasource "${identifier}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        // Optional: trigger schema refresh first
+        if (opts.refresh) {
+          if (!outputOptions.json) {
+            process.stderr.write('Refreshing schema...\n');
+          }
+
+          const { data: refreshJobId, error: refreshError } = await supabase.rpc('create_datasource_job', {
+            p_datasource_id: ds.id,
+            p_job_type: 'datasource_schema_refresh',
+            p_force_refresh: true,
+          });
+
+          if (refreshError) {
+            throw new CliError(`Schema refresh failed: ${refreshError.message}`, ErrorCode.API_ERROR);
+          }
+
+          if (refreshJobId) {
+            const refreshResult = await pollJobUntilDone(supabase, refreshJobId as string);
+            if (!refreshResult.success) {
+              throw new CliError(
+                `Schema refresh failed: ${refreshResult.statusMessage || refreshResult.jobStatus}`,
+                ErrorCode.API_ERROR,
+              );
+            }
+          }
+        }
+
+        // Fetch discovered objects using the same RPC as the FE wizard
+        // p_pipeline_id = null means "no pipeline yet, just show discovered catalog"
+        const allObjects: Array<Record<string, unknown>> = [];
+        const batchSize = 100;
+        let offset = 0;
+        let hasMore = true;
+
+        while (hasMore) {
+          const { data, error } = await supabase.rpc('get_pipeline_metadata_mappings', {
+            p_pipeline_id: null,
+            p_datasource_id: ds.id,
+            p_limit: batchSize,
+            p_offset: offset,
+            p_include_fields: false,
+          });
+
+          if (error) {
+            throw new CliError(`Failed to fetch catalog: ${error.message}`, ErrorCode.API_ERROR);
+          }
+
+          const batch = data || [];
+          allObjects.push(...batch);
+          offset += batchSize;
+          hasMore = batch.length === batchSize;
+        }
+
+        if (allObjects.length === 0) {
+          if (outputOptions.json) {
+            printOutput(formatListJson([], 0, 0, 0));
+          } else {
+            console.log(`No objects discovered for "${ds.name}". Run with --refresh to trigger schema discovery.`);
+          }
+          return;
+        }
+
+        // If --output: write selectable objects JSON for pipeline creation
+        if (opts.output) {
+          const selectableObjects = allObjects.map((obj) => ({
+            fully_qualified_name: obj.fully_qualified_source_object_name,
+            selected: true,
+            fields: null, // null = snapshot all fields from catalog
+          }));
+
+          fs.writeFileSync(opts.output, JSON.stringify(selectableObjects, null, 2) + '\n', 'utf-8');
+
+          if (outputOptions.json) {
+            printOutput(formatGetJson({
+              file: opts.output,
+              datasource: ds.name,
+              objects: selectableObjects.length,
+            }));
+          } else {
+            console.log(`Wrote ${selectableObjects.length} objects to ${opts.output}`);
+            console.log(`Edit the file to set "selected": false for objects you want to exclude.`);
+            console.log(`Then use: supaflow pipelines create ... --objects ${opts.output}`);
+          }
+          return;
+        }
+
+        // Default: list objects in table/JSON format
+        if (outputOptions.json) {
+          const objects = allObjects.map((obj) => ({
+            fully_qualified_name: obj.fully_qualified_source_object_name,
+            catalog_version: obj.catalog_version,
+            updated_at: obj.catalog_updated_at,
+          }));
+          printOutput(formatListJson(objects, objects.length, objects.length, 0));
+        } else {
+          const headers = ['OBJECT', 'VERSION', 'UPDATED'];
+          const { relativeTime } = await import('../lib/output.js');
+          const rows = allObjects.map((obj) => [
+            String(obj.fully_qualified_source_object_name || ''),
+            String(obj.catalog_version || ''),
+            relativeTime(obj.catalog_updated_at as string | null),
+          ]);
+          printOutput(formatTable(headers, rows));
+        }
+      }),
+    );
+
+  // -----------------------------------------------------------------------
   // datasources delete
   // -----------------------------------------------------------------------
   datasources
