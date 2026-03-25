@@ -45,7 +45,7 @@ export function registerProjectsCommands(program: Command): void {
     .command('create')
     .description('Create a new project')
     .requiredOption('--name <name>', 'Project name')
-    .requiredOption('--destination <id>', 'Destination datasource ID or api_name')
+    .requiredOption('--destination <identifier>', 'Destination datasource ID or api_name')
     .option('--type <type>', 'Project type (pipeline|ingestion|transformation|activation)', 'pipeline')
     .action(
       withAuth(async (ctx: AuthContext, opts: { name: string; destination: string; type: string }) => {

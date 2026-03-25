@@ -195,10 +195,10 @@ export function registerPipelinesCommands(program: Command): void {
       }),
     );
 
-  // pause
+  // disable
   pipelines
-    .command('pause <identifier>')
-    .description('Pause a pipeline (set state to inactive)')
+    .command('disable <identifier>')
+    .description('Disable a pipeline (set state to inactive)')
     .action(
       withAuth(async (ctx: AuthContext, identifier: unknown) => {
         const id = await resolveIdentifier(
@@ -219,21 +219,21 @@ export function registerPipelinesCommands(program: Command): void {
           .eq('id', id);
 
         if (error) {
-          throw new CliError(`Failed to pause pipeline: ${error.message}`, ErrorCode.API_ERROR);
+          throw new CliError(`Failed to disable pipeline: ${error.message}`, ErrorCode.API_ERROR);
         }
 
         if (ctx.outputOptions.json) {
           printOutput(formatGetJson({ id, state: 'inactive' }));
         } else {
-          console.log(`Pipeline ${truncateUuid(id)} paused.`);
+          console.log(`Pipeline ${truncateUuid(id)} disabled.`);
         }
       }),
     );
 
-  // resume
+  // enable
   pipelines
-    .command('resume <identifier>')
-    .description('Resume a pipeline (set state to active)')
+    .command('enable <identifier>')
+    .description('Enable a pipeline (set state to active)')
     .action(
       withAuth(async (ctx: AuthContext, identifier: unknown) => {
         const id = await resolveIdentifier(
@@ -253,13 +253,13 @@ export function registerPipelinesCommands(program: Command): void {
           .eq('id', id);
 
         if (error) {
-          throw new CliError(`Failed to resume pipeline: ${error.message}`, ErrorCode.API_ERROR);
+          throw new CliError(`Failed to enable pipeline: ${error.message}`, ErrorCode.API_ERROR);
         }
 
         if (ctx.outputOptions.json) {
           printOutput(formatGetJson({ id, state: 'active' }));
         } else {
-          console.log(`Pipeline ${truncateUuid(id)} resumed.`);
+          console.log(`Pipeline ${truncateUuid(id)} enabled.`);
         }
       }),
     );
@@ -310,8 +310,8 @@ export function registerPipelinesCommands(program: Command): void {
     .command('create')
     .description('Create a new pipeline')
     .requiredOption('--name <name>', 'Pipeline name')
-    .requiredOption('--source <id>', 'Source datasource (ID or api_name)')
-    .requiredOption('--project <id>', 'Project (ID or api_name; destination comes from project)')
+    .requiredOption('--source <identifier>', 'Source datasource (ID or api_name)')
+    .requiredOption('--project <identifier>', 'Project (ID or api_name; destination comes from project)')
     .option('--config <file>', 'JSON file with pipeline config overrides')
     .option('--objects <file>', 'JSON file with object selections (default: select all discovered)')
     .option('--description <desc>', 'Pipeline description')
@@ -512,7 +512,7 @@ export function registerPipelinesCommands(program: Command): void {
         } else {
           console.log(`Pipeline "${opts.name}" created. ID: ${pipeline.id}`);
           console.log(`Objects selected: ${objectMappings.length}`);
-          console.log(`Trigger sync: supaflow sync run ${apiName}`);
+          console.log(`Trigger sync: supaflow pipelines sync ${apiName}`);
         }
       }),
     );
@@ -706,6 +706,40 @@ export function registerPipelinesCommands(program: Command): void {
           printOutput(formatGetJson(result as Record<string, unknown>));
         } else {
           console.log(`Schema selections updated for "${pipelineRow.pipeline_name}".`);
+        }
+      }),
+    );
+
+  // sync
+  pipelines
+    .command('sync <identifier>')
+    .description('Trigger a pipeline sync')
+    .option('--full-resync', 'Force full resync', false)
+    .action(
+      withAuth(async (ctx: AuthContext, identifier: string, opts: Record<string, unknown>) => {
+        const { supabase, workspaceId, outputOptions } = ctx;
+        const pipelineId = await resolveIdentifier(
+          supabase, 'pipelines_and_datasources', identifier,
+          'pipeline_id', 'pipeline_api_name', workspaceId,
+        );
+
+        const { data, error } = await supabase.rpc('create_pipeline_run_job', {
+          p_pipeline_id: pipelineId,
+          p_job_type: 'pipeline_run',
+          p_reset_target: false,
+          p_full_resync: opts.fullResync ?? false,
+        });
+
+        if (error) throw new CliError(error.message, ErrorCode.API_ERROR);
+
+        const jobId = data as string;
+
+        if (outputOptions.json) {
+          printOutput(formatGetJson({ job_id: jobId, pipeline_id: pipelineId, status: 'queued' }));
+        } else {
+          console.log(`Sync triggered for pipeline ${truncateUuid(pipelineId)}.`);
+          console.log(`Job ID: ${jobId}`);
+          console.log(`Track progress: supaflow jobs get ${jobId}`);
         }
       }),
     );

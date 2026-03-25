@@ -5,7 +5,6 @@ import { registerDatasourcesCommands } from './commands/datasources.js';
 import { registerPipelinesCommands } from './commands/pipelines.js';
 import { registerProjectsCommands } from './commands/projects.js';
 import { registerJobsCommands } from './commands/jobs.js';
-import { registerSyncCommands } from './commands/sync.js';
 import { registerEncryptCommand } from './commands/encrypt.js';
 import { registerConnectorsCommands } from './commands/connectors.js';
 
@@ -30,7 +29,6 @@ registerDatasourcesCommands(program);
 registerPipelinesCommands(program);
 registerProjectsCommands(program);
 registerJobsCommands(program);
-registerSyncCommands(program);
 registerEncryptCommand(program);
 registerConnectorsCommands(program);
 
