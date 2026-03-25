@@ -80,7 +80,7 @@ export function registerPipelinesCommands(program: Command): void {
     .description('List pipelines in the current workspace')
     .option('-l, --limit <n>', 'Maximum number of results', '25')
     .option('-o, --offset <n>', 'Offset for pagination', '0')
-    .option('-s, --status <status>', 'Filter by pipeline state (e.g. active, inactive)')
+    .option('-s, --state <state>', 'Filter by pipeline state (e.g. active, inactive)')
     .option('--sort <field>', 'Sort field: name, state, created_at, updated_at, last_sync_at', 'name')
     .option('--order <dir>', 'Sort direction: asc, desc', 'asc')
     .action(
@@ -88,7 +88,7 @@ export function registerPipelinesCommands(program: Command): void {
         const options = opts as {
           limit: string;
           offset: string;
-          status?: string;
+          state?: string;
           sort: string;
           order: string;
         };
@@ -105,8 +105,8 @@ export function registerPipelinesCommands(program: Command): void {
           .order(sortField, { ascending })
           .range(offset, offset + limit - 1);
 
-        if (options.status) {
-          query = query.eq('pipeline_state', options.status);
+        if (options.state) {
+          query = query.eq('pipeline_state', options.state);
         }
 
         const { data, error, count } = await query;
@@ -719,6 +719,14 @@ export function registerPipelinesCommands(program: Command): void {
     .action(
       withAuth(async (ctx: AuthContext, identifier: string, opts: { fullResync?: boolean; resetTarget?: boolean }) => {
         const { supabase, workspaceId, outputOptions } = ctx;
+
+        if (opts.resetTarget && !opts.fullResync) {
+          throw new CliError(
+            '--reset-target requires --full-resync. Use: supaflow pipelines sync <identifier> --full-resync --reset-target',
+            ErrorCode.INVALID_INPUT,
+          );
+        }
+
         const pipelineId = await resolveIdentifier(
           supabase, 'pipelines_and_datasources', identifier,
           'pipeline_id', 'pipeline_api_name', workspaceId,
