@@ -71,9 +71,8 @@ export function registerSchedulesCommands(program: Command): void {
     .description('List schedules in workspace')
     .option('--state <state>', 'Filter by state (active, inactive)')
     .action(
-      withAuth(async (ctx: AuthContext) => {
+      withAuth(async (ctx: AuthContext, opts: { state?: string }) => {
         const { supabase, workspaceId, outputOptions } = ctx;
-        const opts = (ctx as unknown as { state?: string });
 
         let query = supabase
           .from('schedule_jobs')
@@ -81,6 +80,10 @@ export function registerSchedulesCommands(program: Command): void {
           .eq('workspace_id', workspaceId)
           .neq('state', 'deleted')
           .order('created_at', { ascending: false });
+
+        if (opts.state) {
+          query = query.eq('state', opts.state);
+        }
 
         const { data, error } = await query;
         if (error) throw new CliError(error.message, ErrorCode.API_ERROR);
@@ -140,10 +143,7 @@ export function registerSchedulesCommands(program: Command): void {
           const idCol = target.targetType === 'pipeline' ? 'pipeline_id' : 'id';
           const nameCol = target.targetType === 'pipeline' ? 'pipeline_api_name' : 'api_name';
 
-          let resolveQuery = supabase.from(table).select(idCol).eq(nameCol, targetId);
-          if (target.targetType === 'pipeline') {
-            resolveQuery = resolveQuery.eq('workspace_id', workspaceId);
-          }
+          let resolveQuery = supabase.from(table).select(idCol).eq(nameCol, targetId).eq('workspace_id', workspaceId);
           const { data, error } = await resolveQuery.limit(1).single();
           if (error || !data) {
             throw new CliError(`${target.targetType} "${targetId}" not found.`, ErrorCode.NOT_FOUND);
