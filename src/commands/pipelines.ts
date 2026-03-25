@@ -311,8 +311,7 @@ export function registerPipelinesCommands(program: Command): void {
     .description('Create a new pipeline')
     .requiredOption('--name <name>', 'Pipeline name')
     .requiredOption('--source <id>', 'Source datasource (ID or api_name)')
-    .requiredOption('--destination <id>', 'Destination datasource (ID or api_name)')
-    .requiredOption('--project <id>', 'Project (ID or api_name)')
+    .requiredOption('--project <id>', 'Project (ID or api_name; destination comes from project)')
     .option('--config <file>', 'JSON file with pipeline config overrides')
     .option('--objects <file>', 'JSON file with object selections (default: select all discovered)')
     .option('--description <desc>', 'Pipeline description')
@@ -320,7 +319,6 @@ export function registerPipelinesCommands(program: Command): void {
       withAuth(async (ctx: AuthContext, opts: {
         name: string;
         source: string;
-        destination: string;
         project: string;
         config?: string;
         objects?: string;
@@ -339,27 +337,30 @@ export function registerPipelinesCommands(program: Command): void {
           throw new CliError(`Source datasource "${opts.source}" not found.`, ErrorCode.NOT_FOUND);
         }
 
-        // 2. Resolve destination datasource
-        let destQuery = supabase
-          .from('datasources_with_access')
-          .select('id, name')
-          .eq('workspace_id', workspaceId);
-        destQuery = isUuid(opts.destination) ? destQuery.eq('id', opts.destination) : destQuery.eq('api_name', opts.destination);
-        const { data: dest, error: destError } = await destQuery.single();
-        if (destError || !dest) {
-          throw new CliError(`Destination datasource "${opts.destination}" not found.`, ErrorCode.NOT_FOUND);
-        }
-
-        // 3. Resolve project
+        // 2. Resolve project (destination comes from project's warehouse_datasource_id)
         let projQuery = supabase
           .from('projects')
-          .select('id, name')
+          .select('id, name, warehouse_datasource_id')
           .eq('workspace_id', workspaceId)
           .neq('state', 'deleted');
         projQuery = isUuid(opts.project) ? projQuery.eq('id', opts.project) : projQuery.eq('api_name', opts.project);
         const { data: proj, error: projError } = await projQuery.single();
         if (projError || !proj) {
           throw new CliError(`Project "${opts.project}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        // 3. Resolve destination from project
+        const destId = proj.warehouse_datasource_id;
+        if (!destId) {
+          throw new CliError(`Project "${proj.name}" has no destination datasource configured.`, ErrorCode.INVALID_INPUT);
+        }
+        const { data: dest, error: destError } = await supabase
+          .from('datasources_with_access')
+          .select('id, name')
+          .eq('id', destId)
+          .single();
+        if (destError || !dest) {
+          throw new CliError(`Project destination datasource not found (ID: ${destId}).`, ErrorCode.NOT_FOUND);
         }
 
         // 4. Get active pipeline version
