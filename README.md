@@ -76,7 +76,7 @@ supaflow auth status
 # Shows: Authenticated (source: config)
 ```
 
-The API key is stored in `~/.supaflow/config.json`. You can also set `SUPAFLOW_API_KEY` as an environment variable instead of running `login`.
+The API key is stored in `~/.supaflow/config.json` with user-only file permissions (mode 0600) for CLI convenience. This is common for developer CLIs. If you prefer not to store the key on disk, set `SUPAFLOW_API_KEY` in your environment instead.
 
 After authenticating, select a workspace:
 
