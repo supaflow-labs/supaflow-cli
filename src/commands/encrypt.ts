@@ -14,7 +14,7 @@ export function registerEncryptCommand(program: Command): void {
     .option('--file <path>', 'Encrypt sensitive fields in an env file in-place')
     .action(
       withAuth(async (ctx: AuthContext, value?: string, opts?: { file?: string }) => {
-        const { supabase, outputOptions } = ctx;
+        const { supabase, workspaceId, outputOptions } = ctx;
 
         if (opts?.file) {
           // Mode 2: Encrypt sensitive fields in env file
@@ -71,7 +71,7 @@ export function registerEncryptCommand(program: Command): void {
 
             if (sensitiveNames.has(key) && val && !val.startsWith('enc:') && !val.startsWith('${')) {
               // Encrypt this value
-              const envelope = await encryptValue(supabase, val);
+              const envelope = await encryptValue(supabase, val, workspaceId);
               const encoded = encodeEnvelope(envelope);
               newLines.push(`${key}=${encoded}`);
               encrypted.push(key);
@@ -96,7 +96,7 @@ export function registerEncryptCommand(program: Command): void {
           }
         } else if (value) {
           // Mode 1: Encrypt a single value
-          const envelope = await encryptValue(supabase, value);
+          const envelope = await encryptValue(supabase, value, workspaceId);
           const encoded = encodeEnvelope(envelope);
 
           if (outputOptions.json) {

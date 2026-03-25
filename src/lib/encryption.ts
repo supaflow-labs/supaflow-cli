@@ -38,13 +38,14 @@ export function decodeEnvelope(encoded: string): EncryptionEnvelope {
 export async function encryptValue(
   supabase: SupabaseClient,
   plaintext: string,
+  workspaceId: string,
 ): Promise<EncryptionEnvelope> {
   const { data, error } = await supabase.rpc('encrypt_with_fingerprint', {
     p_plaintext: plaintext,
     p_use_system_key: false,
     p_fingerprint: null,
     p_tenant_id: null,
-    p_workspace_id: null,
+    p_workspace_id: workspaceId,
   });
 
   if (error) {

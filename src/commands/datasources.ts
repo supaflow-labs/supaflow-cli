@@ -225,8 +225,10 @@ export function registerDatasourcesCommands(program: Command): void {
         // Step 3: Merge env values into latest schema
         const { merged, warnings, errors: mergeErrors } = mergeEnvWithSchema(envValues, properties);
 
-        for (const w of warnings) {
-          console.error(`Warning: ${w}`);
+        if (!outputOptions.json) {
+          for (const w of warnings) {
+            console.error(`Warning: ${w}`);
+          }
         }
         if (mergeErrors.length > 0) {
           throw new CliError(mergeErrors.join('\n'), ErrorCode.INVALID_INPUT);
@@ -303,7 +305,7 @@ export function registerDatasourcesCommands(program: Command): void {
             if (!outputOptions.json) {
               process.stderr.write(`Encrypting ${key} in ${filePath}...\n`);
             }
-            const envelope = await encryptValue(supabase, val);
+            const envelope = await encryptValue(supabase, val, workspaceId);
             const encoded = encodeEnvelope(envelope);
             newLines.push(`${key}=${encoded}`);
             rawConfigs[key] = encoded; // Update in-memory too
