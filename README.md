@@ -2,6 +2,20 @@
 
 CLI for the [Supaflow](https://www.supa-flow.io) data integration platform. Manage datasources, pipelines, jobs, schedules, and more from the command line or through AI agents.
 
+## Command Map
+
+| Group | Commands | What it does |
+|-------|----------|-------------|
+| `auth` | login, logout, status | Authenticate with API key |
+| `workspaces` | list, select | Choose active workspace |
+| `connectors` | list | Browse available connector types |
+| `datasources` | list, get, init, create, catalog, test, edit, delete, disable, enable, refresh | Full datasource lifecycle |
+| `projects` | list, create | Manage pipeline projects |
+| `pipelines` | list, get, create, edit, delete, disable, enable, sync, schema (list, select) | Full pipeline lifecycle |
+| `schedules` | list, create, edit, delete, enable, disable, run, history | Cron-based scheduling |
+| `jobs` | list, get, logs | Monitor async job execution |
+| `encrypt` | (value or --file) | Encrypt sensitive values |
+
 ## Prerequisites
 
 **A Supaflow account** is required. Sign up at [app.supa-flow.io/sign-up](https://app.supa-flow.io/sign-up) if you don't have one.
@@ -82,6 +96,7 @@ Every command supports these flags:
 | `--json` | Machine-readable JSON output (for agents and scripts) |
 | `--workspace <id>` | Override the active workspace for this command |
 | `--api-key <key>` | Override the stored API key for this command |
+| `--supabase-url <url>` | Override Supabase project URL (dev/testing; requires `SUPAFLOW_SUPABASE_ANON_KEY` env var) |
 | `--verbose` | Enable debug output |
 | `--no-color` | Suppress ANSI colors (auto-detected when stdout is not a TTY) |
 
@@ -94,6 +109,28 @@ When `--json` is used:
 - **Errors** return `{ "error": { "code": "ERROR_CODE", "message": "..." } }` with non-zero exit code
 
 Error codes: `NOT_AUTHENTICATED` (exit 2), `NO_WORKSPACE` (exit 2), `NOT_FOUND`, `INVALID_INPUT`, `FORBIDDEN`, `API_ERROR`, `NETWORK_ERROR`, `RATE_LIMITED` (all exit 1).
+
+**Example: list with --json**
+```json
+{
+  "data": [
+    { "id": "8a3f1b2c-...", "name": "My Pipeline", "state": "active" }
+  ],
+  "total": 1,
+  "limit": 25,
+  "offset": 0
+}
+```
+
+**Example: error with --json**
+```json
+{
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "Pipeline \"nonexistent\" not found."
+  }
+}
+```
 
 ---
 
@@ -412,6 +449,9 @@ Common cron patterns:
 supaflow schedules list                            # List all schedules
 supaflow schedules list --state active             # Filter by state
 supaflow schedules edit <identifier> --cron "0 2 * * *"  # Update cron
+supaflow schedules edit <identifier> --name "New Name" --description "Updated"  # Update metadata
+supaflow schedules edit <identifier> --timezone "UTC"  # Change display timezone
+supaflow schedules edit <identifier> --pipeline other_pipeline  # Change target
 supaflow schedules disable <identifier>            # Pause the schedule
 supaflow schedules enable <identifier>             # Resume the schedule
 supaflow schedules run <identifier>                # Trigger immediate execution
@@ -526,7 +566,19 @@ supaflow pipelines get 8a3f1b2c-4d5e-6f7a-8b9c-0d1e2f3a4b5c
 supaflow pipelines get production_to_warehouse
 ```
 
-Schedules use the schedule **name** (not api_name) as the text identifier.
+Schedules resolve by **name** (not api_name), since schedule names are unique per workspace. All other resources resolve by `api_name`.
+
+## Troubleshooting
+
+**"Not authenticated"** -- Run `supaflow auth login` or set `SUPAFLOW_API_KEY`. If using an API key, verify it hasn't been revoked in the web app.
+
+**"No workspace selected"** -- Run `supaflow workspaces select`. For scripts, set `SUPAFLOW_WORKSPACE_ID`.
+
+**"Invalid, revoked, or expired API key"** -- The API key was revoked or the Clerk organization changed. Create a new key in **Settings > API Keys**.
+
+**"Bootstrap endpoint unavailable"** -- The CLI can't reach `app.supa-flow.io` to exchange your API key for a session token. Check your network. For local development, set `SUPAFLOW_SUPABASE_URL` and `SUPAFLOW_SUPABASE_ANON_KEY` environment variables to bypass the bootstrap endpoint.
+
+**"configs cannot be NULL or empty"** -- The datasource test command reads stored configs. If the datasource was created with empty configs, edit it first with valid connection details.
 
 ## Environment Variables
 
