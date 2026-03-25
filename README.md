@@ -2,17 +2,55 @@
 
 CLI for the [Supaflow](https://www.supa-flow.io) data integration platform. Manage datasources, pipelines, jobs, schedules, and more from the command line or through AI agents.
 
+## Prerequisites
+
+**Node.js 18 or later** is required. Check your version:
+
+```bash
+node --version
+# v18.x.x or higher
+```
+
+If you don't have Node.js, install it from [nodejs.org](https://nodejs.org/) or via a package manager:
+
+```bash
+# macOS (Homebrew)
+brew install node
+
+# Ubuntu/Debian
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# Windows (winget)
+winget install OpenJS.NodeJS.LTS
+```
+
 ## Install
 
 ```bash
 npm install -g @supaflow/cli
 ```
 
-Requires Node.js 18+.
+Verify the installation:
+
+```bash
+supaflow --version
+```
 
 ## Authentication
 
-Create an API key in the Supaflow web app at **Settings > API Keys**, then authenticate:
+### Step 1: Create an API Key
+
+1. Log in to the Supaflow web app at [app.supa-flow.io](https://app.supa-flow.io)
+2. Navigate to **Settings** (gear icon in the sidebar)
+3. Click **API Keys** in the settings menu
+4. Click **Create key**
+5. Give it a name (e.g., "CLI Access") and click **Create**
+6. Copy the generated key (starts with `ak_`) -- it is only shown once
+
+API keys are scoped to the organization that is active when you create them. To access a different organization's workspaces, create a separate key while that organization is active.
+
+### Step 2: Authenticate the CLI
 
 ```bash
 supaflow auth login
