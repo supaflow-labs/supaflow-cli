@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { withAuthOnly } from '../lib/middleware.js';
 import { readConfig, writeConfig } from '../lib/config.js';
 import { formatTable, formatListJson, formatGetJson, printOutput, truncateUuid } from '../lib/output.js';
+import { CliError, ErrorCode } from '../lib/errors.js';
 
 export function registerWorkspacesCommands(program: Command): void {
   const workspaces = program.command('workspaces').description('Manage workspaces');
@@ -76,8 +77,7 @@ export function registerWorkspacesCommands(program: Command): void {
 
             const index = parseInt(answer, 10) - 1;
             if (isNaN(index) || index < 0 || index >= data.length) {
-              console.error('Invalid selection.');
-              process.exit(1);
+              throw new CliError('Invalid selection.', ErrorCode.INVALID_INPUT);
             }
             id = data[index].id;
           }
@@ -90,8 +90,7 @@ export function registerWorkspacesCommands(program: Command): void {
         const { data: ws, error: wsError } = await wsQuery.single();
 
         if (wsError || !ws) {
-          console.error(`Error: Workspace "${id}" not found.`);
-          process.exit(1);
+          throw new CliError(`Workspace "${id}" not found.`, ErrorCode.NOT_FOUND);
         }
 
         const config = readConfig();

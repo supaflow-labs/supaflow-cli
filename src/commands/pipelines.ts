@@ -206,11 +206,13 @@ export function registerPipelinesCommands(program: Command): void {
           ctx.workspaceId,
         );
 
+        // pipelines table has no workspace_id column; workspace scoping
+        // was already enforced by resolveIdentifier on the view.
+        // RLS on the base table enforces editor access.
         const { error } = await ctx.supabase
           .from('pipelines')
           .update({ state: 'inactive' })
-          .eq('id', id)
-          .eq('workspace_id', ctx.workspaceId);
+          .eq('id', id);
 
         if (error) {
           throw new CliError(`Failed to pause pipeline: ${error.message}`, ErrorCode.API_ERROR);
@@ -239,11 +241,12 @@ export function registerPipelinesCommands(program: Command): void {
           ctx.workspaceId,
         );
 
+        // pipelines table has no workspace_id column; workspace scoping
+        // was already enforced by resolveIdentifier on the view.
         const { error } = await ctx.supabase
           .from('pipelines')
           .update({ state: 'active' })
-          .eq('id', id)
-          .eq('workspace_id', ctx.workspaceId);
+          .eq('id', id);
 
         if (error) {
           throw new CliError(`Failed to resume pipeline: ${error.message}`, ErrorCode.API_ERROR);

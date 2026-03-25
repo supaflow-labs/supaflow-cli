@@ -65,7 +65,7 @@ export function registerJobsCommands(program: Command): void {
 
         let query = supabase
           .from('jobs')
-          .select('id, job_type, job_status, pipeline_id, created_at, updated_at', { count: 'exact' })
+          .select('id, job_type, job_status, reference_id, reference_type, created_at, updated_at', { count: 'exact' })
           .eq('workspace_id', workspaceId)
           .order('created_at', { ascending: false })
           .range(offset, offset + limit - 1);
@@ -77,7 +77,7 @@ export function registerJobsCommands(program: Command): void {
           query = query.eq('job_type', filters.type);
         }
         if (filters.pipeline) {
-          query = query.eq('pipeline_id', filters.pipeline);
+          query = query.eq('reference_id', filters.pipeline).eq('reference_type', 'pipeline');
         }
 
         const { data, error, count } = await query;
@@ -96,12 +96,12 @@ export function registerJobsCommands(program: Command): void {
           return;
         }
 
-        const headers = ['ID', 'TYPE', 'STATUS', 'PIPELINE', 'CREATED'];
+        const headers = ['ID', 'TYPE', 'STATUS', 'REFERENCE', 'CREATED'];
         const tableRows = rows.map((j) => [
           truncateUuid(j.id),
           j.job_type || '-',
           j.job_status || '-',
-          j.pipeline_id ? truncateUuid(j.pipeline_id) : '-',
+          j.reference_id ? truncateUuid(j.reference_id) : '-',
           relativeTime(j.created_at),
         ]);
         printOutput(formatTable(headers, tableRows));

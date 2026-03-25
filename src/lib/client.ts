@@ -104,22 +104,20 @@ export async function createAuthenticatedClient(
     return makeResult(supabaseUrlOverride, key);
   }
 
-  // 2. Primary: bootstrap endpoint
+  // 2. Bootstrap endpoint (required for normal operation)
   const bootstrap = await fetchBootstrap(apiKey);
   if (bootstrap) {
     return makeResult(bootstrap.supabase_url, bootstrap.supabase_anon_key);
   }
 
-  // 3. Fallback: decode JWT region + shipped regionConfigs
-  const region = decodeJwtRegion(apiKey);
-  const config = getRegionConfig(region);
-  if (!config.url || !config.anonKey) {
-    throw new Error(
-      'Cannot resolve Supabase connection. Set SUPAFLOW_SUPABASE_URL and SUPAFLOW_SUPABASE_ANON_KEY environment variables.',
-    );
-  }
-
-  return makeResult(config.url, config.anonKey);
+  // Bootstrap unavailable -- fail explicitly.
+  // The shipped regionConfigs are placeholders and not production-ready.
+  // Users must either set env vars or ensure the bootstrap endpoint is reachable.
+  throw new Error(
+    'Bootstrap endpoint unavailable. Cannot resolve Supabase connection.\n' +
+    'Set SUPAFLOW_SUPABASE_URL and SUPAFLOW_SUPABASE_ANON_KEY environment variables,\n' +
+    'or ensure https://app.supa-flow.io is reachable.',
+  );
 }
 
 /**
