@@ -714,9 +714,10 @@ export function registerPipelinesCommands(program: Command): void {
   pipelines
     .command('sync <identifier>')
     .description('Trigger a pipeline sync')
-    .option('--full-resync', 'Force full resync', false)
+    .option('--full-resync', 'Reset cursors and re-sync all data from scratch')
+    .option('--reset-target', 'Drop and recreate destination tables (use with --full-resync)')
     .action(
-      withAuth(async (ctx: AuthContext, identifier: string, opts: Record<string, unknown>) => {
+      withAuth(async (ctx: AuthContext, identifier: string, opts: { fullResync?: boolean; resetTarget?: boolean }) => {
         const { supabase, workspaceId, outputOptions } = ctx;
         const pipelineId = await resolveIdentifier(
           supabase, 'pipelines_and_datasources', identifier,
@@ -726,7 +727,7 @@ export function registerPipelinesCommands(program: Command): void {
         const { data, error } = await supabase.rpc('create_pipeline_run_job', {
           p_pipeline_id: pipelineId,
           p_job_type: 'pipeline_run',
-          p_reset_target: false,
+          p_reset_target: opts.resetTarget ?? false,
           p_full_resync: opts.fullResync ?? false,
         });
 
