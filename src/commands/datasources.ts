@@ -538,6 +538,82 @@ export function registerDatasourcesCommands(program: Command): void {
     );
 
   // -----------------------------------------------------------------------
+  // datasources test
+  // -----------------------------------------------------------------------
+  datasources
+    .command('test <identifier>')
+    .description('Test connection for an existing datasource')
+    .action(
+      withAuth(async (ctx: AuthContext, identifier: string) => {
+        const { supabase, workspaceId, outputOptions } = ctx;
+
+        // Resolve datasource
+        let dsQuery = supabase
+          .from('datasources_with_access')
+          .select('id, name, api_name, state, connector_version_id')
+          .eq('workspace_id', workspaceId);
+
+        if (isUuid(identifier)) {
+          dsQuery = dsQuery.eq('id', identifier);
+        } else {
+          dsQuery = dsQuery.eq('api_name', identifier);
+        }
+
+        const { data: ds, error: dsError } = await dsQuery.single();
+        if (dsError || !ds) {
+          throw new CliError(`Datasource "${identifier}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        if (!outputOptions.json) {
+          process.stderr.write('Testing connection... (this may take up to a minute)\n');
+        }
+
+        // Read stored configs from datasources table (view doesn't include configs)
+        const { data: dsRow, error: configError } = await supabase
+          .from('datasources')
+          .select('configs')
+          .eq('id', ds.id)
+          .single();
+
+        if (configError || !dsRow) {
+          throw new CliError(`Failed to read datasource configs: ${configError?.message || 'not found'}`, ErrorCode.API_ERROR);
+        }
+
+        const { data: jobId, error: jobError } = await supabase.rpc('create_datasource_test_job', {
+          p_workspace_id: workspaceId,
+          p_connector_version_id: ds.connector_version_id,
+          p_configs: dsRow.configs,
+          p_job_name: `CLI test: ${ds.name}`,
+          p_datasource_id: ds.id,
+        });
+
+        if (jobError) {
+          throw new CliError(`Failed to create test job: ${jobError.message}`, ErrorCode.API_ERROR);
+        }
+
+        const result = await pollJobUntilDone(supabase, jobId as string);
+
+        if (!result.success) {
+          throw new CliError(
+            `Connection failed: ${result.statusMessage || result.jobStatus}`,
+            ErrorCode.API_ERROR,
+          );
+        }
+
+        if (outputOptions.json) {
+          printOutput(formatGetJson({
+            id: ds.id,
+            name: ds.name,
+            status: 'connected',
+            job_id: jobId,
+          }));
+        } else {
+          console.log(`Connection successful for "${ds.name}".`);
+        }
+      }),
+    );
+
+  // -----------------------------------------------------------------------
   // datasources delete
   // -----------------------------------------------------------------------
   datasources
