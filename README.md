@@ -4,6 +4,8 @@ CLI for the [Supaflow](https://www.supa-flow.io) data integration platform. Mana
 
 ## Prerequisites
 
+**A Supaflow account** is required. Sign up at [app.supa-flow.io/sign-up](https://app.supa-flow.io/sign-up) if you don't have one.
+
 **Node.js 18 or later** is required. Check your version:
 
 ```bash
