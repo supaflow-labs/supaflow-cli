@@ -607,4 +607,105 @@ export function registerPipelinesCommands(program: Command): void {
         }
       }),
     );
+
+  // schema subcommand group
+  const schema = pipelines.command('schema').description('Manage pipeline schema/object selection');
+
+  schema
+    .command('list <identifier>')
+    .description('List selected objects for a pipeline')
+    .option('--all', 'Include deselected objects')
+    .action(
+      withAuth(async (ctx: AuthContext, identifier: string, opts: { all?: boolean }) => {
+        const { supabase, workspaceId, outputOptions } = ctx;
+
+        // Resolve pipeline
+        let query = supabase
+          .from('pipelines_and_datasources')
+          .select('pipeline_id, pipeline_name, workspace_id')
+          .eq('workspace_id', workspaceId);
+
+        query = isUuid(identifier) ? query.eq('pipeline_id', identifier) : query.eq('pipeline_api_name', identifier);
+
+        const { data: pipeline, error } = await query.single();
+        if (error || !pipeline) {
+          throw new CliError(`Pipeline "${identifier}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        // Fetch metadata mappings
+        const { data: mappings, error: mappingError } = await supabase
+          .from('pipeline_metadata_mappings')
+          .select('source_fully_qualified_name, selected_source_metadata, selection_origin')
+          .eq('pipeline_id', (pipeline as { pipeline_id: string }).pipeline_id);
+
+        if (mappingError) {
+          throw new CliError(`Failed to fetch schema: ${mappingError.message}`, ErrorCode.API_ERROR);
+        }
+
+        const rows = (mappings || []).filter((m) => {
+          if (opts.all) return true;
+          const meta = m.selected_source_metadata as Record<string, unknown> | null;
+          return meta?.selected !== false;
+        });
+
+        if (outputOptions.json) {
+          printOutput(formatListJson(rows, rows.length, rows.length, 0));
+        } else {
+          if (rows.length === 0) { console.log('No objects selected.'); return; }
+          const headers = ['OBJECT', 'ORIGIN'];
+          const tableRows = rows.map((r) => [
+            r.source_fully_qualified_name as string,
+            (r.selection_origin as string) || '',
+          ]);
+          printOutput(formatTable(headers, tableRows));
+        }
+      }),
+    );
+
+  schema
+    .command('select <identifier>')
+    .description('Update object selections for a pipeline')
+    .requiredOption('--from <file>', 'JSON file with object selections')
+    .action(
+      withAuth(async (ctx: AuthContext, identifier: string, opts: { from: string }) => {
+        const { supabase, workspaceId, outputOptions } = ctx;
+
+        // Resolve pipeline
+        let query = supabase
+          .from('pipelines_and_datasources')
+          .select('pipeline_id, pipeline_name, source_datasource_id, workspace_id')
+          .eq('workspace_id', workspaceId);
+
+        query = isUuid(identifier) ? query.eq('pipeline_id', identifier) : query.eq('pipeline_api_name', identifier);
+
+        const { data: pipeline, error } = await query.single();
+        if (error || !pipeline) {
+          throw new CliError(`Pipeline "${identifier}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        if (!fs.existsSync(opts.from)) {
+          throw new CliError(`File "${opts.from}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        const objectMappings = JSON.parse(fs.readFileSync(opts.from, 'utf-8')) as unknown;
+
+        const pipelineRow = pipeline as { pipeline_id: string; pipeline_name: string; source_datasource_id: string };
+
+        const { data: result, error: saveError } = await supabase.rpc('save_pipeline_metadata_mappings', {
+          p_pipeline_id: pipelineRow.pipeline_id,
+          p_datasource_id: pipelineRow.source_datasource_id,
+          p_mappings: objectMappings,
+        });
+
+        if (saveError) {
+          throw new CliError(`Failed to save selections: ${saveError.message}`, ErrorCode.API_ERROR);
+        }
+
+        if (outputOptions.json) {
+          printOutput(formatGetJson(result as Record<string, unknown>));
+        } else {
+          console.log(`Schema selections updated for "${pipelineRow.pipeline_name}".`);
+        }
+      }),
+    );
 }
