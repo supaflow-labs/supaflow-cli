@@ -8,6 +8,7 @@ export interface ConnectorInfo {
   type: string;
   latest_version_id: string;
   latest_version: string;
+  connector_capabilities: string[];
 }
 
 export interface ConnectorProperty {

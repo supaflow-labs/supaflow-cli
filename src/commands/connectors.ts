@@ -3,6 +3,12 @@ import { withAuthOnly } from '../lib/middleware.js';
 import { formatTable, formatListJson, printOutput } from '../lib/output.js';
 import { fetchConnectors } from '../lib/connector.js';
 
+function formatCapabilities(caps: string[]): string {
+  if (!caps || caps.length === 0) return '';
+  // Shorten for table display: REPLICATION_SOURCE -> repl_source, etc.
+  return caps.map((c) => c.toLowerCase().replace('replication_', 'repl_').replace('reverse_etl_', 'retl_')).join(', ');
+}
+
 export function registerConnectorsCommands(program: Command): void {
   const connectors = program.command('connectors').description('Browse available connectors');
 
@@ -17,14 +23,24 @@ export function registerConnectorsCommands(program: Command): void {
 
         if (outputOptions.json) {
           printOutput(formatListJson(
-            sorted.map((c) => ({ type: c.type, name: c.name, version: c.latest_version })),
+            sorted.map((c) => ({
+              type: c.type,
+              name: c.name,
+              version: c.latest_version,
+              capabilities: c.connector_capabilities || [],
+            })),
             sorted.length,
             sorted.length,
             0,
           ));
         } else {
-          const headers = ['TYPE', 'NAME', 'VERSION'];
-          const rows = sorted.map((c) => [c.type, c.name, c.latest_version || '']);
+          const headers = ['TYPE', 'NAME', 'CAPABILITIES', 'VERSION'];
+          const rows = sorted.map((c) => [
+            c.type,
+            c.name,
+            formatCapabilities(c.connector_capabilities),
+            c.latest_version || '',
+          ]);
           printOutput(formatTable(headers, rows));
         }
       }),
