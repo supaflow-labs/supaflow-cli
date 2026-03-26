@@ -58,7 +58,7 @@ supaflow --version
 ### Step 1: Create an API Key
 
 1. Log in to the Supaflow web app at [app.supa-flow.io](https://app.supa-flow.io)
-2. Navigate to **Settings** (gear icon in the sidebar)
+2. Click the **Settings** gear icon in the top-right corner (next to your profile avatar)
 3. Click **API Keys** in the settings menu
 4. Click **Create key**
 5. Give it a name (e.g., "CLI Access") and click **Create**
