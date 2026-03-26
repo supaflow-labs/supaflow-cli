@@ -46,6 +46,20 @@ export function withAuth(handler: AuthHandler) {
         );
       }
 
+      // Validate workspace exists and user has access
+      const { data: wsCheck, error: wsError } = await authResult.client
+        .from('workspaces_with_access')
+        .select('id, name')
+        .eq('id', workspaceId)
+        .single();
+
+      if (wsError || !wsCheck) {
+        throw new CliError(
+          `Workspace "${workspaceId}" not found or you don't have access. Run "supaflow workspaces list" to see available workspaces, then "supaflow workspaces select" to pick one.`,
+          ErrorCode.NO_WORKSPACE,
+        );
+      }
+
       const outputOptions: OutputOptions = {
         json,
         noColor: opts.color === false || !process.stdout.isTTY,
