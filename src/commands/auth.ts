@@ -11,10 +11,11 @@ export function registerAuthCommands(program: Command): void {
   auth
     .command('login')
     .description('Authenticate with Supaflow')
-    .action(async (_opts, cmd) => {
+    .option('--key <apiKey>', 'API key (non-interactive, for agents)')
+    .action(async (opts, cmd) => {
       const json = cmd.optsWithGlobals().json ?? false;
       try {
-        let apiKey = process.env.SUPAFLOW_API_KEY;
+        let apiKey = opts.key || process.env.SUPAFLOW_API_KEY;
 
         if (!apiKey) {
           const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
