@@ -51,7 +51,6 @@ function normalizePipeline(row: PipelineRow) {
     name: row.pipeline_name,
     api_name: row.pipeline_api_name,
     state: row.pipeline_state,
-    configs: row.pipeline_configs,
     created_at: row.pipeline_created_at,
     updated_at: row.pipeline_updated_at,
     source: {
@@ -68,6 +67,14 @@ function normalizePipeline(row: PipelineRow) {
     last_sync_at: row.last_sync_at,
     last_job_status: row.last_job_status,
     schedules: row.schedules,
+  };
+}
+
+// Full normalization including configs (for get/single pipeline)
+function normalizePipelineFull(row: PipelineRow) {
+  return {
+    ...normalizePipeline(row),
+    configs: row.pipeline_configs,
   };
 }
 
@@ -173,7 +180,7 @@ export function registerPipelinesCommands(program: Command): void {
           );
         }
 
-        const normalized = normalizePipeline(data as PipelineRow);
+        const normalized = normalizePipelineFull(data as PipelineRow);
 
         if (ctx.outputOptions.json) {
           printOutput(formatGetJson(normalized));
@@ -650,7 +657,18 @@ export function registerPipelinesCommands(program: Command): void {
         });
 
         if (outputOptions.json) {
-          printOutput(formatListJson(rows, rows.length, rows.length, 0));
+          // Compact JSON: object name, selected status, field counts -- no full field arrays
+          const compact = rows.map((r) => {
+            const meta = r.selected_source_metadata as Record<string, unknown> | null;
+            return {
+              object: r.source_fully_qualified_name,
+              selected: meta?.selected !== false,
+              total_fields: meta?.total_field_count ?? null,
+              selected_fields: meta?.selected_field_count ?? null,
+              origin: r.selection_origin || null,
+            };
+          });
+          printOutput(formatListJson(compact, compact.length, compact.length, 0));
         } else {
           if (rows.length === 0) { console.log('No objects selected.'); return; }
           const headers = ['OBJECT', 'ORIGIN'];
@@ -706,6 +724,47 @@ export function registerPipelinesCommands(program: Command): void {
           printOutput(formatGetJson(result as Record<string, unknown>));
         } else {
           console.log(`Schema selections updated for "${pipelineRow.pipeline_name}".`);
+        }
+      }),
+    );
+
+  schema
+    .command('add <identifier> <object>')
+    .description('Add a single object to a pipeline by name')
+    .action(
+      withAuth(async (ctx: AuthContext, identifier: string, objectName: string) => {
+        const { supabase, workspaceId, outputOptions } = ctx;
+
+        let query = supabase
+          .from('pipelines_and_datasources')
+          .select('pipeline_id, pipeline_name, source_datasource_id, workspace_id')
+          .eq('workspace_id', workspaceId);
+
+        query = isUuid(identifier) ? query.eq('pipeline_id', identifier) : query.eq('pipeline_api_name', identifier);
+
+        const { data: pipeline, error } = await query.single();
+        if (error || !pipeline) {
+          throw new CliError(`Pipeline "${identifier}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        const pipelineRow = pipeline as { pipeline_id: string; pipeline_name: string; source_datasource_id: string };
+
+        const mapping = [{ fully_qualified_name: objectName, selected: true, fields: null }];
+
+        const { data: result, error: saveError } = await supabase.rpc('save_pipeline_metadata_mappings', {
+          p_pipeline_id: pipelineRow.pipeline_id,
+          p_datasource_id: pipelineRow.source_datasource_id,
+          p_mappings: mapping,
+        });
+
+        if (saveError) {
+          throw new CliError(`Failed to add object: ${saveError.message}`, ErrorCode.API_ERROR);
+        }
+
+        if (outputOptions.json) {
+          printOutput(formatGetJson({ object: objectName, ...((result as Record<string, unknown>[])?.[0] || {}) }));
+        } else {
+          console.log(`Added "${objectName}" to pipeline "${pipelineRow.pipeline_name}".`);
         }
       }),
     );

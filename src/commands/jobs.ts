@@ -120,9 +120,11 @@ export function registerJobsCommands(program: Command): void {
 
         assertUuid(id, 'Job ID');
 
+        // Select only useful fields -- exclude job_parameters (contains encrypted
+        // credentials and internal connector config that wastes agent context)
         const { data: job, error: jobError } = await supabase
           .from('jobs')
-          .select('*')
+          .select('id, name, job_type, job_status, job_command, status_message, reference_id, reference_type, started_at, ended_at, execution_duration_ms, created_at, updated_at, job_response')
           .eq('id', id)
           .eq('workspace_id', workspaceId)
           .single();
@@ -131,9 +133,10 @@ export function registerJobsCommands(program: Command): void {
           throw new CliError(`Job "${id}" not found.`, ErrorCode.NOT_FOUND);
         }
 
+        // Select only useful detail fields -- exclude raw metrics JSONB blobs
         const { data: details, error: detailsError } = await supabase
           .from('job_details_v2')
-          .select('*')
+          .select('id, fully_qualified_source_object_name, ingestion_status, staging_status, loading_status, ingestion_metrics, staging_metrics, loading_metrics, job_status, status_message')
           .eq('job_id', id);
 
         if (detailsError) throw detailsError;
