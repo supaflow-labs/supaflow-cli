@@ -1,4 +1,4 @@
-# @supaflow/cli
+# @getsupaflow/cli
 
 CLI for the [Supaflow](https://www.supa-flow.io) data integration platform. Manage datasources, pipelines, jobs, schedules, and more from the command line or through AI agents.
 
@@ -44,7 +44,7 @@ winget install OpenJS.NodeJS.LTS
 ## Install
 
 ```bash
-npm install -g @supaflow/cli
+npm install -g @getsupaflow/cli
 ```
 
 Verify the installation:

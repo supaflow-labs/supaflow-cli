@@ -1,10 +1,10 @@
 {
-  "name": "@supaflow/cli",
+  "name": "@getsupaflow/cli",
   "version": "0.1.0",
   "description": "CLI for Supaflow data integration platform",
   "type": "module",
   "bin": {
-    "supaflow": "./bin/supaflow.mjs"
+    "supaflow": "bin/supaflow.mjs"
   },
   "main": "./dist/index.js",
   "scripts": {
@@ -20,11 +20,16 @@
     "dist",
     "bin"
   ],
-  "keywords": ["supaflow", "cli", "data-integration", "pipeline"],
+  "keywords": [
+    "supaflow",
+    "cli",
+    "data-integration",
+    "pipeline"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/supaflow-labs/supaflow-cli.git"
+    "url": "git+https://github.com/supaflow-labs/supaflow-cli.git"
   },
   "engines": {
     "node": ">=18"
