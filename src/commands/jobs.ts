@@ -109,6 +109,37 @@ export function registerJobsCommands(program: Command): void {
     );
 
   // -----------------------------------------------------------------------
+  // jobs status (lightweight -- 4 fields, for polling)
+  // -----------------------------------------------------------------------
+  jobs
+    .command('status <id>')
+    .description('Check job status (lightweight, for polling)')
+    .action(
+      withAuth(async (ctx: AuthContext, id: string) => {
+        const { supabase, workspaceId, outputOptions } = ctx;
+
+        assertUuid(id, 'Job ID');
+
+        const { data: job, error } = await supabase
+          .from('jobs')
+          .select('id, job_status, status_message, job_response')
+          .eq('id', id)
+          .eq('workspace_id', workspaceId)
+          .single();
+
+        if (error || !job) {
+          throw new CliError(`Job "${id}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        if (outputOptions.json) {
+          printOutput(formatGetJson(job));
+        } else {
+          console.log(`${job.job_status}${job.status_message ? ': ' + job.status_message : ''}`);
+        }
+      }),
+    );
+
+  // -----------------------------------------------------------------------
   // jobs get
   // -----------------------------------------------------------------------
   jobs
