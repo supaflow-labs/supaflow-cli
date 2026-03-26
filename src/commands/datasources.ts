@@ -20,9 +20,10 @@ import { pollJobUntilDone } from '../lib/polling.js';
 import { resolveEncryptedConfigs, isEncryptedValue, encryptValue, encodeEnvelope } from '../lib/encryption.js';
 import { softDeleteRecord } from '../lib/client.js';
 
+// Exclude connector_icon (SVG markup) -- wastes agent context in JSON output
 const DATASOURCE_SELECT = `
   id, name, api_name, state, description,
-  connector_name, connector_type, connector_icon, connector_vendor,
+  connector_name, connector_type, connector_vendor,
   workspace_id, created_at, updated_at, user_access_level,
   source_pipeline_count, destination_pipeline_count, total_pipeline_count
 `;
