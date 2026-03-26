@@ -77,11 +77,15 @@ export function registerAuthCommands(program: Command): void {
       try {
         const config = readConfig();
         const hasKey = !!config.api_key || !!process.env.SUPAFLOW_API_KEY;
+        const wsId = config.workspace_id || process.env.SUPAFLOW_WORKSPACE_ID || null;
+        const wsName = config.workspace_name || (process.env.SUPAFLOW_WORKSPACE_ID ? '(from env)' : null);
+        const wsSource = config.workspace_id ? 'config' : process.env.SUPAFLOW_WORKSPACE_ID ? 'env' : 'none';
         const status = {
           authenticated: hasKey,
           source: config.api_key ? 'config' : process.env.SUPAFLOW_API_KEY ? 'env' : 'none',
-          workspace_id: config.workspace_id || null,
-          workspace_name: config.workspace_name || null,
+          workspace_id: wsId,
+          workspace_name: wsName,
+          workspace_source: wsSource,
         };
 
         if (json) {
@@ -89,10 +93,10 @@ export function registerAuthCommands(program: Command): void {
         } else {
           if (hasKey) {
             console.log(`Authenticated (source: ${status.source})`);
-            if (status.workspace_name) {
-              console.log(`Workspace: ${status.workspace_name} (${status.workspace_id})`);
+            if (wsId) {
+              console.log(`Workspace: ${wsName} (${wsId}) [source: ${wsSource}]`);
             } else {
-              console.log('No workspace selected. Run "supaflow workspaces select".');
+              console.log('No workspace selected. Run "supaflow workspaces select" or set SUPAFLOW_WORKSPACE_ID.');
             }
           } else {
             console.log('Not authenticated. Run "supaflow auth login" or set SUPAFLOW_API_KEY.');

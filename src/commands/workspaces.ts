@@ -43,8 +43,8 @@ export function registerWorkspacesCommands(program: Command): void {
     );
 
   workspaces
-    .command('select [id]')
-    .description('Set active workspace')
+    .command('select [identifier]')
+    .description('Set active workspace (by UUID, api_name, or name)')
     .action(
       withAuthOnly(async (ctx, id?: string) => {
         const { supabase, outputOptions } = ctx;
@@ -83,14 +83,26 @@ export function registerWorkspacesCommands(program: Command): void {
           }
         }
 
-        // Verify workspace exists -- support both UUID and api_name
-        const isId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-        let wsQuery = supabase.from('workspaces_with_access').select('id, name, api_name');
-        wsQuery = isId ? wsQuery.eq('id', id) : wsQuery.eq('api_name', id);
-        const { data: ws, error: wsError } = await wsQuery.single();
+        // Resolve workspace by UUID, api_name, or name
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+        let ws: Record<string, string> | null = null;
 
-        if (wsError || !ws) {
-          throw new CliError(`Workspace "${id}" not found.`, ErrorCode.NOT_FOUND);
+        if (isUuid) {
+          const { data } = await supabase.from('workspaces_with_access').select('id, name, api_name').eq('id', id).single();
+          ws = data;
+        } else {
+          // Try api_name first, then name
+          const { data: byApiName } = await supabase.from('workspaces_with_access').select('id, name, api_name').eq('api_name', id).single();
+          if (byApiName) {
+            ws = byApiName;
+          } else {
+            const { data: byName } = await supabase.from('workspaces_with_access').select('id, name, api_name').ilike('name', id).single();
+            ws = byName;
+          }
+        }
+
+        if (!ws) {
+          throw new CliError(`Workspace "${id}" not found. Use UUID, api_name, or name.`, ErrorCode.NOT_FOUND);
         }
 
         const config = readConfig();
