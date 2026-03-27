@@ -525,7 +525,7 @@ export function registerPipelinesCommands(program: Command): void {
             source: src.name,
             destination: dest.name,
             project: proj.name,
-            objects_selected: objectMappings.length,
+            objects_selected: objectMappings.filter((o: Record<string, unknown>) => o.selected !== false).length,
             state: 'active',
           }));
         } else {
