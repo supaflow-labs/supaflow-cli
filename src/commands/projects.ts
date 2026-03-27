@@ -16,8 +16,8 @@ export function registerProjectsCommands(program: Command): void {
         const { supabase, workspaceId, outputOptions } = ctx;
 
         const { data, error } = await supabase
-          .from('projects')
-          .select('id, name, api_name, type, state, warehouse_datasource_id, created_at')
+          .from('projects_with_access')
+          .select('id, name, api_name, type, state, warehouse_datasource_id, warehouse_name, warehouse_connector_name, pipeline_count, created_at')
           .eq('workspace_id', workspaceId)
           .neq('state', 'deleted')
           .order('created_at', { ascending: false });
@@ -29,11 +29,13 @@ export function registerProjectsCommands(program: Command): void {
           printOutput(formatListJson(rows, rows.length, rows.length, 0));
         } else {
           if (rows.length === 0) { console.log('No projects found.'); return; }
-          const headers = ['ID', 'NAME', 'TYPE', 'STATE'];
+          const headers = ['ID', 'NAME', 'DESTINATION', 'TYPE', 'PIPELINES', 'STATE'];
           const tableRows = rows.map((p) => [
             truncateUuid(p.id),
             p.name,
+            p.warehouse_name || '',
             p.type || '',
+            String(p.pipeline_count ?? 0),
             p.state || '',
           ]);
           printOutput(formatTable(headers, tableRows));

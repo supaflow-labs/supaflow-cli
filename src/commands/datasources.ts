@@ -35,6 +35,7 @@ const DATASOURCE_GET_SELECT = `
   id, name, api_name, state, description,
   connector_name, connector_type, connector_vendor,
   connector_version_id,
+  connector_version_capabilities_config,
   workspace_id, created_at, updated_at, user_access_level,
   source_pipeline_count, destination_pipeline_count, total_pipeline_count,
   configs
@@ -189,7 +190,10 @@ export function registerDatasourcesCommands(program: Command): void {
 
         if (outputOptions.json) {
           // Exclude connector_version_id from JSON output (internal field)
-          const { connector_version_id: _cvid, ...rest } = data;
+          const { connector_version_id: _cvid, connector_version_capabilities_config: capabilities, ...rest } = data;
+          if (capabilities) {
+            (rest as Record<string, unknown>).capabilities = capabilities;
+          }
           printOutput(formatGetJson(rest));
         } else {
           console.log(`Name:       ${data.name}`);
