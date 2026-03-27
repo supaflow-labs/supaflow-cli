@@ -14,7 +14,7 @@ const program = new Command();
 program
   .name('supaflow')
   .description('CLI for Supaflow data integration platform')
-  .version('0.1.5')
+  .version('0.1.6')
   .option('--json', 'Output as JSON')
   .option('--workspace <id>', 'Override active workspace')
   .option('--api-key <key>', 'Override stored API key')
