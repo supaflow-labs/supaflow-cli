@@ -143,7 +143,7 @@ export function registerSchedulesCommands(program: Command): void {
           const idCol = target.targetType === 'pipeline' ? 'pipeline_id' : 'id';
           const nameCol = target.targetType === 'pipeline' ? 'pipeline_api_name' : 'api_name';
 
-          let resolveQuery = supabase.from(table).select(idCol).eq(nameCol, targetId).eq('workspace_id', workspaceId);
+          const resolveQuery = supabase.from(table).select(idCol).eq(nameCol, targetId).eq('workspace_id', workspaceId);
           const { data, error } = await resolveQuery.limit(1).single();
           if (error || !data) {
             throw new CliError(`${target.targetType} "${targetId}" not found.`, ErrorCode.NOT_FOUND);
@@ -231,7 +231,7 @@ export function registerSchedulesCommands(program: Command): void {
             const idCol = target.targetType === 'pipeline' ? 'pipeline_id' : 'id';
             const nameCol = target.targetType === 'pipeline' ? 'pipeline_api_name' : 'api_name';
 
-            let resolveQuery = supabase.from(table).select(idCol).eq(nameCol, targetId).eq('workspace_id', workspaceId);
+            const resolveQuery = supabase.from(table).select(idCol).eq(nameCol, targetId).eq('workspace_id', workspaceId);
             const { data, error } = await resolveQuery.limit(1).single();
             if (error || !data) {
               throw new CliError(`${target.targetType} "${targetId}" not found.`, ErrorCode.NOT_FOUND);

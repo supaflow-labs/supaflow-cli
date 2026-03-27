@@ -593,7 +593,7 @@ Schedules resolve by **name** or **UUID** (not api_name), since schedule names a
 
 **"Invalid, revoked, or expired API key"** -- The API key was revoked or the Clerk organization changed. Create a new key in **Settings > API Keys**.
 
-**"Bootstrap endpoint unavailable"** -- The CLI can't reach `app.supa-flow.io` to exchange your API key for a session token. Check your network. For local development, set `SUPAFLOW_SUPABASE_URL` and `SUPAFLOW_SUPABASE_ANON_KEY` environment variables to bypass the bootstrap endpoint.
+**"Bootstrap endpoint unavailable"** -- The CLI can't reach `app.supa-flow.io` to exchange your API key for a session token. Check your network. For local development, you can bypass the bootstrap endpoint by setting `SUPAFLOW_SUPABASE_URL` and `SUPAFLOW_SUPABASE_ANON_KEY` -- but note that `SUPAFLOW_API_KEY` must then be a valid Supabase JWT (not an `ak_` API key), since the bootstrap token-exchange step is skipped. This path is intended for development and testing against local or custom Supabase instances, not as a general fallback.
 
 **"configs cannot be NULL or empty"** -- The datasource test command reads stored configs. If the datasource was created with empty configs, edit it first with valid connection details.
 

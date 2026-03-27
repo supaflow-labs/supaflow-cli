@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { PropertyForEnv, PropertyGroup } from './envfile.js';
+import type { PropertyGroup } from './envfile.js';
 import { CliError, ErrorCode } from './errors.js';
 
 export interface ConnectorInfo {

@@ -57,13 +57,20 @@ export function registerWorkspacesCommands(program: Command): void {
 
           if (error) throw error;
           if (!data || data.length === 0) {
-            console.log('No workspaces available.');
-            return;
+            throw new CliError('No workspaces available.', ErrorCode.NOT_FOUND);
           }
 
           if (data.length === 1) {
             id = data[0].id;
-            console.log(`Auto-selected workspace: ${data[0].name || data[0].api_name}`);
+            if (!outputOptions.json) {
+              console.log(`Auto-selected workspace: ${data[0].name || data[0].api_name}`);
+            }
+          } else if (outputOptions.json) {
+            // In JSON mode, cannot prompt interactively -- require an identifier
+            throw new CliError(
+              `Multiple workspaces available. Pass a workspace name, api_name, or UUID. Options: ${data.map((ws) => ws.api_name || ws.name).join(', ')}`,
+              ErrorCode.INVALID_INPUT,
+            );
           } else {
             console.log('Available workspaces:');
             data.forEach((ws, i) => {

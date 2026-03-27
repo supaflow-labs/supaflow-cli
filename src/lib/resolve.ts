@@ -15,11 +15,14 @@ export async function resolveIdentifier(
   apiNameColumn: string = 'api_name',
   workspaceId?: string,
 ): Promise<string> {
+  let query = supabase.from(table).select(idColumn);
+
   if (isUuid(identifier)) {
-    return identifier;
+    query = query.eq(idColumn, identifier);
+  } else {
+    query = query.eq(apiNameColumn, identifier);
   }
 
-  let query = supabase.from(table).select(idColumn).eq(apiNameColumn, identifier);
   if (workspaceId) {
     query = query.eq('workspace_id', workspaceId);
   }
@@ -27,7 +30,7 @@ export async function resolveIdentifier(
 
   if (error || !data) {
     throw new CliError(
-      `Could not resolve "${identifier}" in ${table}. Use a UUID or valid api_name.`,
+      `"${identifier}" not found. Use a valid UUID or api_name.`,
       ErrorCode.NOT_FOUND,
     );
   }

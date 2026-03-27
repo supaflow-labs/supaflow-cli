@@ -12,12 +12,11 @@ import {
   groupAndSortProperties,
   mergeEnvWithSchema,
   generateApiName,
-  type ConnectorProperty,
 } from '../lib/connector.js';
 import { parseEnvFile, extractHeader, resolveEnvVars, writeEnvFile } from '../lib/envfile.js';
 import { shouldShowProperty, filterVisibleFormValues, validateProperty } from '../lib/visibility.js';
 import { pollJobUntilDone } from '../lib/polling.js';
-import { resolveEncryptedConfigs, isEncryptedValue, encryptValue, encodeEnvelope } from '../lib/encryption.js';
+import { resolveEncryptedConfigs, encryptValue, encodeEnvelope } from '../lib/encryption.js';
 import { softDeleteRecord } from '../lib/client.js';
 
 // Exclude connector_icon (SVG markup) and configs -- wastes agent context in list output
@@ -190,7 +189,7 @@ export function registerDatasourcesCommands(program: Command): void {
 
         if (outputOptions.json) {
           // Exclude connector_version_id from JSON output (internal field)
-          const { connector_version_id: _, ...rest } = data;
+          const { connector_version_id: _cvid, ...rest } = data;
           printOutput(formatGetJson(rest));
         } else {
           console.log(`Name:       ${data.name}`);

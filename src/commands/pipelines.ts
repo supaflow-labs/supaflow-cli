@@ -421,88 +421,95 @@ export function registerPipelinesCommands(program: Command): void {
           throw new CliError(`Failed to create pipeline: ${createError.message}`, ErrorCode.API_ERROR);
         }
 
-        // 8. Trigger schema discovery on source datasource
-        if (!outputOptions.json) {
-          process.stderr.write('Discovering source schema...\n');
-        }
-
-        const { data: discoveryJobId, error: discoveryError } = await supabase.rpc('create_datasource_job', {
-          p_datasource_id: src.id,
-          p_job_type: 'datasource_schema_refresh',
-          p_force_refresh: false,
-        });
-
-        if (discoveryError) {
-          throw new CliError(`Schema discovery failed: ${discoveryError.message}`, ErrorCode.API_ERROR);
-        }
-
-        if (discoveryJobId) {
-          const discoveryResult = await pollJobUntilDone(supabase, discoveryJobId as string);
-          if (!discoveryResult.success) {
-            throw new CliError(
-              `Schema discovery failed: ${discoveryResult.statusMessage || discoveryResult.jobStatus}`,
-              ErrorCode.API_ERROR,
-            );
-          }
-        }
-
-        // 9. Fetch object selections and save schema mappings
-        if (!outputOptions.json) {
-          process.stderr.write('Selecting objects...\n');
-        }
-
+        // Steps 8-10 can fail after the draft insert. Wrap in try/catch
+        // to clean up the orphaned draft pipeline on any failure.
         let objectMappings: Array<{ fully_qualified_name: string; selected: boolean; fields: unknown }>;
-
-        if (opts.objects) {
-          // User-provided object selection
-          if (!fs.existsSync(opts.objects)) {
-            throw new CliError(`Objects file "${opts.objects}" not found.`, ErrorCode.NOT_FOUND);
-          }
-          objectMappings = JSON.parse(fs.readFileSync(opts.objects, 'utf-8')) as typeof objectMappings;
-        } else {
-          // Default: select all discovered objects (fields: null means snapshot all fields from catalog)
-          const { data: catalog, error: catalogError } = await supabase
-            .from('source_metadata_catalog')
-            .select('fully_qualified_name, source_metadata')
-            .eq('datasource_id', src.id)
-            .eq('deleted', false);
-
-          if (catalogError) {
-            throw new CliError(`Failed to fetch source catalog: ${catalogError.message}`, ErrorCode.API_ERROR);
+        try {
+          // 8. Trigger schema discovery on source datasource
+          if (!outputOptions.json) {
+            process.stderr.write('Discovering source schema...\n');
           }
 
-          objectMappings = (catalog || []).map((obj) => ({
-            fully_qualified_name: obj.fully_qualified_name as string,
-            selected: true,
-            fields: null,
-          }));
+          const { data: discoveryJobId, error: discoveryError } = await supabase.rpc('create_datasource_job', {
+            p_datasource_id: src.id,
+            p_job_type: 'datasource_schema_refresh',
+            p_force_refresh: false,
+          });
 
-          if (objectMappings.length === 0) {
-            throw new CliError(
-              'No objects discovered in source. Run "supaflow datasources refresh <source>" first.',
-              ErrorCode.INVALID_INPUT,
-            );
+          if (discoveryError) {
+            throw new CliError(`Schema discovery failed: ${discoveryError.message}`, ErrorCode.API_ERROR);
           }
-        }
 
-        const { error: mappingError } = await supabase.rpc('save_pipeline_metadata_mappings', {
-          p_pipeline_id: pipeline.id,
-          p_datasource_id: src.id,
-          p_mappings: objectMappings,
-        });
+          if (discoveryJobId) {
+            const discoveryResult = await pollJobUntilDone(supabase, discoveryJobId as string);
+            if (!discoveryResult.success) {
+              throw new CliError(
+                `Schema discovery failed: ${discoveryResult.statusMessage || discoveryResult.jobStatus}`,
+                ErrorCode.API_ERROR,
+              );
+            }
+          }
 
-        if (mappingError) {
-          throw new CliError(`Failed to save object selections: ${mappingError.message}`, ErrorCode.API_ERROR);
-        }
+          // 9. Fetch object selections and save schema mappings
+          if (!outputOptions.json) {
+            process.stderr.write('Selecting objects...\n');
+          }
 
-        // 10. Activate pipeline (draft -> active)
-        const { error: activateError } = await supabase
-          .from('pipelines')
-          .update({ state: 'active', updated_by: userId })
-          .eq('id', pipeline.id);
+          if (opts.objects) {
+            // User-provided object selection
+            if (!fs.existsSync(opts.objects)) {
+              throw new CliError(`Objects file "${opts.objects}" not found.`, ErrorCode.NOT_FOUND);
+            }
+            objectMappings = JSON.parse(fs.readFileSync(opts.objects, 'utf-8')) as typeof objectMappings;
+          } else {
+            // Default: select all discovered objects (fields: null means snapshot all fields from catalog)
+            const { data: catalog, error: catalogError } = await supabase
+              .from('source_metadata_catalog')
+              .select('fully_qualified_name, source_metadata')
+              .eq('datasource_id', src.id)
+              .eq('deleted', false);
 
-        if (activateError) {
-          throw new CliError(`Failed to activate pipeline: ${activateError.message}`, ErrorCode.API_ERROR);
+            if (catalogError) {
+              throw new CliError(`Failed to fetch source catalog: ${catalogError.message}`, ErrorCode.API_ERROR);
+            }
+
+            objectMappings = (catalog || []).map((obj) => ({
+              fully_qualified_name: obj.fully_qualified_name as string,
+              selected: true,
+              fields: null,
+            }));
+
+            if (objectMappings.length === 0) {
+              throw new CliError(
+                'No objects discovered in source. Run "supaflow datasources refresh <source>" first.',
+                ErrorCode.INVALID_INPUT,
+              );
+            }
+          }
+
+          const { error: mappingError } = await supabase.rpc('save_pipeline_metadata_mappings', {
+            p_pipeline_id: pipeline.id,
+            p_datasource_id: src.id,
+            p_mappings: objectMappings,
+          });
+
+          if (mappingError) {
+            throw new CliError(`Failed to save object selections: ${mappingError.message}`, ErrorCode.API_ERROR);
+          }
+
+          // 10. Activate pipeline (draft -> active)
+          const { error: activateError } = await supabase
+            .from('pipelines')
+            .update({ state: 'active', updated_by: userId })
+            .eq('id', pipeline.id);
+
+          if (activateError) {
+            throw new CliError(`Failed to activate pipeline: ${activateError.message}`, ErrorCode.API_ERROR);
+          }
+        } catch (err) {
+          // Clean up the orphaned draft pipeline
+          await supabase.from('pipelines').update({ state: 'deleted' }).eq('id', pipeline.id);
+          throw err;
         }
 
         if (outputOptions.json) {

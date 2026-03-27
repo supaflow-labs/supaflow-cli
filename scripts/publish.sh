@@ -27,7 +27,10 @@ if [[ "$BRANCH" != "main" ]]; then
   exit 1
 fi
 
-# Run tests
+# Run lint and tests
+echo "Running lint..."
+npm run lint
+
 echo "Running tests..."
 npm test
 
