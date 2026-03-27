@@ -20,12 +20,25 @@ import { pollJobUntilDone } from '../lib/polling.js';
 import { resolveEncryptedConfigs, isEncryptedValue, encryptValue, encodeEnvelope } from '../lib/encryption.js';
 import { softDeleteRecord } from '../lib/client.js';
 
-// Exclude connector_icon (SVG markup) -- wastes agent context in JSON output
-const DATASOURCE_SELECT = `
+// Exclude connector_icon (SVG markup) and configs -- wastes agent context in list output
+const DATASOURCE_LIST_SELECT = `
   id, name, api_name, state, description,
   connector_name, connector_type, connector_vendor,
   workspace_id, created_at, updated_at, user_access_level,
   source_pipeline_count, destination_pipeline_count, total_pipeline_count
+`;
+
+// Get includes configs so agents can inspect datasource configuration.
+// Sensitive values are stored as encrypted envelopes { v, fp, data } --
+// only the pipeline agent has the private key, so they are safe to return as-is.
+// This also enables edit to send unchanged envelopes back without re-encryption.
+const DATASOURCE_GET_SELECT = `
+  id, name, api_name, state, description,
+  connector_name, connector_type, connector_vendor,
+  connector_version_id,
+  workspace_id, created_at, updated_at, user_access_level,
+  source_pipeline_count, destination_pipeline_count, total_pipeline_count,
+  configs
 `;
 
 export function registerDatasourcesCommands(program: Command): void {
@@ -45,7 +58,7 @@ export function registerDatasourcesCommands(program: Command): void {
 
         let query = supabase
           .from('datasources_with_access')
-          .select(DATASOURCE_SELECT, { count: 'exact' })
+          .select(DATASOURCE_LIST_SELECT, { count: 'exact' })
           .eq('workspace_id', workspaceId)
           .neq('state', 'deleted')
           .range(offset, offset + limit - 1)
@@ -83,13 +96,14 @@ export function registerDatasourcesCommands(program: Command): void {
   datasources
     .command('get <identifier>')
     .description('Get datasource details')
+    .option('--output <file>', 'Export as env file (for editing with datasources edit)')
     .action(
-      withAuth(async (ctx: AuthContext, identifier: string) => {
+      withAuth(async (ctx: AuthContext, identifier: string, opts: { output?: string }) => {
         const { supabase, workspaceId, outputOptions } = ctx;
 
         let query = supabase
           .from('datasources_with_access')
-          .select(DATASOURCE_SELECT)
+          .select(DATASOURCE_GET_SELECT)
           .eq('workspace_id', workspaceId);
 
         if (isUuid(identifier)) {
@@ -103,8 +117,81 @@ export function registerDatasourcesCommands(program: Command): void {
           throw new CliError(`Datasource "${identifier}" not found.`, ErrorCode.NOT_FOUND);
         }
 
+        // --output: export as env file with current values pre-filled
+        if (opts.output) {
+          const properties = await fetchConnectorProperties(supabase, data.connector_version_id);
+          const nonOAuth = filterNonOAuth(properties);
+          const groups = groupAndSortProperties(nonOAuth);
+          const configs = (data.configs || {}) as Record<string, unknown>;
+
+          // Build env file with current values filled in
+          const lines: string[] = [];
+          lines.push(`# Supaflow Datasource: ${data.name}`);
+          lines.push(`# Connector: ${data.connector_type}`);
+          lines.push(`# API Name: ${data.api_name}`);
+          lines.push(`# Description: ${data.description || `${data.connector_name} datasource`}`);
+
+          for (const group of groups) {
+            lines.push('');
+            lines.push(`# === ${group.name} ===`);
+            lines.push('');
+            for (const prop of group.properties) {
+              const annotations: string[] = [];
+              annotations.push(prop.required ? 'required' : 'optional');
+              if (prop.sensitive) annotations.push('sensitive');
+              if (prop.hidden) annotations.push('hidden');
+              if (prop.defaultValue != null) annotations.push(`default: ${prop.defaultValue}`);
+              if (prop.enumValues && prop.enumValues.length > 0) {
+                annotations.push(`values: ${prop.enumValues.join('|')}`);
+              }
+              lines.push(`# ${prop.label} (${annotations.join(', ')})`);
+
+              // Fill with current value from configs
+              const currentValue = configs[prop.name];
+              let valueStr = '';
+              if (currentValue !== null && currentValue !== undefined) {
+                if (
+                  typeof currentValue === 'object' &&
+                  !Array.isArray(currentValue) &&
+                  'v' in (currentValue as Record<string, unknown>) &&
+                  'fp' in (currentValue as Record<string, unknown>) &&
+                  'data' in (currentValue as Record<string, unknown>)
+                ) {
+                  // Encrypted envelope -- encode as enc: format so edit can send it back
+                  valueStr = encodeEnvelope(currentValue as { v: number; fp: string; data: string });
+                } else {
+                  valueStr = String(currentValue);
+                }
+              } else if (prop.defaultValue != null) {
+                valueStr = String(prop.defaultValue);
+              }
+
+              lines.push(`${prop.name}=${valueStr}`);
+            }
+          }
+          lines.push('');
+
+          const filePath = opts.output;
+          fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+
+          if (outputOptions.json) {
+            printOutput(formatGetJson({
+              file: filePath,
+              name: data.name,
+              api_name: data.api_name,
+              connector: data.connector_type,
+            }));
+          } else {
+            console.log(`Exported ${filePath} with current configuration.`);
+            console.log(`Edit values, then run: supaflow datasources edit ${data.api_name} --from ${filePath}`);
+          }
+          return;
+        }
+
         if (outputOptions.json) {
-          printOutput(formatGetJson(data));
+          // Exclude connector_version_id from JSON output (internal field)
+          const { connector_version_id: _, ...rest } = data;
+          printOutput(formatGetJson(rest));
         } else {
           console.log(`Name:       ${data.name}`);
           console.log(`ID:         ${data.id}`);
@@ -112,6 +199,20 @@ export function registerDatasourcesCommands(program: Command): void {
           console.log(`Connector:  ${data.connector_name} (${data.connector_type})`);
           console.log(`State:      ${data.state}`);
           console.log(`Pipelines:  ${data.total_pipeline_count || 0}`);
+          if (data.configs && typeof data.configs === 'object') {
+            console.log(`\nConfiguration:`);
+            for (const [key, value] of Object.entries(data.configs as Record<string, unknown>)) {
+              if (value === null || value === undefined || value === '') continue;
+              if (typeof value === 'object' && !Array.isArray(value)) {
+                const obj = value as Record<string, unknown>;
+                if ('v' in obj && 'fp' in obj && 'data' in obj) {
+                  console.log(`  ${key}: [encrypted]`);
+                  continue;
+                }
+              }
+              console.log(`  ${key}: ${value}`);
+            }
+          }
         }
       }),
     );
@@ -569,7 +670,7 @@ export function registerDatasourcesCommands(program: Command): void {
           process.stderr.write('Testing connection... (this may take up to a minute)\n');
         }
 
-        // Read stored configs from datasources table (view doesn't include configs)
+        // Read stored configs from base datasources table (unredacted, for RPC submission)
         const { data: dsRow, error: configError } = await supabase
           .from('datasources')
           .select('configs')

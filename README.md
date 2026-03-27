@@ -11,9 +11,9 @@ CLI for the [Supaflow](https://www.supa-flow.io) data integration platform. Mana
 | `connectors` | list | Browse available connector types |
 | `datasources` | list, get, init, create, catalog, test, edit, delete, disable, enable, refresh | Full datasource lifecycle |
 | `projects` | list, create | Manage pipeline projects |
-| `pipelines` | list, get, create, edit, delete, disable, enable, sync, schema (list, select) | Full pipeline lifecycle |
+| `pipelines` | list, get, create, edit, delete, disable, enable, sync, schema (list, add, select) | Full pipeline lifecycle |
 | `schedules` | list, create, edit, delete, enable, disable, run, history | Cron-based scheduling |
-| `jobs` | list, get, logs | Monitor async job execution |
+| `jobs` | list, get, status, logs | Monitor async job execution |
 | `encrypt` | (value or --file) | Encrypt sensitive values |
 
 ## Prerequisites
@@ -145,11 +145,11 @@ supaflow connectors list
 Output shows connector type (used in `--connector` flag), display name, and version:
 
 ```
-TYPE         NAME           VERSION
-POSTGRES     PostgreSQL     1.0.46
-SNOWFLAKE    Snowflake      1.0.46
-S3           S3             1.0.46
-HUBSPOT      HubSpot        1.0.46
+TYPE         NAME           VERSION    CAPABILITIES
+POSTGRES     PostgreSQL     1.0.46     REPLICATION_SOURCE, REPLICATION_DESTINATION
+SNOWFLAKE    Snowflake      1.0.46     REPLICATION_DESTINATION, DBT_DATASOURCE, REVERSE_ETL_SOURCE
+S3           S3             1.0.46     REPLICATION_DESTINATION
+HUBSPOT      HubSpot        1.0.46     REPLICATION_SOURCE
 ...
 ```
 
@@ -168,6 +168,9 @@ Datasource creation is a two-step process: scaffold an env file, then create fro
 ```bash
 supaflow datasources init --connector postgres --name "My Postgres"
 # Creates: my_postgres.env
+
+# Or specify an output file path
+supaflow datasources init --connector postgres --name "My Postgres" --output my_source.env
 ```
 
 The generated file contains all connector properties with annotations:
@@ -237,7 +240,8 @@ The exported `objects.json` can be edited (toggle `"selected": false` for object
 
 ```bash
 supaflow datasources list                          # List all datasources
-supaflow datasources get <identifier>              # View details (by UUID or api_name)
+supaflow datasources get <identifier>              # View details + config (by UUID or api_name)
+supaflow datasources get <identifier> --output <file>  # Export config as env file (for editing)
 supaflow datasources test <identifier>             # Re-test connection
 supaflow datasources edit <identifier> --from <file>  # Update configs from env file (tests first)
 supaflow datasources edit <identifier> --from <file> --skip-test  # Update without testing
@@ -277,7 +281,7 @@ supaflow projects list
 supaflow projects create --name "My Project" --destination snowflake_prod
 ```
 
-The `--destination` flag accepts a datasource UUID or api_name. The project type defaults to `pipeline`.
+The `--destination` flag accepts a datasource UUID or api_name. Optional: `--type <type>` (values: `pipeline`, `ingestion`, `transformation`, `activation`; default: `pipeline`).
 
 ---
 
@@ -379,9 +383,13 @@ supaflow pipelines sync <identifier> --full-resync
 supaflow pipelines sync <identifier> --full-resync --reset-target
 ```
 
-The sync command returns a job ID. Monitor it with:
+The sync command returns a job ID. Monitor it with lightweight polling, then get full details:
 
 ```bash
+# Lightweight polling (4 fields, fast)
+supaflow jobs status <job-id>
+
+# Full details with per-object metrics (after job completes)
 supaflow jobs get <job-id>
 ```
 
@@ -396,6 +404,9 @@ supaflow pipelines schema list <identifier>
 # List all objects (including deselected)
 supaflow pipelines schema list <identifier> --all
 
+# Add a single object by name (no file needed)
+supaflow pipelines schema add <identifier> <object-name>
+
 # Update selections from a JSON file
 supaflow pipelines schema select <identifier> --from objects.json
 ```
@@ -408,9 +419,13 @@ supaflow pipelines list --state active             # Filter by state
 supaflow pipelines get <identifier>                # View details
 supaflow pipelines edit <identifier> --config <file>  # Update config
 supaflow pipelines edit <identifier> --name "New Name"  # Update name
+supaflow pipelines edit <identifier> --description "..."  # Update description
+supaflow pipelines list --sort last_sync_at --order desc  # Sort by last sync
+supaflow pipelines list --limit 10 --offset 0     # Paginate results
 supaflow pipelines disable <identifier>            # Set state to inactive
 supaflow pipelines enable <identifier>             # Set state to active
-supaflow pipelines delete <identifier>             # Soft delete
+supaflow pipelines delete <identifier>             # Soft delete (prompts for confirmation)
+supaflow pipelines delete <identifier> --yes       # Soft delete (skip confirmation)
 ```
 
 ---
@@ -470,14 +485,16 @@ Jobs are async execution records for pipeline syncs, datasource tests, and schem
 # List recent jobs
 supaflow jobs list
 
-# Filter by status
+# Filter by status, type, or pipeline
 supaflow jobs list --filter status=running
 supaflow jobs list --filter status=failed
-
-# Filter by pipeline
+supaflow jobs list --filter type=pipeline_run
 supaflow jobs list --filter pipeline=<pipeline-uuid>
 
-# View job details with per-object metrics
+# Lightweight status check (for polling)
+supaflow jobs status <job-id>
+
+# Full details with per-object metrics (after terminal state)
 supaflow jobs get <job-id>
 ```
 
@@ -566,7 +583,7 @@ supaflow pipelines get 8a3f1b2c-4d5e-6f7a-8b9c-0d1e2f3a4b5c
 supaflow pipelines get production_to_warehouse
 ```
 
-Schedules resolve by **name** (not api_name), since schedule names are unique per workspace. All other resources resolve by `api_name`.
+Schedules resolve by **name** or **UUID** (not api_name), since schedule names are unique per workspace. All other resources resolve by `api_name` or UUID.
 
 ## Troubleshooting
 
