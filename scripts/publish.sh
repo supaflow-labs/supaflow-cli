@@ -50,7 +50,7 @@ npm run build
 npm test
 
 # Commit and tag
-git add package.json src/index.ts
+git add package.json package-lock.json src/index.ts
 git commit -m "Release v$NEW_VERSION"
 git tag "v$NEW_VERSION"
 

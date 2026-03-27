@@ -507,8 +507,13 @@ export function registerPipelinesCommands(program: Command): void {
             throw new CliError(`Failed to activate pipeline: ${activateError.message}`, ErrorCode.API_ERROR);
           }
         } catch (err) {
-          // Clean up the orphaned draft pipeline
-          await supabase.from('pipelines').update({ state: 'deleted' }).eq('id', pipeline.id);
+          // Clean up the orphaned draft pipeline using softDeleteRecord
+          // (direct PostgREST PATCH with return=minimal avoids RLS/RETURNING issue)
+          try {
+            await softDeleteRecord(conn, 'pipelines', pipeline.id);
+          } catch {
+            // Cleanup is best-effort; the original error is more important
+          }
           throw err;
         }
 

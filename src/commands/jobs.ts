@@ -188,7 +188,7 @@ export function registerJobsCommands(program: Command): void {
         console.log(`Job:      ${job.id}`);
         console.log(`Type:     ${job.job_type || '-'}`);
         console.log(`Status:   ${job.job_status || '-'}`);
-        console.log(`Pipeline: ${job.pipeline_id || '-'}`);
+        console.log(`${(job.reference_type === 'pipeline' ? 'Pipeline' : 'Reference')}: ${job.reference_id || '-'}`);
         console.log(`Created:  ${relativeTime(job.created_at)}`);
         console.log(`Updated:  ${relativeTime(job.updated_at)}`);
 
