@@ -12,7 +12,7 @@ import {
 import { resolveIdentifier, isUuid } from '../lib/resolve.js';
 import { softDeleteRecord } from '../lib/client.js';
 import { CliError, ErrorCode } from '../lib/errors.js';
-import { createPipelineConfig } from '../lib/pipeline-config.js';
+import { createPipelineConfig, generateCapabilityAwareConfig, generateConfigJson, generateConfigReference } from '../lib/pipeline-config.js';
 import { generateApiName } from '../lib/connector.js';
 import { pollJobUntilDone } from '../lib/polling.js';
 
@@ -76,6 +76,56 @@ function normalizePipelineFull(row: PipelineRow) {
     ...normalizePipeline(row),
     configs: row.pipeline_configs,
   };
+}
+
+// Shared helper: resolve source, project, and destination datasource.
+// Used by both `init` and `create` to guarantee same destination resolution.
+const DS_CAPS_SELECT = 'id, name, api_name, connector_type, connector_version_capabilities_config';
+
+async function resolveSourceProjectDestination(
+  supabase: ReturnType<typeof import('@supabase/supabase-js').createClient>,
+  workspaceId: string,
+  sourceIdentifier: string,
+  projectIdentifier: string,
+) {
+  // Resolve source
+  let srcQuery = supabase
+    .from('datasources_with_access')
+    .select(DS_CAPS_SELECT)
+    .eq('workspace_id', workspaceId);
+  srcQuery = isUuid(sourceIdentifier) ? srcQuery.eq('id', sourceIdentifier) : srcQuery.eq('api_name', sourceIdentifier);
+  const { data: src, error: srcError } = await srcQuery.single();
+  if (srcError || !src) {
+    throw new CliError(`Source datasource "${sourceIdentifier}" not found.`, ErrorCode.NOT_FOUND);
+  }
+
+  // Resolve project
+  let projQuery = supabase
+    .from('projects')
+    .select('id, name, api_name, warehouse_datasource_id')
+    .eq('workspace_id', workspaceId)
+    .neq('state', 'deleted');
+  projQuery = isUuid(projectIdentifier) ? projQuery.eq('id', projectIdentifier) : projQuery.eq('api_name', projectIdentifier);
+  const { data: proj, error: projError } = await projQuery.single();
+  if (projError || !proj) {
+    throw new CliError(`Project "${projectIdentifier}" not found.`, ErrorCode.NOT_FOUND);
+  }
+
+  // Resolve destination from project
+  const destId = proj.warehouse_datasource_id;
+  if (!destId) {
+    throw new CliError(`Project "${proj.name}" has no destination datasource configured.`, ErrorCode.INVALID_INPUT);
+  }
+  const { data: dest, error: destError } = await supabase
+    .from('datasources_with_access')
+    .select(DS_CAPS_SELECT)
+    .eq('id', destId)
+    .single();
+  if (destError || !dest) {
+    throw new CliError(`Project destination datasource not found (ID: ${destId}).`, ErrorCode.NOT_FOUND);
+  }
+
+  return { src, proj, dest };
 }
 
 export function registerPipelinesCommands(program: Command): void {
@@ -312,6 +362,57 @@ export function registerPipelinesCommands(program: Command): void {
       }),
     );
 
+  // init -- generate capability-aware pipeline config
+  pipelines
+    .command('init')
+    .description('Generate a pipeline config file based on source and project destination capabilities')
+    .requiredOption('--source <identifier>', 'Source datasource (ID or api_name)')
+    .requiredOption('--project <identifier>', 'Project (ID or api_name; destination resolved from project)')
+    .option('--output <file>', 'Output file path (default: pipeline-config.json)', 'pipeline-config.json')
+    .action(
+      withAuth(async (ctx: AuthContext, opts: { source: string; project: string; output: string }) => {
+        const { supabase, workspaceId, outputOptions } = ctx;
+
+        // Resolve source, project, and destination (same path as create)
+        const { src, dest, proj } = await resolveSourceProjectDestination(supabase, workspaceId, opts.source, opts.project);
+
+        const srcCaps = src.connector_version_capabilities_config || null;
+        const destCaps = dest.connector_version_capabilities_config || null;
+
+        // Generate capability-aware config
+        const config = generateCapabilityAwareConfig(srcCaps, destCaps, src.connector_type);
+
+        // Write valid JSON config file
+        const configJson = generateConfigJson(config);
+        fs.writeFileSync(opts.output, configJson, 'utf-8');
+
+        // Write reference file with comments explaining each field
+        const refPath = opts.output.endsWith('.json')
+          ? opts.output.replace(/\.json$/, '-reference.txt')
+          : `${opts.output}-reference.txt`;
+        const reference = generateConfigReference(config, srcCaps, destCaps);
+        fs.writeFileSync(refPath, reference, 'utf-8');
+
+        if (outputOptions.json) {
+          printOutput(formatGetJson({
+            file: opts.output,
+            reference: refPath,
+            source: src.name,
+            source_type: src.connector_type,
+            destination: dest.name,
+            project: proj.name,
+            pipeline_prefix: config.pipeline_prefix,
+            config,
+          }));
+        } else {
+          console.log(`Generated ${opts.output} for ${src.name} -> ${dest.name} (project: ${proj.name})`);
+          console.log(`Reference: ${refPath} (explains each field and valid options)`);
+          console.log(`Default prefix: ${config.pipeline_prefix}`);
+          console.log(`Edit the config, then: supaflow pipelines create --source ${src.api_name} --project ${proj.api_name} --config ${opts.output}`);
+        }
+      }),
+    );
+
   // create
   pipelines
     .command('create')
@@ -333,42 +434,8 @@ export function registerPipelinesCommands(program: Command): void {
       }) => {
         const { supabase, workspaceId, outputOptions, conn } = ctx;
 
-        // 1. Resolve source datasource
-        let srcQuery = supabase
-          .from('datasources_with_access')
-          .select('id, name, connector_type')
-          .eq('workspace_id', workspaceId);
-        srcQuery = isUuid(opts.source) ? srcQuery.eq('id', opts.source) : srcQuery.eq('api_name', opts.source);
-        const { data: src, error: srcError } = await srcQuery.single();
-        if (srcError || !src) {
-          throw new CliError(`Source datasource "${opts.source}" not found.`, ErrorCode.NOT_FOUND);
-        }
-
-        // 2. Resolve project (destination comes from project's warehouse_datasource_id)
-        let projQuery = supabase
-          .from('projects')
-          .select('id, name, warehouse_datasource_id')
-          .eq('workspace_id', workspaceId)
-          .neq('state', 'deleted');
-        projQuery = isUuid(opts.project) ? projQuery.eq('id', opts.project) : projQuery.eq('api_name', opts.project);
-        const { data: proj, error: projError } = await projQuery.single();
-        if (projError || !proj) {
-          throw new CliError(`Project "${opts.project}" not found.`, ErrorCode.NOT_FOUND);
-        }
-
-        // 3. Resolve destination from project
-        const destId = proj.warehouse_datasource_id;
-        if (!destId) {
-          throw new CliError(`Project "${proj.name}" has no destination datasource configured.`, ErrorCode.INVALID_INPUT);
-        }
-        const { data: dest, error: destError } = await supabase
-          .from('datasources_with_access')
-          .select('id, name')
-          .eq('id', destId)
-          .single();
-        if (destError || !dest) {
-          throw new CliError(`Project destination datasource not found (ID: ${destId}).`, ErrorCode.NOT_FOUND);
-        }
+        // 1-3. Resolve source, project, and destination (shared with init)
+        const { src, proj, dest } = await resolveSourceProjectDestination(supabase, workspaceId, opts.source, opts.project);
 
         // 4. Get active pipeline version
         const { data: versionData, error: versionError } = await supabase.rpc('get_active_pipeline_version');

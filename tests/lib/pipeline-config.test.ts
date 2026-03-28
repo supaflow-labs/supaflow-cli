@@ -38,4 +38,20 @@ describe('createPipelineConfig', () => {
       expect(config).toHaveProperty(key);
     }
   });
+
+  it('rejects unknown config fields', () => {
+    expect(() => createPipelineConfig({ destinationSchemaPrefix: 'test' })).toThrow(
+      'Unknown pipeline config field(s): destinationSchemaPrefix',
+    );
+  });
+
+  it('rejects multiple unknown fields and lists all of them', () => {
+    expect(() => createPipelineConfig({ foo: 1, bar: 2 })).toThrow(
+      'Unknown pipeline config field(s): foo, bar',
+    );
+  });
+
+  it('accepts valid override keys', () => {
+    expect(() => createPipelineConfig({ pipeline_prefix: 'my_prefix', is_custom_prefix: true })).not.toThrow();
+  });
 });
