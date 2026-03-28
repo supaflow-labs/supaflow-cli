@@ -15,6 +15,7 @@ CLI for the [Supaflow](https://www.supa-flow.io) data integration platform. Mana
 | `schedules` | list, create, edit, delete, enable, disable, run, history | Cron-based scheduling |
 | `jobs` | list, get, status, logs | Monitor async job execution |
 | `encrypt` | (value or --file) | Encrypt sensitive values |
+| `docs` | (topic), --list | Read connector and platform documentation |
 
 ## Prerequisites
 

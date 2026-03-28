@@ -8,6 +8,7 @@ import { registerJobsCommands } from './commands/jobs.js';
 import { registerEncryptCommand } from './commands/encrypt.js';
 import { registerConnectorsCommands } from './commands/connectors.js';
 import { registerSchedulesCommands } from './commands/schedules.js';
+import { registerDocsCommand } from './commands/docs.js';
 
 const program = new Command();
 
@@ -33,5 +34,6 @@ registerJobsCommands(program);
 registerEncryptCommand(program);
 registerConnectorsCommands(program);
 registerSchedulesCommands(program);
+registerDocsCommand(program);
 
 program.parse();
