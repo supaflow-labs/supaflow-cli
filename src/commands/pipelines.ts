@@ -592,6 +592,7 @@ export function registerPipelinesCommands(program: Command): void {
             source: src.name,
             destination: dest.name,
             project: proj.name,
+            pipeline_prefix: pipelineConfig.pipeline_prefix || src.connector_type.toLowerCase(),
             objects_selected: objectMappings.filter((o: Record<string, unknown>) => o.selected !== false).length,
             state: 'active',
           }));
