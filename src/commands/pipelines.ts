@@ -14,7 +14,6 @@ import { softDeleteRecord } from '../lib/client.js';
 import { CliError, ErrorCode } from '../lib/errors.js';
 import { createPipelineConfig, generateCapabilityAwareConfig, generateConfigJson, generateConfigReference } from '../lib/pipeline-config.js';
 import { generateApiName } from '../lib/connector.js';
-import { pollJobUntilDone } from '../lib/polling.js';
 
 interface PipelineRow {
   pipeline_id: string;
@@ -80,7 +79,7 @@ function normalizePipelineFull(row: PipelineRow) {
 
 // Shared helper: resolve source, project, and destination datasource.
 // Used by both `init` and `create` to guarantee same destination resolution.
-const DS_CAPS_SELECT = 'id, name, api_name, connector_type, connector_version_capabilities_config';
+const DS_CAPS_SELECT = 'id, name, api_name, state, connector_type, connector_version_capabilities_config';
 
 async function resolveSourceProjectDestination(
   supabase: ReturnType<typeof import('@supabase/supabase-js').createClient>,
@@ -437,6 +436,13 @@ export function registerPipelinesCommands(program: Command): void {
         // 1-3. Resolve source, project, and destination (shared with init)
         const { src, proj, dest } = await resolveSourceProjectDestination(supabase, workspaceId, opts.source, opts.project);
 
+        if (src.state !== 'active') {
+          throw new CliError(
+            `Source datasource "${src.name}" is "${src.state}". Pipelines can only be created from active sources. Wait for the datasource to become active and run "supaflow datasources refresh ${src.api_name}" before creating the pipeline.`,
+            ErrorCode.INVALID_INPUT,
+          );
+        }
+
         // 4. Get active pipeline version
         const { data: versionData, error: versionError } = await supabase.rpc('get_active_pipeline_version');
         if (versionError || !versionData || versionData.length === 0) {
@@ -488,36 +494,11 @@ export function registerPipelinesCommands(program: Command): void {
           throw new CliError(`Failed to create pipeline: ${createError.message}`, ErrorCode.API_ERROR);
         }
 
-        // Steps 8-10 can fail after the draft insert. Wrap in try/catch
+        // Steps 8-9 can fail after the draft insert. Wrap in try/catch
         // to clean up the orphaned draft pipeline on any failure.
         let objectMappings: Array<{ fully_qualified_name: string; selected: boolean; fields: unknown }>;
         try {
-          // 8. Trigger schema discovery on source datasource
-          if (!outputOptions.json) {
-            process.stderr.write('Discovering source schema...\n');
-          }
-
-          const { data: discoveryJobId, error: discoveryError } = await supabase.rpc('create_datasource_job', {
-            p_datasource_id: src.id,
-            p_job_type: 'datasource_schema_refresh',
-            p_force_refresh: false,
-          });
-
-          if (discoveryError) {
-            throw new CliError(`Schema discovery failed: ${discoveryError.message}`, ErrorCode.API_ERROR);
-          }
-
-          if (discoveryJobId) {
-            const discoveryResult = await pollJobUntilDone(supabase, discoveryJobId as string);
-            if (!discoveryResult.success) {
-              throw new CliError(
-                `Schema discovery failed: ${discoveryResult.statusMessage || discoveryResult.jobStatus}`,
-                ErrorCode.API_ERROR,
-              );
-            }
-          }
-
-          // 9. Fetch object selections and save schema mappings
+          // 8. Fetch object selections and save schema mappings
           if (!outputOptions.json) {
             process.stderr.write('Selecting objects...\n');
           }
