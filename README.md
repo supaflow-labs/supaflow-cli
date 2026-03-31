@@ -410,6 +410,11 @@ supaflow pipelines schema add <identifier> <object-name>
 
 # Update selections from a JSON file
 supaflow pipelines schema select <identifier> --from objects.json
+
+# Roundtrip: export, edit, re-import
+supaflow pipelines schema list <identifier> --all --json > objects.json
+# Edit objects.json (toggle selected: true/false)
+supaflow pipelines schema select <identifier> --from objects.json
 ```
 
 ### Other Pipeline Commands

@@ -9,6 +9,7 @@ import {
   truncateUuid,
   relativeTime,
 } from '../lib/output.js';
+import { readSchemaMappingFile, assertMappingSaveSuccess } from '../lib/schema-file.js';
 import { resolveIdentifier, isUuid } from '../lib/resolve.js';
 import { softDeleteRecord } from '../lib/client.js';
 import { CliError, ErrorCode } from '../lib/errors.js';
@@ -504,11 +505,8 @@ export function registerPipelinesCommands(program: Command): void {
           }
 
           if (opts.objects) {
-            // User-provided object selection
-            if (!fs.existsSync(opts.objects)) {
-              throw new CliError(`Objects file "${opts.objects}" not found.`, ErrorCode.NOT_FOUND);
-            }
-            objectMappings = JSON.parse(fs.readFileSync(opts.objects, 'utf-8')) as typeof objectMappings;
+            // User-provided object selection (strict validation)
+            objectMappings = readSchemaMappingFile(opts.objects);
           } else {
             // Default: select all discovered objects (fields: null means snapshot all fields from catalog)
             const { data: catalog, error: catalogError } = await supabase
@@ -535,7 +533,7 @@ export function registerPipelinesCommands(program: Command): void {
             }
           }
 
-          const { error: mappingError } = await supabase.rpc('save_pipeline_metadata_mappings', {
+          const { data: mappingResult, error: mappingError } = await supabase.rpc('save_pipeline_metadata_mappings', {
             p_pipeline_id: pipeline.id,
             p_datasource_id: src.id,
             p_mappings: objectMappings,
@@ -544,6 +542,9 @@ export function registerPipelinesCommands(program: Command): void {
           if (mappingError) {
             throw new CliError(`Failed to save object selections: ${mappingError.message}`, ErrorCode.API_ERROR);
           }
+
+          // Block activation if any objects failed to save
+          assertMappingSaveSuccess(mappingResult);
 
           // 10. Activate pipeline (draft -> active)
           const { error: activateError } = await supabase
@@ -718,18 +719,16 @@ export function registerPipelinesCommands(program: Command): void {
         });
 
         if (outputOptions.json) {
-          // Compact JSON: object name, selected status, field counts -- no full field arrays
-          const compact = rows.map((r) => {
+          // Import-ready format: raw array consumable by `schema select --from`
+          const importFormat = rows.map((r) => {
             const meta = r.selected_source_metadata as Record<string, unknown> | null;
             return {
-              object: r.source_fully_qualified_name,
+              fully_qualified_name: r.source_fully_qualified_name,
               selected: meta?.selected !== false,
-              total_fields: meta?.total_field_count ?? null,
-              selected_fields: meta?.selected_field_count ?? null,
-              origin: r.selection_origin || null,
+              fields: null,
             };
           });
-          printOutput(formatListJson(compact, compact.length, compact.length, 0));
+          printOutput(JSON.stringify(importFormat, null, 2));
         } else {
           if (rows.length === 0) { console.log('No objects selected.'); return; }
           const headers = ['OBJECT', 'ORIGIN'];
@@ -763,11 +762,7 @@ export function registerPipelinesCommands(program: Command): void {
           throw new CliError(`Pipeline "${identifier}" not found.`, ErrorCode.NOT_FOUND);
         }
 
-        if (!fs.existsSync(opts.from)) {
-          throw new CliError(`File "${opts.from}" not found.`, ErrorCode.NOT_FOUND);
-        }
-
-        const objectMappings = JSON.parse(fs.readFileSync(opts.from, 'utf-8')) as unknown;
+        const objectMappings = readSchemaMappingFile(opts.from);
 
         const pipelineRow = pipeline as { pipeline_id: string; pipeline_name: string; source_datasource_id: string };
 
@@ -781,8 +776,10 @@ export function registerPipelinesCommands(program: Command): void {
           throw new CliError(`Failed to save selections: ${saveError.message}`, ErrorCode.API_ERROR);
         }
 
+        const saveResult = assertMappingSaveSuccess(result);
+
         if (outputOptions.json) {
-          printOutput(formatGetJson(result as Record<string, unknown>));
+          printOutput(formatGetJson(saveResult));
         } else {
           console.log(`Schema selections updated for "${pipelineRow.pipeline_name}".`);
         }
@@ -822,8 +819,10 @@ export function registerPipelinesCommands(program: Command): void {
           throw new CliError(`Failed to add object: ${saveError.message}`, ErrorCode.API_ERROR);
         }
 
+        const saveResult = assertMappingSaveSuccess(result);
+
         if (outputOptions.json) {
-          printOutput(formatGetJson({ object: objectName, ...((result as Record<string, unknown>[])?.[0] || {}) }));
+          printOutput(formatGetJson({ object: objectName, ...saveResult }));
         } else {
           console.log(`Added "${objectName}" to pipeline "${pipelineRow.pipeline_name}".`);
         }
