@@ -683,7 +683,7 @@ export function registerPipelinesCommands(program: Command): void {
 
   schema
     .command('list <identifier>')
-    .description('List selected objects for a pipeline')
+    .description('List selected objects for a pipeline (JSON output is consumable by schema select --from)')
     .option('--all', 'Include deselected objects')
     .action(
       withAuth(async (ctx: AuthContext, identifier: string, opts: { all?: boolean }) => {
@@ -744,7 +744,7 @@ export function registerPipelinesCommands(program: Command): void {
   schema
     .command('select <identifier>')
     .description('Update object selections for a pipeline')
-    .requiredOption('--from <file>', 'JSON file with object selections')
+    .requiredOption('--from <file>', 'JSON file with object selections (use output from schema list --all --json)')
     .action(
       withAuth(async (ctx: AuthContext, identifier: string, opts: { from: string }) => {
         const { supabase, workspaceId, outputOptions } = ctx;
