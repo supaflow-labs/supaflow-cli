@@ -514,8 +514,19 @@ export function registerDatasourcesCommands(program: Command): void {
     .description('List discovered objects for a datasource (or export as objects.json)')
     .option('--output <file>', 'Write selectable objects JSON file for pipeline creation')
     .option('--refresh', 'Trigger schema refresh before listing')
+    .option(
+      '--with-fields',
+      'Include full per-object merged_metadata (with field-level canonical types) in the output. ' +
+        'Default off because the field arrays are large and the pipeline-creation flow does not need them. ' +
+        'Validators / type-aware tooling pass this to source the canonical types directly from Supaflow.',
+    )
     .action(
-      withAuth(async (ctx: AuthContext, identifier: string, opts: { output?: string; refresh?: boolean }) => {
+      withAuth(
+        async (
+          ctx: AuthContext,
+          identifier: string,
+          opts: { output?: string; refresh?: boolean; withFields?: boolean },
+        ) => {
         const { supabase, workspaceId, outputOptions } = ctx;
 
         // Resolve datasource
@@ -575,7 +586,7 @@ export function registerDatasourcesCommands(program: Command): void {
             p_datasource_id: ds.id,
             p_limit: batchSize,
             p_offset: offset,
-            p_include_fields: false,
+            p_include_fields: opts.withFields === true,
           });
 
           if (error) {
@@ -597,24 +608,45 @@ export function registerDatasourcesCommands(program: Command): void {
           return;
         }
 
-        // If --output: write selectable objects JSON for pipeline creation
+        // If --output: write a selectable-objects JSON array. Always includes
+        // the keys ``pipelines create --objects`` requires (fully_qualified_name,
+        // selected, fields). When --with-fields is set, additional keys
+        // (merged_metadata, source_metadata, selected_source_metadata,
+        // catalog_version, updated_at) are appended to each entry. The
+        // schema-file reader (readSchemaMappingFile) only validates the
+        // required keys and silently ignores extras, so the same file is
+        // consumable by validators AND by ``pipelines create --objects``.
         if (opts.output) {
-          const selectableObjects = allObjects.map((obj) => ({
-            fully_qualified_name: obj.fully_qualified_source_object_name,
-            selected: true,
-            fields: null, // null = snapshot all fields from catalog
-          }));
+          const selectableObjects = allObjects.map((obj) => {
+            const base: Record<string, unknown> = {
+              fully_qualified_name: obj.fully_qualified_source_object_name,
+              selected: true,
+              fields: null, // null = snapshot all fields from catalog
+            };
+            if (opts.withFields) {
+              base.catalog_version = obj.catalog_version;
+              base.updated_at = obj.catalog_updated_at;
+              base.merged_metadata = obj.merged_metadata;
+              base.source_metadata = obj.source_metadata;
+              base.selected_source_metadata = obj.selected_source_metadata;
+            }
+            return base;
+          });
 
           fs.writeFileSync(opts.output, JSON.stringify(selectableObjects, null, 2) + '\n', 'utf-8');
 
           if (outputOptions.json) {
-            printOutput(formatGetJson({
-              file: opts.output,
-              datasource: ds.name,
-              objects: selectableObjects.length,
-            }));
+            printOutput(
+              formatGetJson({
+                file: opts.output,
+                datasource: ds.name,
+                objects: selectableObjects.length,
+                with_fields: opts.withFields === true,
+              }),
+            );
           } else {
-            console.log(`Wrote ${selectableObjects.length} objects to ${opts.output}`);
+            const suffix = opts.withFields ? ' (with field metadata)' : '';
+            console.log(`Wrote ${selectableObjects.length} objects${suffix} to ${opts.output}`);
             console.log(`Edit the file to set "selected": false for objects you want to exclude.`);
             console.log(`Then use: supaflow pipelines create ... --objects ${opts.output}`);
           }
@@ -623,11 +655,16 @@ export function registerDatasourcesCommands(program: Command): void {
 
         // Default: list objects in table/JSON format
         if (outputOptions.json) {
-          const objects = allObjects.map((obj) => ({
-            fully_qualified_name: obj.fully_qualified_source_object_name,
-            catalog_version: obj.catalog_version,
-            updated_at: obj.catalog_updated_at,
-          }));
+          const objects = allObjects.map((obj) => {
+            const base = {
+              fully_qualified_name: obj.fully_qualified_source_object_name,
+              catalog_version: obj.catalog_version,
+              updated_at: obj.catalog_updated_at,
+            };
+            return opts.withFields
+              ? { ...base, merged_metadata: obj.merged_metadata }
+              : base;
+          });
           printOutput(formatListJson(objects, objects.length, objects.length, 0));
         } else {
           const headers = ['OBJECT', 'VERSION', 'UPDATED'];
