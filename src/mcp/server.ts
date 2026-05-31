@@ -22,6 +22,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
+  type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -43,7 +44,11 @@ const MAX_OBJECT_PREVIEW_LIMIT = 1000;
 const CLI_ENTRY = process.env.SUPAFLOW_CLI_ENTRY ?? fileURLToPath(import.meta.url);
 
 // ---- shared types (loose: tool args are validated by inputSchema at the MCP layer) ----
-type ToolArgs = Record<string, any>;
+// MCP tools marshal dynamically-typed CLI args / JSON validated by inputSchema at the
+// protocol boundary (deep dynamic access), so a single loose bag type is intentional here.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Json = Record<string, any>;
+type ToolArgs = Json;
 
 interface ToolSpec {
   name: string;
@@ -56,7 +61,7 @@ interface ToolSpec {
   inputSchema?: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
   build?: (args: ToolArgs) => string[];
-  handler?: (args: ToolArgs) => Promise<unknown>;
+  handler?: (args: ToolArgs) => Promise<CallToolResult>;
 }
 
 // ---- argv builder helpers (keep the table declarative + exact) ----
@@ -74,8 +79,8 @@ function multi(argv: string[], flag: string, vals: unknown) {
 function parseJson(text: string, label: string) {
   try {
     return JSON.parse(text || "{}");
-  } catch (err: any) {
-    throw new Error(`Failed to parse ${label} JSON: ${err.message}`);
+  } catch (err) {
+    throw new Error(`Failed to parse ${label} JSON: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -119,7 +124,7 @@ function loadPlan(planId: string) {
   return { paths, plan: parseJson(fs.readFileSync(paths.planFile, "utf8"), "pipeline plan") };
 }
 
-function configSummary(config: Record<string, any>) {
+function configSummary(config: Json) {
   return {
     pipeline_prefix: config?.pipeline_prefix,
     ingestion_mode: config?.ingestion_mode,
@@ -131,7 +136,7 @@ function configSummary(config: Record<string, any>) {
   };
 }
 
-function safeDatasourceIdentity(ds: Record<string, any>) {
+function safeDatasourceIdentity(ds: Json) {
   return {
     id: ds?.id || "",
     api_name: ds?.api_name || "",
@@ -143,7 +148,7 @@ function safeDatasourceIdentity(ds: Record<string, any>) {
   };
 }
 
-function safeProjectIdentity(project: Record<string, any>) {
+function safeProjectIdentity(project: Json) {
   return {
     id: project?.id || "",
     api_name: project?.api_name || "",
@@ -181,7 +186,7 @@ async function resolveDatasourceIdentity(identifier: string) {
 async function resolveProjectIdentity(identifier: string) {
   const projects = parseCliJson(await execSupaflowArgv(["projects", "list", "--json"], 120000), "projects list");
   const rows = Array.isArray(projects?.data) ? projects.data : [];
-  const project = rows.find((p: any) => p?.id === identifier || p?.api_name === identifier);
+  const project = rows.find((p: Json) => p?.id === identifier || p?.api_name === identifier);
   if (!project) {
     throw new Error(`Project "${identifier}" not found in the active workspace.`);
   }
@@ -201,7 +206,7 @@ export function normalizeObjectPreviewLimit(value: unknown) {
   return Math.min(Math.max(limit, 1), MAX_OBJECT_PREVIEW_LIMIT);
 }
 
-export function validatePlanBinding(plan: Record<string, any>, current: Record<string, any>) {
+export function validatePlanBinding(plan: Json, current: Json) {
   const expectedWorkspaceId = plan?.workspace?.id;
   const expectedSourceId = plan?.resolved?.source?.id;
   const expectedProjectId = plan?.resolved?.project?.id;
@@ -223,7 +228,7 @@ export function validatePlanBinding(plan: Record<string, any>, current: Record<s
   return true;
 }
 
-export function validatePlanWorkspace(plan: Record<string, any>, currentWorkspace: Record<string, any>) {
+export function validatePlanWorkspace(plan: Json, currentWorkspace: Json) {
   const expectedWorkspaceId = plan?.workspace?.id;
   if (!expectedWorkspaceId || !plan?.resolved?.source?.id || !plan?.resolved?.project?.id) {
     throw new Error("Prepared pipeline plan is missing workspace/source/project bindings. Re-run pipelines_prepare_create.");
@@ -236,7 +241,7 @@ export function validatePlanWorkspace(plan: Record<string, any>, currentWorkspac
   return true;
 }
 
-export function applyConfigPatch(baseConfig: Record<string, any>, patch: Record<string, any> = {}) {
+export function applyConfigPatch(baseConfig: Json, patch: Json = {}) {
   const next = { ...(baseConfig || {}) };
   for (const [key, value] of Object.entries(patch || {})) {
     next[key] = value;
@@ -250,7 +255,7 @@ export function applyConfigPatch(baseConfig: Record<string, any>, patch: Record<
   return next;
 }
 
-export function applyObjectSelection(objects: Record<string, any>[], selection: Record<string, any>) {
+export function applyObjectSelection(objects: Json[], selection: Json) {
   if (!selection || selection.mode === "all") {
     return {
       mode: "all",
@@ -306,11 +311,11 @@ export function buildPipelineCreateFromPlanArgv({ name, description, source, pro
   return argv;
 }
 
-function objectNames(objects: Record<string, any>[]) {
+function objectNames(objects: Json[]) {
   return objects.map((o) => o.fully_qualified_name).filter((name) => typeof name === "string" && name.length > 0);
 }
 
-function toolResult(message: string, structuredContent?: unknown) {
+function toolResult(message: string, structuredContent?: Record<string, unknown>): CallToolResult {
   return {
     content: [{ type: "text", text: message }],
     structuredContent,
@@ -1275,8 +1280,8 @@ async function createPipelineFromPlan(args: ToolArgs) {
     } else {
       verification.error = "Schema verification did not return an array.";
     }
-  } catch (err: any) {
-    verification.error = err.message || String(err);
+  } catch (err) {
+    verification.error = err instanceof Error ? err.message : String(err);
   }
 
   const structuredContent = {
@@ -1317,11 +1322,11 @@ export function createServer() {
     { capabilities: { tools: {} } },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async (): Promise<any> => ({
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: listToolDefinitions(),
   }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (req): Promise<any> => {
+  server.setRequestHandler(CallToolRequestSchema, async (req): Promise<CallToolResult> => {
     const { name, arguments: args = {} } = req.params;
     const spec = BY_NAME.get(name);
     if (!spec) {
@@ -1333,12 +1338,13 @@ export function createServer() {
       }
       const out = await runSupaflow(spec, args);
       return { content: [{ type: "text", text: out || "(no output)" }] };
-    } catch (err: any) {
+    } catch (err) {
       // CLI errors emit {"error":{code,message}} on stdout with a non-zero exit.
+      const e = err as { stdout?: { toString(): string }; stderr?: { toString(): string }; message?: string };
       const body =
-        err?.stdout?.toString?.().trim() ||
-        err?.stderr?.toString?.().trim() ||
-        err?.message ||
+        e?.stdout?.toString?.().trim() ||
+        e?.stderr?.toString?.().trim() ||
+        e?.message ||
         String(err);
       return { isError: true, content: [{ type: "text", text: body }] };
     }
