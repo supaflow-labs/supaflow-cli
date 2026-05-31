@@ -585,9 +585,10 @@ Do not start until `@getsupaflow/cli@0.2.0` is on npm. Separate repo, separate c
 **Files (repo `supaflow-claude-plugin`):**
 - Delete: `servers/supaflow-mcp/`
 - Delete: `tests/fast/test-mcp-contract.sh` (migrated to `supaflow-cli` in Task 4)
-- Modify: `README.md` (lines 33, 68)
+- Modify: `README.md` (lines 33, 68 = `servers/supaflow-mcp` pointers; line 75 = `v0.1.12+` minimum)
 - Modify: `skills/using-supaflow/setup-preamble.md`
 - Modify: `hooks/check-setup.sh:17`
+- Modify: `tests/test-helpers.sh` (mock CLI version defaults, lines 124 & 142 — coupled to the minimum)
 
 - [ ] **Step 1: Fold the host-registration block into the plugin README, then delete the prototype**
 
@@ -620,18 +621,27 @@ In `README.md`, rewrite line 33 (the "Desktop MCP server ... in `servers/supaflo
 
 In `skills/using-supaflow/setup-preamble.md`, update the "No valid surface" guidance (~line 23) and section 1A so the Desktop fix path is "install/update `@getsupaflow/cli` to 0.2.0+ and register `supaflow mcp` in `claude_desktop_config.json`". Remove the reference to `servers/supaflow-mcp/README.md`. Keep the plugin-`.mcp.json`-is-wrong-for-Desktop rule.
 
-- [ ] **Step 4: Bump the CLI minimum so the gate covers MCP compatibility**
+- [ ] **Step 4: Raise the required CLI minimum to 0.2.0 (three coupled spots)**
 
-In `hooks/check-setup.sh`:
+`0.2.0` is a minimum-raising release (it ships `supaflow mcp`), so bump all three references that track the minimum together — they are a unit, not just the hook constant:
 
-```bash
-MIN_CLI_VERSION="0.2.0"
-```
+1. `hooks/check-setup.sh:17`:
+   ```bash
+   MIN_CLI_VERSION="0.2.0"
+   ```
+2. `README.md:75` — change `Supaflow CLI v0.1.12+ is installed` to `Supaflow CLI v0.2.0+ is installed`.
+3. `tests/test-helpers.sh` — the mock CLI defaults at lines 124 and 142 (`${MOCK_CLI_VERSION:-0.1.12}`) must move to `0.2.0`:
+   ```bash
+   # both occurrences: ${MOCK_CLI_VERSION:-0.1.12} -> ${MOCK_CLI_VERSION:-0.2.0}
+   ```
+   **This is coupled:** if `MIN_CLI_VERSION` becomes `0.2.0` but the mock still reports `0.1.12`, the SessionStart hook's `sort -V` check classifies the mock as outdated, and the happy-path hook tests in `tests/fast/` flip to failing.
+
+(These three are a `>=` minimum gate — bump only on releases that require clients to upgrade, not every patch. The CLI's own version lives in `supaflow-cli/src/version.ts` + `package.json` and is handled by `scripts/publish.sh`.)
 
 - [ ] **Step 5: Run the plugin tests (fast is the default — no positional arg)**
 
 Run: `cd /Users/puneetgupta/supaflow-workspace/supaflow-claude-plugin && bash tests/run-tests.sh`
-Expected: PASS. `test-mcp-contract.sh` is gone (migrated); `test-mcp-skill-gate.sh` still passes (the Desktop `.mcp.json` rejection rule remains). Then confirm no dangling references: `grep -rn "servers/supaflow-mcp" . --exclude-dir=.git` returns nothing.
+Expected: PASS. `test-mcp-contract.sh` is gone (migrated); `test-mcp-skill-gate.sh` still passes (the Desktop `.mcp.json` rejection rule remains). If any setup-gate hook test now reports the CLI as "outdated", the Step 4 mock-default bump (`test-helpers.sh`) was missed. Then confirm no dangling references: `grep -rn "servers/supaflow-mcp" . --exclude-dir=.git` returns nothing.
 
 - [ ] **Step 6: Commit (plugin repo)**
 
