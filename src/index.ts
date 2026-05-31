@@ -10,6 +10,7 @@ import { registerEncryptCommand } from './commands/encrypt.js';
 import { registerConnectorsCommands } from './commands/connectors.js';
 import { registerSchedulesCommands } from './commands/schedules.js';
 import { registerDocsCommand } from './commands/docs.js';
+import { registerMcpCommand } from './commands/mcp.js';
 
 const program = new Command();
 
@@ -36,5 +37,6 @@ registerEncryptCommand(program);
 registerConnectorsCommands(program);
 registerSchedulesCommands(program);
 registerDocsCommand(program);
+registerMcpCommand(program);
 
 program.parse();
