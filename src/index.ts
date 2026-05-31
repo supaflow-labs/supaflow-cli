@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { VERSION } from './version.js';
 import { registerAuthCommands } from './commands/auth.js';
 import { registerWorkspacesCommands } from './commands/workspaces.js';
 import { registerDatasourcesCommands } from './commands/datasources.js';
@@ -15,7 +16,7 @@ const program = new Command();
 program
   .name('supaflow')
   .description('CLI for Supaflow data integration platform')
-  .version('0.1.13')
+  .version(VERSION)
   .option('--json', 'Output as JSON')
   .option('--workspace <id>', 'Override active workspace')
   .option('--api-key <key>', 'Override stored API key')

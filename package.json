@@ -1,6 +1,6 @@
 {
   "name": "@getsupaflow/cli",
-  "version": "0.1.13",
+  "version": "0.2.0",
   "description": "CLI for Supaflow data integration platform",
   "type": "module",
   "bin": {
@@ -36,7 +36,8 @@
   },
   "dependencies": {
     "commander": "^13.0.0",
-    "@supabase/supabase-js": "^2.39.0"
+    "@supabase/supabase-js": "^2.39.0",
+    "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
