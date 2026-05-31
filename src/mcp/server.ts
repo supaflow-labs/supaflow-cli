@@ -43,6 +43,12 @@ const MAX_OBJECT_PREVIEW_LIMIT = 1000;
 // Bundled, import.meta.url === dist/index.js; the env override keeps tests hermetic.
 const CLI_ENTRY = process.env.SUPAFLOW_CLI_ENTRY ?? fileURLToPath(import.meta.url);
 
+// Parent global-flag overrides (--workspace / --api-key / --supabase-url), forwarded to every
+// child CLI invocation so tool calls hit the same workspace/identity/backend the server was
+// launched with. Set by main(); empty for the default `supaflow mcp` registration.
+let CHILD_OVERRIDE_ENV: Record<string, string> = {};
+let CHILD_OVERRIDE_ARGV: string[] = [];
+
 // ---- shared types (loose: tool args are validated by inputSchema at the MCP layer) ----
 // MCP tools marshal dynamically-typed CLI args / JSON validated by inputSchema at the
 // protocol boundary (deep dynamic access), so a single loose bag type is intentional here.
@@ -726,7 +732,8 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "datasources_delete",
-    description: "Delete a datasource.",
+    description:
+      "Delete a datasource. The skill must get explicit user confirmation before this tool call; MCP approval alone is not the workflow confirmation.",
     write: true,
     destructive: true,
     inputSchema: idSchema("Datasource UUID or api_name"),
@@ -1034,7 +1041,8 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "schedules_delete",
-    description: "Delete a schedule.",
+    description:
+      "Delete a schedule. The skill must get explicit user confirmation before this tool call; MCP approval alone is not the workflow confirmation.",
     write: true,
     destructive: true,
     inputSchema: idSchema("Schedule UUID or name"),
@@ -1092,8 +1100,8 @@ export function buildSupaflowArgv(name: string, args: ToolArgs = {}) {
 }
 
 async function execSupaflowArgv(argv: string[], timeoutMs = 60000): Promise<string> {
-  const { stdout } = await execFileP(process.execPath, [CLI_ENTRY, ...argv], {
-    env: process.env,
+  const { stdout } = await execFileP(process.execPath, [CLI_ENTRY, ...CHILD_OVERRIDE_ARGV, ...argv], {
+    env: { ...process.env, ...CHILD_OVERRIDE_ENV },
     maxBuffer: 32 * 1024 * 1024,
     timeout: timeoutMs,
   });
@@ -1353,7 +1361,9 @@ export function createServer() {
   return server;
 }
 
-export async function main() {
+export async function main(overrides: { env?: Record<string, string>; argv?: string[] } = {}) {
+  CHILD_OVERRIDE_ENV = overrides.env ?? {};
+  CHILD_OVERRIDE_ARGV = overrides.argv ?? [];
   const server = createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);

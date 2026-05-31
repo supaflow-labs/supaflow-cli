@@ -64,10 +64,12 @@ describe('guided defaults + delete safety wording', () => {
     expect(schema.properties.object_preview_limit.default).toBe(1000);
   });
 
-  it('requires skill-side confirmation in the delete description (not the MCP prompt)', () => {
-    const desc = TOOLS.find((t) => t.name === 'pipelines_delete')!.description;
-    expect(/skill must get explicit user confirmation before this tool call/i.test(desc)).toBe(true);
-    expect(/MCP approval prompt is the confirmation/i.test(desc)).toBe(false);
+  it('requires skill-side confirmation in every destructive delete description (not the MCP prompt)', () => {
+    for (const name of ['pipelines_delete', 'datasources_delete', 'schedules_delete']) {
+      const desc = TOOLS.find((t) => t.name === name)!.description;
+      expect(/skill must get explicit user confirmation before this tool call/i.test(desc)).toBe(true);
+      expect(/MCP approval prompt is the confirmation/i.test(desc)).toBe(false);
+    }
   });
 });
 
