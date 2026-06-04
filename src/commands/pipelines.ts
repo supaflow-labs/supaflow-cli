@@ -13,7 +13,7 @@ import { readSchemaMappingFile, assertMappingSaveSuccess } from '../lib/schema-f
 import { resolveIdentifier, isUuid } from '../lib/resolve.js';
 import { softDeleteRecord } from '../lib/client.js';
 import { CliError, ErrorCode } from '../lib/errors.js';
-import { createPipelineConfig, generateCapabilityAwareConfig, generateConfigJson, generateConfigReference } from '../lib/pipeline-config.js';
+import { createPipelineConfig, generateCapabilityAwareConfig, generateConfigJson, generateConfigReference, resolvePipelinePrefix } from '../lib/pipeline-config.js';
 import { generateApiName } from '../lib/connector.js';
 
 interface PipelineRow {
@@ -461,6 +461,13 @@ export function registerPipelinesCommands(program: Command): void {
         }
         const pipelineConfig = createPipelineConfig(configOverrides);
 
+        // Resolve the destination schema prefix BEFORE persisting. Without this,
+        // `create` with no (or a prefix-less) --config would store an empty
+        // pipeline_prefix -- a permanent, silently-wrong null schema. Default it
+        // to the source connector type unless the user explicitly chose one
+        // (is_custom_prefix), matching `pipelines init` / the UI.
+        pipelineConfig.pipeline_prefix = resolvePipelinePrefix(pipelineConfig, src.connector_type);
+
         // 6. Generate api_name and extract user ID from JWT
         const apiName = generateApiName(opts.name);
         const jwtPayload = JSON.parse(
@@ -574,7 +581,7 @@ export function registerPipelinesCommands(program: Command): void {
             source: src.name,
             destination: dest.name,
             project: proj.name,
-            pipeline_prefix: pipelineConfig.pipeline_prefix || src.connector_type.toLowerCase(),
+            pipeline_prefix: pipelineConfig.pipeline_prefix,
             objects_selected: objectMappings.filter((o: Record<string, unknown>) => o.selected !== false).length,
             state: 'active',
           }));

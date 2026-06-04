@@ -237,3 +237,32 @@ export function createPipelineConfig(
 
   return config;
 }
+
+/**
+ * Resolve the pipeline_prefix that should be PERSISTED into a pipeline's config.
+ *
+ * The prefix determines the destination schema and is permanent after creation,
+ * so it must never be left empty by accident. The defaulting rule mirrors
+ * `pipelines init` (deterministic, one-schema-per-connector):
+ *
+ * - `is_custom_prefix === true`  -> honor the user's explicit choice verbatim,
+ *   INCLUDING an empty string (empty = mirror the destination's default schema).
+ * - otherwise                    -> use the prefix if already set (e.g. from
+ *   `pipelines init`), else default to the lowercased source connector type.
+ *
+ * Empty is overloaded in the raw config: it means both "user deliberately chose
+ * mirror" and "nobody set a prefix". `is_custom_prefix` is the disambiguator --
+ * only an explicit (custom) empty stays empty; an unset empty resolves to the
+ * connector type so `create` without a `--config` never persists a null prefix.
+ */
+export function resolvePipelinePrefix(
+  config: Record<string, unknown>,
+  sourceConnectorType: string,
+): string {
+  const current = typeof config.pipeline_prefix === 'string' ? config.pipeline_prefix : '';
+  // Explicit user choice wins, including a deliberate empty (mirror) prefix.
+  if (config.is_custom_prefix === true) {
+    return current;
+  }
+  return current || (sourceConnectorType || '').toLowerCase();
+}
