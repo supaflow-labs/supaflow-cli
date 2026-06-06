@@ -9,7 +9,7 @@ import {
   truncateUuid,
   relativeTime,
 } from '../lib/output.js';
-import { readSchemaMappingFile, assertMappingSaveSuccess } from '../lib/schema-file.js';
+import { readSchemaMappingFile, assertMappingSaveSuccess, schemaMappingFromRpcRow } from '../lib/schema-file.js';
 import { resolveIdentifier, isUuid } from '../lib/resolve.js';
 import { softDeleteRecord } from '../lib/client.js';
 import { CliError, ErrorCode } from '../lib/errors.js';
@@ -692,14 +692,18 @@ export function registerPipelinesCommands(program: Command): void {
     .command('list <identifier>')
     .description('List selected objects for a pipeline (JSON output is consumable by schema select --from)')
     .option('--all', 'Include deselected objects')
+    .option(
+      '--with-fields',
+      'Include per-object field selections in JSON output. The raw JSON remains consumable by pipelines create --objects and schema select --from.',
+    )
     .action(
-      withAuth(async (ctx: AuthContext, identifier: string, opts: { all?: boolean }) => {
+      withAuth(async (ctx: AuthContext, identifier: string, opts: { all?: boolean; withFields?: boolean }) => {
         const { supabase, workspaceId, outputOptions } = ctx;
 
         // Resolve pipeline
         let query = supabase
           .from('pipelines_and_datasources')
-          .select('pipeline_id, pipeline_name, workspace_id')
+          .select('pipeline_id, pipeline_name, source_datasource_id, workspace_id')
           .eq('workspace_id', workspaceId);
 
         query = isUuid(identifier) ? query.eq('pipeline_id', identifier) : query.eq('pipeline_api_name', identifier);
@@ -709,39 +713,85 @@ export function registerPipelinesCommands(program: Command): void {
           throw new CliError(`Pipeline "${identifier}" not found.`, ErrorCode.NOT_FOUND);
         }
 
-        // Fetch metadata mappings
-        const { data: mappings, error: mappingError } = await supabase
-          .from('pipeline_metadata_mappings')
-          .select('source_fully_qualified_name, selected_source_metadata, selection_origin')
-          .eq('pipeline_id', (pipeline as { pipeline_id: string }).pipeline_id);
+        const pipelineRow = pipeline as {
+          pipeline_id: string;
+          pipeline_name: string;
+          source_datasource_id: string | null;
+        };
 
-        if (mappingError) {
-          throw new CliError(`Failed to fetch schema: ${mappingError.message}`, ErrorCode.API_ERROR);
+        if (!pipelineRow.source_datasource_id) {
+          throw new CliError(
+            `Pipeline "${identifier}" does not have a source datasource.`,
+            ErrorCode.INVALID_INPUT,
+          );
         }
 
-        const rows = (mappings || []).filter((m) => {
-          if (opts.all) return true;
-          const meta = m.selected_source_metadata as Record<string, unknown> | null;
-          return meta?.selected !== false;
-        });
+        const rows: Array<{ row: Record<string, unknown>; mapping: ReturnType<typeof schemaMappingFromRpcRow> }> = [];
+
+        if (opts.all) {
+          // --all is intentionally explicit: it scans the full catalog so users can include
+          // currently deselected objects. Without --all, keep the request scoped to saved selections.
+          const allMappings: Array<Record<string, unknown>> = [];
+          const batchSize = opts.withFields ? 50 : 500;
+          let offset = 0;
+
+          while (true) {
+            const { data, error: mappingError } = await supabase.rpc('get_pipeline_metadata_mappings', {
+              p_pipeline_id: pipelineRow.pipeline_id,
+              p_datasource_id: pipelineRow.source_datasource_id,
+              p_limit: batchSize,
+              p_offset: offset,
+              p_include_fields: opts.withFields === true,
+            });
+
+            if (mappingError) {
+              throw new CliError(`Failed to fetch schema: ${mappingError.message}`, ErrorCode.API_ERROR);
+            }
+
+            const batch = (data || []) as Array<Record<string, unknown>>;
+            allMappings.push(...batch);
+            if (batch.length < batchSize) break;
+            offset += batchSize;
+          }
+
+          rows.push(
+            ...allMappings.map((row) => ({
+              row,
+              mapping: schemaMappingFromRpcRow(row, { withFields: opts.withFields === true }),
+            })),
+          );
+        } else {
+          const { data: mappings, error: mappingError } = await supabase
+            .from('pipeline_metadata_mappings')
+            .select('id, source_fully_qualified_name, selected_source_metadata, selection_origin')
+            .eq('pipeline_id', pipelineRow.pipeline_id);
+
+          if (mappingError) {
+            throw new CliError(`Failed to fetch schema: ${mappingError.message}`, ErrorCode.API_ERROR);
+          }
+
+          rows.push(
+            ...((mappings || []) as Array<Record<string, unknown>>)
+              .map((row) => ({
+                row,
+                mapping: schemaMappingFromRpcRow(row, { withFields: opts.withFields === true }),
+              }))
+              .filter((item) => item.mapping.selected),
+          );
+        }
 
         if (outputOptions.json) {
           // Import-ready format: raw array consumable by `schema select --from`
-          const importFormat = rows.map((r) => {
-            const meta = r.selected_source_metadata as Record<string, unknown> | null;
-            return {
-              fully_qualified_name: r.source_fully_qualified_name,
-              selected: meta?.selected !== false,
-              fields: null,
-            };
-          });
-          printOutput(JSON.stringify(importFormat, null, 2));
+          printOutput(JSON.stringify(rows.map((item) => item.mapping), null, 2));
         } else {
-          if (rows.length === 0) { console.log('No objects selected.'); return; }
+          if (rows.length === 0) {
+            console.log(opts.all ? 'No objects found.' : 'No objects selected.');
+            return;
+          }
           const headers = ['OBJECT', 'ORIGIN'];
-          const tableRows = rows.map((r) => [
-            r.source_fully_qualified_name as string,
-            (r.selection_origin as string) || '',
+          const tableRows = rows.map((item) => [
+            item.mapping.fully_qualified_name,
+            (item.row.selection_origin as string) || '',
           ]);
           printOutput(formatTable(headers, tableRows));
         }
@@ -751,7 +801,7 @@ export function registerPipelinesCommands(program: Command): void {
   schema
     .command('select <identifier>')
     .description('Update object selections for a pipeline')
-    .requiredOption('--from <file>', 'JSON file with object selections (use output from schema list --all --json)')
+    .requiredOption('--from <file>', 'JSON file with object selections (use output from schema list --json, optionally with --with-fields)')
     .action(
       withAuth(async (ctx: AuthContext, identifier: string, opts: { from: string }) => {
         const { supabase, workspaceId, outputOptions } = ctx;

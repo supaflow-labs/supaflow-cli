@@ -528,13 +528,14 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "pipelines_schema_list",
-    description: "List a pipeline's selectable objects (raw array of { fully_qualified_name, selected, fields }).",
+    description: "List a pipeline's selectable objects (raw array consumable by pipelines create --objects and schema select --from).",
     readOnly: true,
     inputSchema: {
       type: "object",
       properties: {
         identifier: { type: "string", description: "Pipeline UUID or api_name" },
         all: { type: "boolean", description: "Include deselected objects." },
+        with_fields: { type: "boolean", description: "Include per-object field selections in the raw JSON output." },
       },
       required: ["identifier"],
       additionalProperties: false,
@@ -542,6 +543,7 @@ export const TOOLS: ToolSpec[] = [
     build: (a) => {
       const v = ["pipelines", "schema", "list", a.identifier];
       bool(v, "--all", a.all);
+      bool(v, "--with-fields", a.with_fields);
       return v;
     },
   },
@@ -887,7 +889,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "pipelines_schema_select",
-    description: "Set a pipeline's object selection from a JSON file (use the output of pipelines_schema_list with all:true).",
+    description: "Set a pipeline's object selection from a JSON file (use selected-only pipelines_schema_list output by default; use all:true only when adding currently deselected objects).",
     write: true,
     inputSchema: {
       type: "object",
@@ -1273,15 +1275,14 @@ async function createPipelineFromPlan(args: ToolArgs) {
   };
   try {
     const verifyIdentifier = created.api_name || created.id;
-    const verifyOut = await execSupaflowArgv(["pipelines", "schema", "list", verifyIdentifier, "--all", "--json"], 120000);
+    const verifyOut = await execSupaflowArgv(["pipelines", "schema", "list", verifyIdentifier, "--json"], 120000);
     const schema = parseCliJson(verifyOut, "pipelines schema list");
     if (Array.isArray(schema)) {
       const selected = schema.filter((o) => o.selected !== false).map((o) => o.fully_qualified_name);
-      const excluded = schema.filter((o) => o.selected === false);
       verification = {
         status: "verified",
         selected_count: selected.length,
-        excluded_count: excluded.length,
+        excluded_count: null,
         selected_preview: selected.slice(0, DEFAULT_OBJECT_PREVIEW_LIMIT),
         error: null,
       };

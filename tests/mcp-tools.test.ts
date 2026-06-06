@@ -80,6 +80,8 @@ describe('argv mapping', () => {
       .toEqual(['datasources', 'get', 'pg', '--output', '/tmp/pg.env', '--json']);
     expect(buildSupaflowArgv('datasources_catalog', { identifier: 'pg', output_file: '/tmp/objects.json', refresh: true, with_fields: true }))
       .toEqual(['datasources', 'catalog', 'pg', '--output', '/tmp/objects.json', '--refresh', '--with-fields', '--json']);
+    expect(buildSupaflowArgv('pipelines_schema_list', { identifier: 'orders', all: true, with_fields: true }))
+      .toEqual(['pipelines', 'schema', 'list', 'orders', '--all', '--with-fields', '--json']);
     expect(buildSupaflowArgv('pipelines_delete', { identifier: 'orders' }))
       .toEqual(['pipelines', 'delete', 'orders', '--yes', '--json']);
     expect(buildSupaflowArgv('pipelines_sync', { identifier: 'orders', full_resync: true, reset_target: true }))

@@ -340,7 +340,7 @@ Generate with `datasources catalog --output`:
 
 - `selected: true` includes the object in the pipeline
 - `selected: false` excludes it
-- `fields: null` syncs all fields (recommended). To select specific fields, provide an array of `{ "name": "field_name", "selected": true/false }`.
+- `fields: null` syncs all fields (recommended). To preserve or edit field-level selections, use `pipelines schema list --with-fields --json` or provide an array of `{ "name": "field_name", "selected": true/false, "primary_key": false, "cursor_field": false }`.
 
 ### Pipeline Config File
 
@@ -402,8 +402,14 @@ View and update which objects a pipeline syncs:
 # List selected objects
 supaflow pipelines schema list <identifier>
 
-# List all objects (including deselected)
+# List all objects only when you need currently deselected objects
 supaflow pipelines schema list <identifier> --all
+
+# Include field-level selections for currently selected objects
+supaflow pipelines schema list <identifier> --with-fields --json > objects.json
+
+# Include deselected objects only when you need to add them in bulk
+supaflow pipelines schema list <identifier> --all --json > objects.json
 
 # Add a single object by name (no file needed)
 supaflow pipelines schema add <identifier> <object-name>
@@ -411,9 +417,9 @@ supaflow pipelines schema add <identifier> <object-name>
 # Update selections from a JSON file
 supaflow pipelines schema select <identifier> --from objects.json
 
-# Roundtrip: export, edit, re-import
-supaflow pipelines schema list <identifier> --all --json > objects.json
-# Edit objects.json (toggle selected: true/false)
+# Roundtrip selected objects: export, edit, re-import
+supaflow pipelines schema list <identifier> --with-fields --json > objects.json
+# Edit objects.json (for example, set selected: false or adjust field flags)
 supaflow pipelines schema select <identifier> --from objects.json
 ```
 
