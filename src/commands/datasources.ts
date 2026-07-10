@@ -96,7 +96,10 @@ export function registerDatasourcesCommands(program: Command): void {
   datasources
     .command('get <identifier>')
     .description('Get datasource details')
-    .option('--output <file>', 'Export as env file (for editing with datasources edit)')
+    .option(
+      '--output <file>',
+      'Export as env file for datasources edit. Sensitive values are written as enc: encrypted envelopes, never cleartext -- the CLI holds no decryption key. Safe to write to disk.',
+    )
     .action(
       withAuth(async (ctx: AuthContext, identifier: string, opts: { output?: string }) => {
         const { supabase, workspaceId, outputOptions } = ctx;

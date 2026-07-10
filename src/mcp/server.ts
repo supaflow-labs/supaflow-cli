@@ -452,13 +452,17 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "datasources_get",
     description:
-      "Get datasource details by UUID or api_name. Pass output_file to export a host-side env file for datasources_edit.",
+      "Get datasource details by UUID or api_name. Pass output_file to export a host-side env file for datasources_edit. Sensitive values are stored encrypted and export as `enc:` envelopes, never cleartext, so the exported file contains no plaintext secrets.",
     readOnly: false,
     inputSchema: {
       type: "object",
       properties: {
         identifier: { type: "string", description: "UUID or api_name" },
-        output_file: { type: "string", description: "Host path for exported env file used by datasources_edit." },
+        output_file: {
+          type: "string",
+          description:
+            "Host path for exported env file used by datasources_edit. Sensitive fields are written as `enc:` encrypted envelopes, never cleartext -- safe to write to disk.",
+        },
       },
       required: ["identifier"],
       additionalProperties: false,
