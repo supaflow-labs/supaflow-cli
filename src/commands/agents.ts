@@ -116,16 +116,8 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
     .option('--no-approve', 'Do not approve; leave the agent pending on the agents page')
     .option('--timeout <seconds>', 'How long to wait for registration', '180')
     .action(
-      withAuth(async (ctx, ...args) => {
+      withAuth(async (ctx, opts: { name: string; image: string; apiUrl?: string; approve?: boolean; timeout: string }) => {
         const { supabase, outputOptions } = ctx;
-        const cmd = args[args.length - 1] as Command;
-        const opts = cmd.opts<{
-          name: string;
-          image: string;
-          apiUrl?: string;
-          approve?: boolean;
-          timeout: string;
-        }>();
         const container = opts.name;
         const volume = volumeNameFor(container);
         const timeoutMs = Math.max(30, parseInt(opts.timeout, 10) || 180) * 1000;
@@ -272,10 +264,8 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
     .description('Show local container state and the agent record')
     .option('--name <container>', 'Container name', DEFAULT_CONTAINER)
     .action(
-      withAuth(async (ctx, ...args) => {
+      withAuth(async (ctx, opts: { name: string }) => {
         const { supabase, outputOptions } = ctx;
-        const cmd = args[args.length - 1] as Command;
-        const opts = cmd.opts<{ name: string }>();
 
         const container = await getContainerStatus(run, opts.name);
         let agentRow: AgentRow | null = null;
