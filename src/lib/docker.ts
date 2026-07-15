@@ -45,6 +45,17 @@ export const defaultRunner: ExecRunner = (cmd, args) =>
 
 export type ContainerStatus = 'running' | 'exited' | 'missing';
 
+/**
+ * Docker prints "No such object/container/volume/image" for genuinely
+ * absent resources. Anything else (daemon down, permission denied) is a
+ * real failure and must propagate -- mapping it to "missing" would make
+ * `status` lie and `remove` report success without removing anything.
+ */
+export function isNotFound(err: unknown): boolean {
+  if (!(err instanceof ExecError)) return false;
+  return /no such (object|container|volume|image)/i.test(`${err.message} ${err.stderr}`);
+}
+
 export interface DockerState {
   daemonVersion: string | null;
   containerStatus: ContainerStatus;
@@ -70,8 +81,9 @@ export async function getContainerStatus(run: ExecRunner, name: string): Promise
     const { stdout } = await run('docker', ['inspect', '--format', '{{.State.Status}} {{.Config.Image}}', name]);
     const [state, image] = stdout.trim().split(/\s+/, 2);
     return { status: state === 'running' ? 'running' : 'exited', image: image ?? null };
-  } catch {
-    return { status: 'missing', image: null };
+  } catch (err) {
+    if (isNotFound(err)) return { status: 'missing', image: null };
+    throw err;
   }
 }
 
@@ -79,8 +91,9 @@ export async function volumeExists(run: ExecRunner, name: string): Promise<boole
   try {
     await run('docker', ['volume', 'inspect', name]);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    if (isNotFound(err)) return false;
+    throw err;
   }
 }
 
@@ -88,8 +101,65 @@ export async function imagePresent(run: ExecRunner, image: string): Promise<bool
   try {
     await run('docker', ['image', 'inspect', image]);
     return true;
+  } catch (err) {
+    if (isNotFound(err)) return false;
+    throw err;
+  }
+}
+
+/**
+ * The identifier the agent registered under, resolved from a running or
+ * stopped container: prefer the RESOURCE_INSTANCE_ID env the CLI sets on
+ * containers it creates; fall back to the entrypoint's hostname-derived
+ * convention for containers created by the deployment wizard command.
+ */
+export async function containerIdentifier(run: ExecRunner, name: string): Promise<string | null> {
+  try {
+    const { stdout } = await run('docker', [
+      'inspect',
+      '--format',
+      '{{.Id}}|{{range .Config.Env}}{{.}};{{end}}',
+      name,
+    ]);
+    const [id, envBlob] = stdout.trim().split('|', 2);
+    const envMatch = envBlob?.match(/(?:^|;)RESOURCE_INSTANCE_ID=([^;]+)/);
+    if (envMatch) return envMatch[1];
+    return id ? `${id.slice(0, 12)}_local_docker_agent` : null;
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
+  }
+}
+
+/**
+ * Read the persisted agent identity out of the named volume, without
+ * starting the agent. Returns null when the volume holds no readable
+ * identity.json -- i.e. it is NOT proof of an enrolled agent (leftover or
+ * empty volumes must go through fresh enrollment instead).
+ */
+export async function readVolumeIdentity(
+  run: ExecRunner,
+  volume: string,
+  image: string,
+): Promise<{ instanceIdentifier: string; agentId: string | null } | null> {
+  try {
+    const { stdout } = await run('docker', [
+      'run',
+      '--rm',
+      '--entrypoint',
+      'cat',
+      '-v',
+      `${volume}:/data:ro`,
+      image,
+      '/data/identity.json',
+    ]);
+    const parsed = JSON.parse(stdout) as { instance_identifier?: string; agent_id?: string };
+    if (!parsed.instance_identifier) return null;
+    return { instanceIdentifier: parsed.instance_identifier, agentId: parsed.agent_id ?? null };
   } catch {
-    return false;
+    // Missing file, unparseable JSON, or a pull failure all mean the same
+    // thing for the caller: this volume cannot be resumed.
+    return null;
   }
 }
 

@@ -1,13 +1,16 @@
 import { Command } from 'commander';
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { withAuth } from '../lib/middleware.js';
 import { formatGetJson, formatTable, printOutput, relativeTime } from '../lib/output.js';
 import { CliError, ErrorCode, handleError } from '../lib/errors.js';
 import {
   buildPreflight,
+  containerIdentifier,
   defaultRunner,
   getContainerStatus,
+  readVolumeIdentity,
   volumeExists,
   type ExecRunner,
   type PreflightCheck,
@@ -16,10 +19,10 @@ import {
 const DEFAULT_CONTAINER = 'supaflow-agent';
 const DEFAULT_IMAGE = 'supaflow/agent:latest';
 const REGISTRATION_POLL_MS = 5000;
-/** Container-side suffix appended by the agent image's entrypoint to the container id. */
-const IDENTIFIER_SUFFIX = '_local_docker_agent';
 
 const NEEDS_APPROVAL = new Set(['registered', 'pending_approval']);
+
+type StartMode = 'already_running' | 'resumed' | 'resumed_from_volume' | 'enrolled';
 
 interface AgentRow {
   agent_id: string;
@@ -31,6 +34,17 @@ interface AgentRow {
 
 function volumeNameFor(container: string): string {
   return `${container}-data`;
+}
+
+/**
+ * Stable, unique identifier for a CLI-enrolled agent. Set explicitly as
+ * RESOURCE_INSTANCE_ID so it survives container re-creation (the image's
+ * hostname-derived fallback changes on every `docker run`, which would
+ * register a brand-new agent instead of resuming the enrolled one). The
+ * random tail keeps two hosts using the same --name from colliding.
+ */
+function newInstanceIdentifier(container: string): string {
+  return `${container}-${randomBytes(3).toString('hex')}`;
 }
 
 function printChecks(checks: PreflightCheck[]): void {
@@ -52,6 +66,7 @@ async function fetchAgentRow(supabase: SupabaseClient, identifier: string): Prom
 async function pollForAgentRow(
   supabase: SupabaseClient,
   identifier: string,
+  container: string,
   timeoutMs: number,
   onTick?: () => void,
 ): Promise<AgentRow> {
@@ -61,8 +76,8 @@ async function pollForAgentRow(
     if (row) return row;
     if (Date.now() > deadline) {
       throw new CliError(
-        `Agent did not register within ${Math.round(timeoutMs / 1000)}s. ` +
-          `Check the container logs: docker logs ${DEFAULT_CONTAINER}`,
+        `Agent "${identifier}" did not register within ${Math.round(timeoutMs / 1000)}s. ` +
+          `Check the container logs: docker logs ${container}`,
         ErrorCode.API_ERROR,
       );
     }
@@ -84,6 +99,7 @@ export function buildRunArgs(opts: {
   container: string;
   volume: string;
   image: string;
+  instanceId?: string;
   token?: string;
   apiUrl?: string;
 }): string[] {
@@ -97,6 +113,7 @@ export function buildRunArgs(opts: {
     '-v',
     `${opts.volume}:/data`,
   ];
+  if (opts.instanceId) args.push('-e', `RESOURCE_INSTANCE_ID=${opts.instanceId}`);
   if (opts.token) args.push('-e', `AGENT_REGISTRATION_TOKEN=${opts.token}`);
   if (opts.apiUrl) args.push('-e', `SUPAFLOW_API_URL=${opts.apiUrl}`);
   args.push(opts.image);
@@ -130,81 +147,100 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
           throw new CliError('Preflight failed. Fix the checks marked FAIL and retry.', ErrorCode.INVALID_INPUT);
         }
 
-        // Already running: nothing to do.
+        // Resolve how to bring the container up. Every path converges on
+        // the registration lookup + approval block below, so `--approve`
+        // works for an already-running pending agent too.
+        let mode: StartMode | null = null;
+        let identifier: string | null = null;
+
         if (preflight.state.containerStatus === 'running') {
-          const info = { container, status: 'already_running' };
-          if (outputOptions.json) printOutput(formatGetJson(info));
-          else console.log(`Agent container "${container}" is already running. Use "supaflow agent status" to inspect it.`);
-          return;
-        }
-
-        // Stopped container: resume it. The named volume holds the agent
-        // identity, so this re-attests without a new token or re-approval.
-        if (preflight.state.containerStatus === 'exited') {
+          mode = 'already_running';
+          identifier = await containerIdentifier(run, container);
+        } else if (preflight.state.containerStatus === 'exited') {
+          // A stopped container keeps its env and identity; docker start
+          // resumes the same agent without a token.
           await run('docker', ['start', container]);
-          if (outputOptions.json) printOutput(formatGetJson({ container, status: 'resumed' }));
-          else console.log(`Restarted "${container}". The agent resumes its existing identity and reconnects in seconds.`);
-          return;
-        }
-
-        // No container, but the identity volume exists: recreate the
-        // container WITHOUT a token. The persisted identity takes
-        // precedence, so requesting a fresh enrollment token here would
-        // waste it -- the agent re-attests from the volume.
-        if (preflight.state.volumeExists) {
-          if (!outputOptions.json) {
-            console.log('Existing agent identity volume found; resuming it (no new enrollment token needed).');
-            console.log('To enroll a brand-new agent instead, run "supaflow agent remove --purge" first.');
+          mode = 'resumed';
+          identifier = await containerIdentifier(run, container);
+        } else if (preflight.state.volumeExists) {
+          // Only resume from a volume that actually holds an identity.
+          // A leftover empty volume must go through fresh enrollment --
+          // a token-less first boot would just crash-loop.
+          const identity = await readVolumeIdentity(run, volume, opts.image);
+          if (identity) {
+            if (!outputOptions.json) {
+              console.log(`Existing agent identity found in "${volume}" (${identity.instanceIdentifier}); resuming it.`);
+              console.log('To enroll a brand-new agent instead, run "supaflow agent remove --purge" first.');
+            }
+            await run(
+              'docker',
+              buildRunArgs({
+                container,
+                volume,
+                image: opts.image,
+                instanceId: identity.instanceIdentifier,
+                apiUrl: opts.apiUrl,
+              }),
+            );
+            mode = 'resumed_from_volume';
+            identifier = identity.instanceIdentifier;
+          } else if (!outputOptions.json) {
+            console.log(`Volume "${volume}" exists but holds no agent identity; enrolling a new agent.`);
           }
-          await run('docker', buildRunArgs({ container, volume, image: opts.image, apiUrl: opts.apiUrl }));
-          if (outputOptions.json) printOutput(formatGetJson({ container, status: 'resumed_from_volume' }));
-          else console.log(`Started "${container}" from the existing identity volume.`);
-          return;
         }
 
-        // Fresh enrollment: mint a single-use registration token (requires
-        // an org:admin API key) and run the same command the deployment
-        // wizard generates.
-        const { data: enrollment, error: rpcError } = await supabase.rpc('generate_agent_enrollment_token');
-        if (rpcError) {
-          const msg = /admin/i.test(rpcError.message)
-            ? 'Enrolling an agent requires an API key created by an org admin. ' +
-              'Ask an admin to enroll the agent, or use an admin API key.'
-            : `Could not generate a registration token: ${rpcError.message}`;
-          throw new CliError(msg, ErrorCode.FORBIDDEN);
-        }
-        const token = enrollment?.token as string | undefined;
-        if (!token) {
-          throw new CliError('Enrollment token response was malformed (no token).', ErrorCode.API_ERROR);
+        if (!mode) {
+          // Fresh enrollment: mint a single-use registration token
+          // (requires an org:admin API key) and run the same command the
+          // deployment wizard generates, plus a CLI-owned stable
+          // RESOURCE_INSTANCE_ID.
+          const { data: enrollment, error: rpcError } = await supabase.rpc('generate_agent_enrollment_token');
+          if (rpcError) {
+            const msg = /admin/i.test(rpcError.message)
+              ? 'Enrolling an agent requires an API key created by an org admin. ' +
+                'Ask an admin to enroll the agent, or use an admin API key.'
+              : `Could not generate a registration token: ${rpcError.message}`;
+            throw new CliError(msg, ErrorCode.FORBIDDEN);
+          }
+          const token = enrollment?.token as string | undefined;
+          if (!token) {
+            throw new CliError('Enrollment token response was malformed (no token).', ErrorCode.API_ERROR);
+          }
+
+          identifier = newInstanceIdentifier(container);
+          if (!outputOptions.json) {
+            console.log(`Registration token issued (region: ${enrollment.region}). Starting the agent container...`);
+          }
+          await run(
+            'docker',
+            buildRunArgs({ container, volume, image: opts.image, instanceId: identifier, token, apiUrl: opts.apiUrl }),
+          );
+          mode = 'enrolled';
+          if (!outputOptions.json) {
+            console.log(`Container started. Waiting for agent "${identifier}" to register...`);
+            console.log('(first start generates encryption keys locally -- this typically takes about a minute)');
+          }
         }
 
-        if (!outputOptions.json) {
-          console.log(`Registration token issued (region: ${enrollment.region}). Starting the agent container...`);
-        }
-        const { stdout } = await run(
-          'docker',
-          buildRunArgs({ container, volume, image: opts.image, token, apiUrl: opts.apiUrl }),
-        );
-        const containerId = stdout.trim().slice(0, 12);
-        const identifier = `${containerId}${IDENTIFIER_SUFFIX}`;
-
-        if (!outputOptions.json) {
-          console.log(`Container started (${containerId}). Waiting for the agent to register...`);
-          console.log('(first start generates encryption keys locally -- this typically takes about a minute)');
+        if (!identifier) {
+          throw new CliError(
+            `Could not determine the agent identifier for container "${container}".`,
+            ErrorCode.API_ERROR,
+          );
         }
 
-        let row = await pollForAgentRow(supabase, identifier, timeoutMs, () => {
+        // Converged tail: wait for the registration record, then decide
+        // on approval regardless of which path brought the agent up.
+        let row = await pollForAgentRow(supabase, identifier, container, timeoutMs, () => {
           if (!outputOptions.json) process.stderr.write('.');
         });
         if (!outputOptions.json) process.stderr.write('\n');
 
-        // Approval: prompt in interactive mode, honor --approve/--no-approve,
-        // never prompt in --json mode.
         let approved = false;
         if (NEEDS_APPROVAL.has(row.lifecycle_status)) {
           let shouldApprove = opts.approve;
           if (shouldApprove === undefined && !outputOptions.json && process.stdin.isTTY) {
-            shouldApprove = await promptYesNo(`Agent "${identifier}" registered. Approve it to run jobs now?`);
+            shouldApprove = await promptYesNo(`Agent "${identifier}" is ${row.lifecycle_status}. Approve it to run jobs now?`);
           }
           if (shouldApprove) {
             const { error: approveError } = await supabase.rpc('approve_agent', { p_agent_id: row.agent_id });
@@ -217,6 +253,7 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
         }
 
         const result = {
+          mode,
           agent_id: row.agent_id,
           agent_identifier: row.agent_identifier,
           lifecycle_status: row.lifecycle_status,
@@ -226,12 +263,24 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
         };
         if (outputOptions.json) {
           printOutput(formatGetJson(result));
-        } else if (approved) {
-          console.log(`Agent approved. It picks up the approval within ~30 seconds and starts accepting jobs.`);
-          console.log(`Check it with: supaflow agent status`);
+          return;
+        }
+
+        const modeLine: Record<StartMode, string> = {
+          already_running: `Agent container "${container}" was already running.`,
+          resumed: `Restarted "${container}"; the agent resumes its existing identity.`,
+          resumed_from_volume: `Recreated "${container}" from the existing identity volume.`,
+          enrolled: `Agent enrolled.`,
+        };
+        console.log(modeLine[mode]);
+        if (approved) {
+          console.log('Agent approved. It picks up the approval within ~30 seconds and starts accepting jobs.');
+          console.log('Check it with: supaflow agent status');
+        } else if (NEEDS_APPROVAL.has(row.lifecycle_status)) {
+          console.log(`Agent status: ${row.lifecycle_status}.`);
+          console.log('Approve it on Settings > Agents (or rerun "supaflow agent start --approve") before it can run jobs.');
         } else {
-          console.log(`Agent registered (status: ${row.lifecycle_status}).`);
-          console.log('Approve it on Settings > Agents (or rerun with --approve) before it can run jobs.');
+          console.log(`Agent status: ${row.lifecycle_status}.`);
         }
       }),
     );
@@ -243,19 +292,22 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
     .action(async (...args) => {
       const cmd = args[args.length - 1] as Command;
       const opts = cmd.optsWithGlobals();
+      const json = opts.json ?? false;
       try {
         const { status } = await getContainerStatus(run, opts.name);
         if (status === 'missing') {
           throw new CliError(`No container named "${opts.name}" found.`, ErrorCode.NOT_FOUND);
         }
         if (status === 'exited') {
-          console.log(`Container "${opts.name}" is already stopped.`);
+          if (json) printOutput(formatGetJson({ container: opts.name, status: 'already_stopped' }));
+          else console.log(`Container "${opts.name}" is already stopped.`);
           return;
         }
         await run('docker', ['stop', opts.name]);
-        console.log(`Stopped "${opts.name}". Restart it any time with "supaflow agent start" -- the identity is preserved.`);
+        if (json) printOutput(formatGetJson({ container: opts.name, status: 'stopped' }));
+        else console.log(`Stopped "${opts.name}". Restart it any time with "supaflow agent start" -- the identity is preserved.`);
       } catch (error) {
-        handleError(error, opts.json ?? false);
+        handleError(error, json);
       }
     });
 
@@ -270,8 +322,8 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
         const container = await getContainerStatus(run, opts.name);
         let agentRow: AgentRow | null = null;
         if (container.status !== 'missing') {
-          const { stdout } = await run('docker', ['inspect', '--format', '{{.Id}}', opts.name]);
-          agentRow = await fetchAgentRow(supabase, `${stdout.trim().slice(0, 12)}${IDENTIFIER_SUFFIX}`);
+          const identifier = await containerIdentifier(run, opts.name);
+          if (identifier) agentRow = await fetchAgentRow(supabase, identifier);
         }
 
         const result = {
@@ -316,6 +368,7 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
     .action(async (...args) => {
       const cmd = args[args.length - 1] as Command;
       const opts = cmd.optsWithGlobals();
+      const json = opts.json ?? false;
       try {
         const { status } = await getContainerStatus(run, opts.name);
         if (status === 'missing') {
@@ -327,10 +380,14 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
         await new Promise<void>((resolve, reject) => {
           const child = spawn('docker', dockerArgs, { stdio: 'inherit' });
           child.on('error', reject);
-          child.on('exit', () => resolve());
+          child.on('exit', (code, signal) => {
+            // Interactive interrupts of --follow are a normal way to leave.
+            if (code === 0 || signal === 'SIGINT' || signal === 'SIGTERM') resolve();
+            else reject(new CliError(`docker logs exited with code ${code ?? `signal ${signal}`}`, ErrorCode.API_ERROR));
+          });
         });
       } catch (error) {
-        handleError(error, opts.json ?? false);
+        handleError(error, json);
       }
     });
 
@@ -343,6 +400,7 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
     .action(async (...args) => {
       const cmd = args[args.length - 1] as Command;
       const opts = cmd.optsWithGlobals();
+      const json = opts.json ?? false;
       try {
         const container = opts.name as string;
         const volume = volumeNameFor(container);
@@ -350,11 +408,17 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
         const volPresent = await volumeExists(run, volume);
 
         if (status === 'missing' && !volPresent) {
-          console.log(`Nothing to remove: no "${container}" container or "${volume}" volume.`);
+          if (json) printOutput(formatGetJson({ container, volume, removed_container: false, removed_volume: false }));
+          else console.log(`Nothing to remove: no "${container}" container or "${volume}" volume.`);
           return;
         }
 
         if (!opts.yes) {
+          // Never prompt outside an interactive TTY (and never in --json
+          // mode) -- require the explicit --yes instead.
+          if (json || !process.stdin.isTTY) {
+            throw new CliError('Refusing to remove without --yes in non-interactive mode.', ErrorCode.INVALID_INPUT);
+          }
           const what = opts.purge
             ? `container "${container}" AND identity volume "${volume}" (next start enrolls a NEW agent)`
             : `container "${container}" (identity volume kept; next start resumes the same agent)`;
@@ -365,15 +429,21 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
           }
         }
 
-        if (status !== 'missing') await run('docker', ['rm', '-f', container]);
-        if (opts.purge && volPresent) await run('docker', ['volume', 'rm', volume]);
+        const removedContainer = status !== 'missing';
+        if (removedContainer) await run('docker', ['rm', '-f', container]);
+        const removedVolume = Boolean(opts.purge && volPresent);
+        if (removedVolume) await run('docker', ['volume', 'rm', volume]);
 
+        if (json) {
+          printOutput(formatGetJson({ container, volume, removed_container: removedContainer, removed_volume: removedVolume }));
+          return;
+        }
         console.log(opts.purge ? `Removed "${container}" and "${volume}".` : `Removed "${container}" (volume "${volume}" kept).`);
         if (opts.purge) {
           console.log('Note: deactivate the old agent on Settings > Agents so it no longer appears in your tenant.');
         }
       } catch (error) {
-        handleError(error, opts.json ?? false);
+        handleError(error, json);
       }
     });
 }
