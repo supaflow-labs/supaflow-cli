@@ -14,9 +14,9 @@ import {
 const defByName = new Map(listToolDefinitions().map((d) => [d.name, d]));
 
 describe('MCP tool surface', () => {
-  it('exposes 44 unique tools', () => {
+  it('exposes 49 unique tools', () => {
     const names = TOOLS.map((t) => t.name);
-    expect(TOOLS.length).toBe(44);
+    expect(TOOLS.length).toBe(49);
     expect(new Set(names).size).toBe(names.length);
   });
 

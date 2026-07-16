@@ -600,6 +600,104 @@ export const TOOLS: ToolSpec[] = [
     build: (a) => ["jobs", "logs", a.id],
   },
   {
+    name: "agent_start",
+    description:
+      "Start (or enroll) a local Docker agent. Preflights docker binary/daemon/disk/image, resumes an existing container or identity volume when present, otherwise enrolls a fresh agent via a registration token (requires an org:admin API key). Pass approve=true to authorize it to run jobs; default leaves it pending on the agents page.",
+    write: true,
+    timeoutMs: 420000,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Container name (default supaflow-agent; volume becomes <name>-data)." },
+        image: { type: "string", description: "Agent image (default supaflow/agent:latest)." },
+        api_url: { type: "string", description: "Supaflow app URL override for the agent (local dev)." },
+        approve: { type: "boolean", description: "true approves after registration; false (or omitted) leaves it pending." },
+        timeout: { type: "number", description: "Registration wait in seconds (default 180)." },
+      },
+      additionalProperties: false,
+    },
+    build: (a) => {
+      const argv = ["agent", "start"];
+      opt(argv, "--name", a.name);
+      opt(argv, "--image", a.image);
+      opt(argv, "--api-url", a.api_url);
+      if (a.approve === true) argv.push("--approve");
+      else argv.push("--no-approve");
+      opt(argv, "--timeout", a.timeout);
+      return argv;
+    },
+  },
+  {
+    name: "agent_stop",
+    description: "Stop the local Docker agent container. Identity is preserved; agent_start resumes it without a new token.",
+    write: true,
+    inputSchema: {
+      type: "object",
+      properties: { name: { type: "string", description: "Container name (default supaflow-agent)." } },
+      additionalProperties: false,
+    },
+    build: (a) => {
+      const argv = ["agent", "stop"];
+      opt(argv, "--name", a.name);
+      return argv;
+    },
+  },
+  {
+    name: "agent_status",
+    description: "Local Docker agent status: container state joined with the agent record (lifecycle_status, connectivity_status, last_heartbeat_at).",
+    readOnly: true,
+    inputSchema: {
+      type: "object",
+      properties: { name: { type: "string", description: "Container name (default supaflow-agent)." } },
+      additionalProperties: false,
+    },
+    build: (a) => {
+      const argv = ["agent", "status"];
+      opt(argv, "--name", a.name);
+      return argv;
+    },
+  },
+  {
+    name: "agent_logs",
+    description: "Trailing logs from the local Docker agent container (raw text, not JSON).",
+    readOnly: true,
+    json: false,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Container name (default supaflow-agent)." },
+        tail: { type: "number", description: "Number of trailing lines (default 200)." },
+      },
+      additionalProperties: false,
+    },
+    build: (a) => {
+      const argv = ["agent", "logs"];
+      opt(argv, "--name", a.name);
+      opt(argv, "--tail", a.tail);
+      return argv;
+    },
+  },
+  {
+    name: "agent_remove",
+    description:
+      "Remove the local Docker agent container. purge=true also deletes the identity volume so the next agent_start enrolls a brand-new agent (deactivate the old one on the agents page afterwards).",
+    destructive: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Container name (default supaflow-agent)." },
+        purge: { type: "boolean", description: "Also delete the identity volume." },
+      },
+      additionalProperties: false,
+    },
+    build: (a) => {
+      const argv = ["agent", "remove", "--yes"];
+      opt(argv, "--name", a.name);
+      bool(argv, "--purge", a.purge);
+      return argv;
+    },
+  },
+  {
     name: "schedules_list",
     description: "List schedules in the active workspace. Uses cron_schedule, target_type, target_id.",
     readOnly: true,

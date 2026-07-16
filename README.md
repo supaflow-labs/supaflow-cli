@@ -14,6 +14,7 @@ CLI for the [Supaflow](https://www.supa-flow.io) data integration platform. Mana
 | `pipelines` | list, get, create, edit, delete, disable, enable, sync, schema (list, add, select) | Full pipeline lifecycle |
 | `schedules` | list, create, edit, delete, enable, disable, run, history | Cron-based scheduling |
 | `jobs` | list, get, status, logs | Monitor async job execution |
+| `agent` | start, stop, status, logs, remove | Local Docker agent lifecycle |
 | `encrypt` | (value or --file) | Encrypt sensitive values |
 | `docs` | (topic), --list | Read connector and platform documentation |
 
@@ -533,6 +534,34 @@ supaflow jobs logs <job-id>
 ```
 
 ---
+
+## Agents (Local Docker)
+
+Run a private Supaflow agent on your own machine or server with one command. The agent executes your pipelines inside your network; only encrypted metadata reaches Supaflow Cloud.
+
+```bash
+supaflow agent start
+```
+
+`start` checks dependencies first (docker binary, daemon, ~5 GB free disk, image availability), then does the right thing for the current state:
+
+- Nothing exists: enrolls a new agent -- mints a single-use registration token (requires an API key created by an org admin), runs the agent container with a persistent identity volume, waits for registration, and asks whether to approve it for jobs.
+- Container stopped: restarts it. The identity is preserved, so the agent reconnects in seconds without a new token or re-approval.
+- Container gone but the identity volume remains: recreates the container and resumes the same agent.
+
+| Command | What it does |
+|---------|-------------|
+| `agent start` | Preflight, then enroll or resume (flags: `--name`, `--image`, `--api-url`, `--approve` / `--no-approve`, `--timeout`) |
+| `agent stop` | Stop the container; identity preserved |
+| `agent status` | Container state joined with the agent record (lifecycle, connectivity, last heartbeat) |
+| `agent logs` | Container logs (`-f/--follow`, `--tail <n>`) |
+| `agent remove` | Remove the container; `--purge` also deletes the identity volume so the next start enrolls a brand-new agent |
+
+Notes:
+
+- `--name` runs multiple agents side by side; the identity volume is named `<name>-data`.
+- Re-enrolling on the same host after revoking an agent requires `agent remove --purge` first -- a kept volume deliberately outranks a new registration token.
+- In `--json` mode nothing prompts: `start` leaves the agent pending unless `--approve` is passed, and `remove` requires `--yes`.
 
 ## End-to-End Example
 
