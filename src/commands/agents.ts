@@ -164,10 +164,12 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
           identifier = await containerIdentifier(run, container);
         } else if (preflight.state.volumeExists) {
           // Only resume from a volume that actually holds an identity.
-          // A leftover empty volume must go through fresh enrollment --
-          // a token-less first boot would just crash-loop.
+          // A confirmed-empty volume goes through fresh enrollment; a
+          // corrupt identity fails loudly (enrolling fresh would waste a
+          // token on a container that resumes nothing); probe execution
+          // failures propagate.
           const identity = await readVolumeIdentity(run, volume, opts.image);
-          if (identity) {
+          if (identity.kind === 'identity') {
             if (!outputOptions.json) {
               console.log(`Existing agent identity found in "${volume}" (${identity.instanceIdentifier}); resuming it.`);
               console.log('To enroll a brand-new agent instead, run "supaflow agent remove --purge" first.');
@@ -184,6 +186,13 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
             );
             mode = 'resumed_from_volume';
             identifier = identity.instanceIdentifier;
+          } else if (identity.kind === 'corrupt') {
+            throw new CliError(
+              `Volume "${volume}" holds an unreadable agent identity (${identity.reason}). ` +
+                'Recover with "supaflow agent remove --purge" to enroll a brand-new agent, ' +
+                'then deactivate the old agent on Settings > Agents.',
+              ErrorCode.INVALID_INPUT,
+            );
           } else if (!outputOptions.json) {
             console.log(`Volume "${volume}" exists but holds no agent identity; enrolling a new agent.`);
           }

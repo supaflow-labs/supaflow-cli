@@ -172,29 +172,59 @@ describe('containerIdentifier', () => {
 });
 
 describe('readVolumeIdentity', () => {
+  const read = (script: Record<string, string | ExecError>) =>
+    readVolumeIdentity(scriptedRunner(script), 'supaflow-agent-data', 'supaflow/agent:latest');
+
   it('reads instance_identifier and agent_id from identity.json', async () => {
-    const run = scriptedRunner({
-      'docker run --rm --entrypoint cat': JSON.stringify({
-        instance_identifier: 'supaflow-agent-3fa2b1',
-        agent_id: '80f7eb5b-7710-4c52-89a2-7846476e1134',
+    expect(
+      await read({
+        'docker run --rm --entrypoint cat': JSON.stringify({
+          instance_identifier: 'supaflow-agent-3fa2b1',
+          agent_id: '80f7eb5b-7710-4c52-89a2-7846476e1134',
+        }),
       }),
-    });
-    expect(await readVolumeIdentity(run, 'supaflow-agent-data', 'supaflow/agent:latest')).toEqual({
+    ).toEqual({
+      kind: 'identity',
       instanceIdentifier: 'supaflow-agent-3fa2b1',
       agentId: '80f7eb5b-7710-4c52-89a2-7846476e1134',
     });
   });
 
-  it('returns null for a volume without identity.json (leftover/empty volume)', async () => {
-    const run = scriptedRunner({
-      'docker run --rm --entrypoint cat': new ExecError('cat: /data/identity.json: No such file or directory', { code: 1 }),
-    });
-    expect(await readVolumeIdentity(run, 'supaflow-agent-data', 'supaflow/agent:latest')).toBeNull();
+  it('reports missing only for a confirmed absent identity.json', async () => {
+    expect(
+      await read({
+        'docker run --rm --entrypoint cat': new ExecError('cat: /data/identity.json: No such file or directory', {
+          code: 1,
+          stderr: 'cat: /data/identity.json: No such file or directory',
+        }),
+      }),
+    ).toEqual({ kind: 'missing' });
   });
 
-  it('returns null for unparseable identity content', async () => {
-    const run = scriptedRunner({ 'docker run --rm --entrypoint cat': 'not-json' });
-    expect(await readVolumeIdentity(run, 'supaflow-agent-data', 'supaflow/agent:latest')).toBeNull();
+  it('reports corrupt for unparseable identity content instead of treating it as empty', async () => {
+    expect(await read({ 'docker run --rm --entrypoint cat': 'not-json' })).toEqual({
+      kind: 'corrupt',
+      reason: 'identity.json is not valid JSON',
+    });
+  });
+
+  it('reports corrupt when instance_identifier is absent', async () => {
+    expect(await read({ 'docker run --rm --entrypoint cat': JSON.stringify({ agent_id: 'x' }) })).toEqual({
+      kind: 'corrupt',
+      reason: 'identity.json has no instance_identifier',
+    });
+  });
+
+  it('propagates execution failures (daemon down, pull failure) instead of reporting an empty volume', async () => {
+    await expect(read({ 'docker run --rm --entrypoint cat': DAEMON_DOWN })).rejects.toThrow('Cannot connect');
+    await expect(
+      read({
+        'docker run --rm --entrypoint cat': new ExecError(
+          'Unable to find image; pull access denied for supaflow/agent',
+          { code: 125, stderr: 'pull access denied' },
+        ),
+      }),
+    ).rejects.toThrow('pull access denied');
   });
 });
 

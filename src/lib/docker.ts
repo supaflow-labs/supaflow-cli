@@ -131,19 +131,36 @@ export async function containerIdentifier(run: ExecRunner, name: string): Promis
   }
 }
 
+export type VolumeIdentity =
+  | { kind: 'identity'; instanceIdentifier: string; agentId: string | null }
+  | { kind: 'missing' }
+  | { kind: 'corrupt'; reason: string };
+
 /**
  * Read the persisted agent identity out of the named volume, without
- * starting the agent. Returns null when the volume holds no readable
- * identity.json -- i.e. it is NOT proof of an enrolled agent (leftover or
- * empty volumes must go through fresh enrollment instead).
+ * starting the agent. The three outcomes matter to the caller in
+ * different ways and must not be conflated:
+ *
+ * - 'missing'  -- identity.json confirmed absent: the volume is empty or
+ *   leftover, and fresh enrollment is correct.
+ * - 'corrupt'  -- identity.json exists but is unreadable/incomplete: the
+ *   agent itself would fail closed on it, and enrolling fresh would waste
+ *   a token on a container that resumes nothing. The caller should stop
+ *   and point at recovery (remove --purge).
+ * - execution failures (daemon down, image pull failure, permissions)
+ *   PROPAGATE: treating them as an empty volume would mint a token while
+ *   the attached volume still holds a valid identity -- the agent then
+ *   resumes its persisted identifier and the caller polls the new one
+ *   until it times out.
  */
 export async function readVolumeIdentity(
   run: ExecRunner,
   volume: string,
   image: string,
-): Promise<{ instanceIdentifier: string; agentId: string | null } | null> {
+): Promise<VolumeIdentity> {
+  let stdout: string;
   try {
-    const { stdout } = await run('docker', [
+    ({ stdout } = await run('docker', [
       'run',
       '--rm',
       '--entrypoint',
@@ -152,14 +169,21 @@ export async function readVolumeIdentity(
       `${volume}:/data:ro`,
       image,
       '/data/identity.json',
-    ]);
+    ]));
+  } catch (err) {
+    if (err instanceof ExecError && /no such file or directory/i.test(`${err.message} ${err.stderr}`)) {
+      return { kind: 'missing' };
+    }
+    throw err;
+  }
+  try {
     const parsed = JSON.parse(stdout) as { instance_identifier?: string; agent_id?: string };
-    if (!parsed.instance_identifier) return null;
-    return { instanceIdentifier: parsed.instance_identifier, agentId: parsed.agent_id ?? null };
+    if (!parsed.instance_identifier) {
+      return { kind: 'corrupt', reason: 'identity.json has no instance_identifier' };
+    }
+    return { kind: 'identity', instanceIdentifier: parsed.instance_identifier, agentId: parsed.agent_id ?? null };
   } catch {
-    // Missing file, unparseable JSON, or a pull failure all mean the same
-    // thing for the caller: this volume cannot be resumed.
-    return null;
+    return { kind: 'corrupt', reason: 'identity.json is not valid JSON' };
   }
 }
 
