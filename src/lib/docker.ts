@@ -171,17 +171,35 @@ export async function readVolumeIdentity(
       '/data/identity.json',
     ]));
   } catch (err) {
-    if (err instanceof ExecError && /no such file or directory/i.test(`${err.message} ${err.stderr}`)) {
+    // 'missing' requires the not-found error to be about identity.json
+    // itself. A docker storage/runtime failure that mentions some OTHER
+    // absent path must not be read as "empty volume" -- that would mint a
+    // token against a volume that may still hold a valid identity.
+    if (
+      err instanceof ExecError &&
+      /no such file or directory/i.test(`${err.message} ${err.stderr}`) &&
+      `${err.message} ${err.stderr}`.includes('/data/identity.json')
+    ) {
       return { kind: 'missing' };
     }
     throw err;
   }
   try {
-    const parsed = JSON.parse(stdout) as { instance_identifier?: string; agent_id?: string };
-    if (!parsed.instance_identifier) {
-      return { kind: 'corrupt', reason: 'identity.json has no instance_identifier' };
+    const parsed = JSON.parse(stdout) as Record<string, unknown>;
+    // Mirror IdentityJson.validateInvariants: the agent requires these
+    // five fields non-blank and fails closed otherwise, so a structurally
+    // incomplete identity must not be classified as resumable. agent_id
+    // stays optional (absent until first successful registration).
+    const REQUIRED = ['signing_identity_id', 'tenant_id', 'instance_identifier', 'cloud_provider', 'region'];
+    const missing = REQUIRED.filter((f) => typeof parsed[f] !== 'string' || (parsed[f] as string).trim() === '');
+    if (missing.length > 0) {
+      return { kind: 'corrupt', reason: `identity.json is incomplete (missing or blank: ${missing.join(', ')})` };
     }
-    return { kind: 'identity', instanceIdentifier: parsed.instance_identifier, agentId: parsed.agent_id ?? null };
+    return {
+      kind: 'identity',
+      instanceIdentifier: parsed.instance_identifier as string,
+      agentId: typeof parsed.agent_id === 'string' ? parsed.agent_id : null,
+    };
   } catch {
     return { kind: 'corrupt', reason: 'identity.json is not valid JSON' };
   }

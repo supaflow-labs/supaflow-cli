@@ -175,13 +175,23 @@ describe('readVolumeIdentity', () => {
   const read = (script: Record<string, string | ExecError>) =>
     readVolumeIdentity(scriptedRunner(script), 'supaflow-agent-data', 'supaflow/agent:latest');
 
-  it('reads instance_identifier and agent_id from identity.json', async () => {
+  const FULL_IDENTITY = {
+    signing_identity_id: 'f4b23418-2d59-4d62-98e3-86ab9b8f1199',
+    tenant_id: 'e29bf9fa-9b1a-4664-92cd-e7463112e834',
+    instance_identifier: 'supaflow-agent-3fa2b1',
+    cloud_provider: 'aws',
+    region: 'us-east-1',
+  };
+
+  it('reads a structurally complete identity (agent_id optional)', async () => {
+    expect(await read({ 'docker run --rm --entrypoint cat': JSON.stringify(FULL_IDENTITY) })).toEqual({
+      kind: 'identity',
+      instanceIdentifier: 'supaflow-agent-3fa2b1',
+      agentId: null,
+    });
     expect(
       await read({
-        'docker run --rm --entrypoint cat': JSON.stringify({
-          instance_identifier: 'supaflow-agent-3fa2b1',
-          agent_id: '80f7eb5b-7710-4c52-89a2-7846476e1134',
-        }),
+        'docker run --rm --entrypoint cat': JSON.stringify({ ...FULL_IDENTITY, agent_id: '80f7eb5b-7710-4c52-89a2-7846476e1134' }),
       }),
     ).toEqual({
       kind: 'identity',
@@ -190,7 +200,7 @@ describe('readVolumeIdentity', () => {
     });
   });
 
-  it('reports missing only for a confirmed absent identity.json', async () => {
+  it('reports missing only when the not-found error is about identity.json itself', async () => {
     expect(
       await read({
         'docker run --rm --entrypoint cat': new ExecError('cat: /data/identity.json: No such file or directory', {
@@ -201,6 +211,17 @@ describe('readVolumeIdentity', () => {
     ).toEqual({ kind: 'missing' });
   });
 
+  it('propagates not-found errors about OTHER paths (docker storage failures)', async () => {
+    await expect(
+      read({
+        'docker run --rm --entrypoint cat': new ExecError(
+          'failed to create shim task: open /var/lib/docker/overlay2/abc/merged: no such file or directory',
+          { code: 125, stderr: 'open /var/lib/docker/overlay2/abc/merged: no such file or directory' },
+        ),
+      }),
+    ).rejects.toThrow('overlay2');
+  });
+
   it('reports corrupt for unparseable identity content instead of treating it as empty', async () => {
     expect(await read({ 'docker run --rm --entrypoint cat': 'not-json' })).toEqual({
       kind: 'corrupt',
@@ -208,10 +229,19 @@ describe('readVolumeIdentity', () => {
     });
   });
 
-  it('reports corrupt when instance_identifier is absent', async () => {
-    expect(await read({ 'docker run --rm --entrypoint cat': JSON.stringify({ agent_id: 'x' }) })).toEqual({
+  it('mirrors the agent identity invariants: incomplete identities are corrupt, not resumable', async () => {
+    // The agent requires all five fields non-blank (IdentityJson.validateInvariants)
+    // and fails closed otherwise; resuming on instance_identifier alone would
+    // poll a container that never boots.
+    expect(await read({ 'docker run --rm --entrypoint cat': JSON.stringify({ instance_identifier: 'x' }) })).toEqual({
       kind: 'corrupt',
-      reason: 'identity.json has no instance_identifier',
+      reason: 'identity.json is incomplete (missing or blank: signing_identity_id, tenant_id, cloud_provider, region)',
+    });
+    expect(
+      await read({ 'docker run --rm --entrypoint cat': JSON.stringify({ ...FULL_IDENTITY, tenant_id: '  ' }) }),
+    ).toEqual({
+      kind: 'corrupt',
+      reason: 'identity.json is incomplete (missing or blank: tenant_id)',
     });
   });
 
