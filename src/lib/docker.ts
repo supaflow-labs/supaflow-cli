@@ -171,14 +171,19 @@ export async function readVolumeIdentity(
       '/data/identity.json',
     ]));
   } catch (err) {
-    // 'missing' requires the not-found error to be about identity.json
-    // itself. A docker storage/runtime failure that mentions some OTHER
-    // absent path must not be read as "empty volume" -- that would mint a
-    // token against a volume that may still hold a valid identity.
+    // 'missing' requires cat's own not-found report about identity.json,
+    // matched in stderr ONLY: execFile puts the full command line --
+    // which itself contains /data/identity.json -- into err.message, so
+    // any message-based path check is self-satisfying for every failure
+    // of this probe. Exit code 1 is cat's; docker daemon/storage/pull
+    // failures exit 125+ and must propagate rather than read as an empty
+    // volume (that would mint a token against a volume that may still
+    // hold a valid identity). The pattern covers coreutils and busybox
+    // phrasings for user-supplied --image values.
     if (
       err instanceof ExecError &&
-      /no such file or directory/i.test(`${err.message} ${err.stderr}`) &&
-      `${err.message} ${err.stderr}`.includes('/data/identity.json')
+      err.code === 1 &&
+      /\/data\/identity\.json'?: no such file or directory/i.test(err.stderr)
     ) {
       return { kind: 'missing' };
     }

@@ -200,26 +200,57 @@ describe('readVolumeIdentity', () => {
     });
   });
 
-  it('reports missing only when the not-found error is about identity.json itself', async () => {
+  // execFile puts the FULL command line -- which contains
+  // /data/identity.json -- into err.message. Fixtures model that real
+  // shape so the classifier cannot pass by matching the command echo.
+  const PROBE_CMD =
+    'Command failed: docker run --rm --entrypoint cat -v supaflow-agent-data:/data:ro supaflow/agent:latest /data/identity.json';
+
+  it('reports missing only for cat not-found about identity.json in stderr with exit code 1', async () => {
     expect(
       await read({
-        'docker run --rm --entrypoint cat': new ExecError('cat: /data/identity.json: No such file or directory', {
-          code: 1,
-          stderr: 'cat: /data/identity.json: No such file or directory',
-        }),
+        'docker run --rm --entrypoint cat': new ExecError(
+          `${PROBE_CMD}\ncat: /data/identity.json: No such file or directory`,
+          { code: 1, stderr: 'cat: /data/identity.json: No such file or directory\n' },
+        ),
       }),
     ).toEqual({ kind: 'missing' });
   });
 
-  it('propagates not-found errors about OTHER paths (docker storage failures)', async () => {
+  it('accepts the busybox not-found phrasing', async () => {
+    expect(
+      await read({
+        'docker run --rm --entrypoint cat': new ExecError(
+          `${PROBE_CMD}\ncat: can't open '/data/identity.json': No such file or directory`,
+          { code: 1, stderr: "cat: can't open '/data/identity.json': No such file or directory\n" },
+        ),
+      }),
+    ).toEqual({ kind: 'missing' });
+  });
+
+  it('propagates storage failures even though err.message echoes the identity path', async () => {
+    // Real defaultRunner shape: message carries the command (and thus the
+    // /data/identity.json string) while stderr describes an unrelated
+    // overlay2 path. Must NOT classify as an empty volume.
     await expect(
       read({
         'docker run --rm --entrypoint cat': new ExecError(
-          'failed to create shim task: open /var/lib/docker/overlay2/abc/merged: no such file or directory',
-          { code: 125, stderr: 'open /var/lib/docker/overlay2/abc/merged: no such file or directory' },
+          `${PROBE_CMD}\nfailed to create shim task: open /var/lib/docker/overlay2/abc/merged: no such file or directory`,
+          { code: 125, stderr: 'failed to create shim task: open /var/lib/docker/overlay2/abc/merged: no such file or directory\n' },
         ),
       }),
     ).rejects.toThrow('overlay2');
+  });
+
+  it('propagates identity-path not-found with a non-cat exit code (daemon-level failure)', async () => {
+    await expect(
+      read({
+        'docker run --rm --entrypoint cat': new ExecError(
+          `${PROBE_CMD}\nmount: /data/identity.json: no such file or directory`,
+          { code: 126, stderr: 'mount: /data/identity.json: no such file or directory\n' },
+        ),
+      }),
+    ).rejects.toThrow('mount');
   });
 
   it('reports corrupt for unparseable identity content instead of treating it as empty', async () => {
