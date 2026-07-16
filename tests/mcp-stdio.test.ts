@@ -48,6 +48,22 @@ describe('supaflow mcp stdio', () => {
     expect(text).toContain('ws_test');
   }, 10000);
 
+  it('raw-text tools return BOTH child streams (agent_logs must not drop stderr)', async () => {
+    const child = spawn(process.execPath, [DIST, 'mcp'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, SUPAFLOW_CLI_ENTRY: STUB },
+    });
+    const out = collect(child.stdout);
+    child.stdin.write(init); child.stdin.write(initialized);
+    child.stdin.write(rpc({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'agent_logs', arguments: {} } }));
+    await sleep(1500); child.kill();
+
+    const resp = out.value.split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l)).find((m) => m.id === 5);
+    const text = resp?.result?.content?.[0]?.text ?? '';
+    expect(text).toContain('stub-agent-stdout-line');
+    expect(text).toContain('stub-agent-stderr-line');
+  }, 10000);
+
   it('forwards --workspace / --api-key / --supabase-url overrides to child tool calls', async () => {
     const child = spawn(
       process.execPath,

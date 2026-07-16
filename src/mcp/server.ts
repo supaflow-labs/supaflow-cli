@@ -680,7 +680,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "agent_remove",
     description:
-      "Remove the local Docker agent container. purge=true also deletes the identity volume so the next agent_start enrolls a brand-new agent (deactivate the old one on the agents page afterwards).",
+      "Remove the local Docker agent container. The skill must get explicit user confirmation before this tool call; MCP approval alone is not the workflow confirmation. purge=true ADDITIONALLY deletes the identity volume -- warn the user this is identity-losing: the next agent_start enrolls a brand-new agent needing re-approval, and the old agent record must be deactivated on the agents page.",
     destructive: true,
     inputSchema: {
       type: "object",
@@ -1212,8 +1212,26 @@ async function execSupaflowArgv(argv: string[], timeoutMs = 60000): Promise<stri
   return stdout;
 }
 
+/**
+ * Raw-text variant for json:false tools (e.g. agent_logs): container/CLI
+ * output may land on either stream (docker logs mirrors the container's
+ * own stdout/stderr split), so returning stdout alone silently drops
+ * anything the process wrote to stderr.
+ */
+async function execSupaflowArgvRaw(argv: string[], timeoutMs = 60000): Promise<string> {
+  const { stdout, stderr } = await execFileP(process.execPath, [CLI_ENTRY, ...CHILD_OVERRIDE_ARGV, ...argv], {
+    env: { ...process.env, ...CHILD_OVERRIDE_ENV },
+    maxBuffer: 32 * 1024 * 1024,
+    timeout: timeoutMs,
+  });
+  if (!stderr || !stderr.trim()) return stdout;
+  if (!stdout || !stdout.trim()) return stderr;
+  return `${stdout}${stdout.endsWith("\n") ? "" : "\n"}${stderr}`;
+}
+
 async function runSupaflow(spec: ToolSpec, args: ToolArgs) {
   const argv = buildSupaflowArgv(spec.name, args);
+  if (spec.json === false) return execSupaflowArgvRaw(argv, spec.timeoutMs || 60000);
   return execSupaflowArgv(argv, spec.timeoutMs || 60000);
 }
 

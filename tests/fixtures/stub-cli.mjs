@@ -13,5 +13,12 @@ if (args.includes('auth') && args.includes('status')) {
   }));
   process.exit(0);
 }
+if (args.includes('agent') && args.includes('logs')) {
+  // Raw-text tool: emit on BOTH streams so the stdio test can assert the
+  // MCP wrapper does not drop stderr for json:false tools.
+  process.stdout.write('stub-agent-stdout-line\n');
+  process.stderr.write('stub-agent-stderr-line\n');
+  process.exit(0);
+}
 process.stdout.write(JSON.stringify({ ok: true, argv: args }));
 process.exit(0);
