@@ -14,9 +14,9 @@ import {
 const defByName = new Map(listToolDefinitions().map((d) => [d.name, d]));
 
 describe('MCP tool surface', () => {
-  it('exposes 44 unique tools', () => {
+  it('exposes 49 unique tools', () => {
     const names = TOOLS.map((t) => t.name);
-    expect(TOOLS.length).toBe(44);
+    expect(TOOLS.length).toBe(49);
     expect(new Set(names).size).toBe(names.length);
   });
 
@@ -47,8 +47,17 @@ describe('annotations', () => {
     expect(defByName.get('datasources_catalog')!.annotations.readOnlyHint).toBe(false);
     expect(defByName.get('pipelines_create')!.annotations.readOnlyHint).toBe(false);
     expect(defByName.get('docs')!.annotations.readOnlyHint).toBe(false);
-    for (const t of ['pipelines_delete', 'datasources_delete', 'schedules_delete']) {
-      expect(defByName.get(t)!.annotations.destructiveHint).toBe(true);
+    // Derive from the table so a new destructive tool cannot escape the
+    // contract: destructiveHint annotation AND the explicit
+    // workflow-confirmation wording in the description.
+    const destructive = TOOLS.filter((t) => t.destructive === true);
+    const destructiveNames = destructive.map((t) => t.name);
+    expect(destructiveNames).toEqual(
+      expect.arrayContaining(['pipelines_delete', 'datasources_delete', 'schedules_delete', 'agent_remove']),
+    );
+    for (const t of destructive) {
+      expect(defByName.get(t.name)!.annotations.destructiveHint).toBe(true);
+      expect(t.description).toMatch(/explicit user confirmation/i);
     }
   });
 
