@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   buildPreflight,
   containerIdentifier,
@@ -10,7 +10,7 @@ import {
   ExecError,
   type ExecRunner,
 } from '../../src/lib/docker.js';
-import { buildRunArgs } from '../../src/commands/agents.js';
+import { buildRunArgs, resolveAgentApiUrl } from '../../src/commands/agents.js';
 
 /**
  * Scripted runner: each entry maps "cmd arg0 arg1 ..." prefixes to a stdout
@@ -331,5 +331,58 @@ describe('buildRunArgs', () => {
     expect(args).toContain('RESOURCE_INSTANCE_ID=supaflow-agent-3fa2b1');
     expect(args).toContain('SUPAFLOW_API_URL=http://host.docker.internal:3000');
     expect(args[args.length - 1]).toBe('supaflow/agent:latest');
+  });
+
+  it('adds the host-gateway mapping only when the api url targets host.docker.internal', () => {
+    const local = buildRunArgs({
+      container: 'supaflow-agent',
+      volume: 'supaflow-agent-data',
+      image: 'supaflow/agent:latest',
+      apiUrl: 'http://host.docker.internal:3000',
+    });
+    // Native Docker Engine on Linux does not resolve host.docker.internal
+    // without this mapping; flags must precede the image ref.
+    const flagIdx = local.indexOf('--add-host');
+    expect(flagIdx).toBeGreaterThan(-1);
+    expect(local[flagIdx + 1]).toBe('host.docker.internal:host-gateway');
+    expect(local[local.length - 1]).toBe('supaflow/agent:latest');
+
+    const prod = buildRunArgs({
+      container: 'supaflow-agent',
+      volume: 'supaflow-agent-data',
+      image: 'supaflow/agent:latest',
+      apiUrl: 'https://app.supa-flow.io',
+    });
+    expect(prod).not.toContain('--add-host');
+  });
+});
+
+describe('resolveAgentApiUrl', () => {
+  const savedAppUrl = process.env.SUPAFLOW_APP_URL;
+  afterEach(() => {
+    if (savedAppUrl === undefined) delete process.env.SUPAFLOW_APP_URL;
+    else process.env.SUPAFLOW_APP_URL = savedAppUrl;
+  });
+
+  it('defaults to production when no override or env is set', () => {
+    delete process.env.SUPAFLOW_APP_URL;
+    expect(resolveAgentApiUrl()).toBe('https://app.supa-flow.io');
+  });
+
+  it('derives from SUPAFLOW_APP_URL, rewriting localhost so the container can reach the host app', () => {
+    process.env.SUPAFLOW_APP_URL = 'http://localhost:3000';
+    expect(resolveAgentApiUrl()).toBe('http://host.docker.internal:3000');
+    process.env.SUPAFLOW_APP_URL = 'http://127.0.0.1:3000';
+    expect(resolveAgentApiUrl()).toBe('http://host.docker.internal:3000');
+  });
+
+  it('does not rewrite non-localhost SUPAFLOW_APP_URL hosts', () => {
+    process.env.SUPAFLOW_APP_URL = 'https://stage.example.io';
+    expect(resolveAgentApiUrl()).toBe('https://stage.example.io');
+  });
+
+  it('passes an explicit override through verbatim', () => {
+    process.env.SUPAFLOW_APP_URL = 'http://localhost:3000';
+    expect(resolveAgentApiUrl('http://192.168.1.20:3000')).toBe('http://192.168.1.20:3000');
   });
 });

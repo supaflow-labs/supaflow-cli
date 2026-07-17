@@ -94,6 +94,24 @@ async function promptYesNo(question: string): Promise<boolean> {
   return answer.trim().toLowerCase() === 'y' || answer.trim().toLowerCase() === 'yes';
 }
 
+/**
+ * Bootstrap URL for the agent container's OTP mode. The published image
+ * bakes no default (Spring startup fails without supaflow.api.url), so the
+ * CLI always passes one: the explicit --api-url override verbatim when
+ * given, otherwise the app URL this CLI session talks to. In the derived
+ * case a localhost host is rewritten to host.docker.internal -- inside the
+ * container, localhost is the container itself, not the machine running
+ * the local app.
+ */
+export function resolveAgentApiUrl(override?: string): string {
+  if (override) return override;
+  const appUrl = process.env.SUPAFLOW_APP_URL || 'https://app.supa-flow.io';
+  return appUrl.replace(
+    /^(https?:\/\/)(localhost|127\.0\.0\.1)(?=[:/]|$)/i,
+    '$1host.docker.internal',
+  );
+}
+
 /** docker run arguments mirroring the deployment wizard's generated command. */
 export function buildRunArgs(opts: {
   container: string;
@@ -115,7 +133,15 @@ export function buildRunArgs(opts: {
   ];
   if (opts.instanceId) args.push('-e', `RESOURCE_INSTANCE_ID=${opts.instanceId}`);
   if (opts.token) args.push('-e', `AGENT_REGISTRATION_TOKEN=${opts.token}`);
-  if (opts.apiUrl) args.push('-e', `SUPAFLOW_API_URL=${opts.apiUrl}`);
+  if (opts.apiUrl) {
+    args.push('-e', `SUPAFLOW_API_URL=${opts.apiUrl}`);
+    if (opts.apiUrl.includes('host.docker.internal')) {
+      // Docker Desktop resolves host.docker.internal natively; native
+      // Docker Engine on Linux only gets it via an explicit host-gateway
+      // mapping (harmless on Desktop, where it maps to the same gateway).
+      args.push('--add-host', 'host.docker.internal:host-gateway');
+    }
+  }
   args.push(opts.image);
   return args;
 }
@@ -128,7 +154,10 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
     .description('Start a local Docker agent (enrolls a new one on first run)')
     .option('--name <container>', 'Container name (volume becomes <name>-data)', DEFAULT_CONTAINER)
     .option('--image <image>', 'Agent image', DEFAULT_IMAGE)
-    .option('--api-url <url>', 'Supaflow app URL override for the agent (local dev)')
+    .option(
+      '--api-url <url>',
+      'Bootstrap URL the agent uses to reach Supaflow (default: the app URL this CLI targets, localhost rewritten to host.docker.internal)',
+    )
     .option('--approve', 'Approve the agent automatically after it registers')
     .option('--no-approve', 'Do not approve; leave the agent pending on the agents page')
     .option('--timeout <seconds>', 'How long to wait for registration', '180')
@@ -181,7 +210,7 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
                 volume,
                 image: opts.image,
                 instanceId: identity.instanceIdentifier,
-                apiUrl: opts.apiUrl,
+                apiUrl: resolveAgentApiUrl(opts.apiUrl),
               }),
             );
             mode = 'resumed_from_volume';
@@ -222,7 +251,14 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
           }
           await run(
             'docker',
-            buildRunArgs({ container, volume, image: opts.image, instanceId: identifier, token, apiUrl: opts.apiUrl }),
+            buildRunArgs({
+              container,
+              volume,
+              image: opts.image,
+              instanceId: identifier,
+              token,
+              apiUrl: resolveAgentApiUrl(opts.apiUrl),
+            }),
           );
           mode = 'enrolled';
           if (!outputOptions.json) {
