@@ -96,12 +96,12 @@ async function promptYesNo(question: string): Promise<boolean> {
 
 /**
  * Bootstrap URL for the agent container's OTP mode. The published image
- * bakes no default (Spring startup fails without supaflow.api.url), so the
- * CLI always passes one: the explicit --api-url override verbatim when
- * given, otherwise the app URL this CLI session talks to. In the derived
- * case a localhost host is rewritten to host.docker.internal -- inside the
- * container, localhost is the container itself, not the machine running
- * the local app.
+ * carries a production default, but the CLI still passes one so its command
+ * is self-contained and works with older or custom images: the explicit
+ * --api-url override verbatim when given, otherwise the app URL this CLI
+ * session talks to. In the derived case a localhost host is rewritten to
+ * host.docker.internal -- inside the container, localhost is the container
+ * itself, not the machine running the local app.
  */
 export function resolveAgentApiUrl(override?: string): string {
   if (override) return override;
