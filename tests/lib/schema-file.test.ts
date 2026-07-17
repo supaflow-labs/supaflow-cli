@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { readSchemaMappingFile, assertMappingSaveSuccess } from '../../src/lib/schema-file.js';
+import { readSchemaMappingFile, assertMappingSaveSuccess, schemaMappingFromRpcRow } from '../../src/lib/schema-file.js';
 
 describe('readSchemaMappingFile', () => {
   let tmpDir: string;
@@ -148,6 +148,93 @@ describe('readSchemaMappingFile', () => {
     } catch (err: unknown) {
       expect((err as { code: string }).code).toBe('NOT_FOUND');
     }
+  });
+});
+
+describe('schemaMappingFromRpcRow', () => {
+  it('exports object-only rows in schema select/create format', () => {
+    const result = schemaMappingFromRpcRow({
+      mapping_id: 'mapping-1',
+      fully_qualified_source_object_name: 'public.accounts',
+      selected_source_metadata: { selected: true },
+      merged_metadata: {
+        fully_qualified_name: 'public.accounts',
+        selected: true,
+        fields: [{ name: 'id', selected: true }],
+      },
+    });
+
+    expect(result).toEqual({
+      fully_qualified_name: 'public.accounts',
+      selected: true,
+      fields: null,
+    });
+  });
+
+  it('exports field selections with only save-rpc-owned field flags', () => {
+    const result = schemaMappingFromRpcRow({
+      mapping_id: 'mapping-1',
+      fully_qualified_source_object_name: 'public.accounts',
+      selected_source_metadata: { selected: true },
+      merged_metadata: {
+        fully_qualified_name: 'public.accounts',
+        selected: true,
+        activation_target: { object: 'Account' },
+        selected_merge_keys: ['id'],
+        fields: [
+          {
+            name: 'id',
+            selected: true,
+            primary_key: true,
+            cursor_field: false,
+            canonical_type: 'TEXT',
+            source_primary_key: true,
+          },
+          {
+            name: 'updated_at',
+            selected: true,
+            primary_key: false,
+            cursor_field: true,
+            activation_target_field: 'LastModifiedDate',
+          },
+        ],
+      },
+    }, { withFields: true });
+
+    expect(result).toEqual({
+      fully_qualified_name: 'public.accounts',
+      selected: true,
+      activation_target: { object: 'Account' },
+      selected_merge_keys: ['id'],
+      fields: [
+        { name: 'id', selected: true, primary_key: true, cursor_field: false },
+        {
+          name: 'updated_at',
+          selected: true,
+          primary_key: false,
+          cursor_field: true,
+          activation_target_field: 'LastModifiedDate',
+        },
+      ],
+    });
+  });
+
+  it('treats catalog rows without saved mappings as deselected', () => {
+    const result = schemaMappingFromRpcRow({
+      mapping_id: null,
+      fully_qualified_source_object_name: 'public.new_table',
+      selected_source_metadata: null,
+      merged_metadata: {
+        fully_qualified_name: 'public.new_table',
+        fields: [{ name: 'id', selected: false }],
+      },
+    }, { withFields: true });
+
+    expect(result).toEqual({
+      fully_qualified_name: 'public.new_table',
+      selected: false,
+      fields: [{ name: 'id', selected: false, primary_key: false, cursor_field: false }],
+    });
   });
 });
 

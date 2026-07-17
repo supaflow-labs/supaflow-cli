@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createPipelineConfig, PIPELINE_DEFAULTS } from '../../src/lib/pipeline-config.js';
+import { createPipelineConfig, resolvePipelinePrefix, PIPELINE_DEFAULTS } from '../../src/lib/pipeline-config.js';
 
 describe('createPipelineConfig', () => {
   it('returns defaults when no overrides provided', () => {
@@ -53,5 +53,33 @@ describe('createPipelineConfig', () => {
 
   it('accepts valid override keys', () => {
     expect(() => createPipelineConfig({ pipeline_prefix: 'my_prefix', is_custom_prefix: true })).not.toThrow();
+  });
+});
+
+describe('resolvePipelinePrefix', () => {
+  it('defaults an empty non-custom prefix to the lowercased connector type', () => {
+    // The bug: `create` without --config stored '' and persisted a null schema.
+    const config = createPipelineConfig(); // pipeline_prefix '', is_custom_prefix false
+    expect(resolvePipelinePrefix(config, 'SUCCESSFACTORS')).toBe('successfactors');
+  });
+
+  it('keeps an already-set non-custom prefix (e.g. from pipelines init)', () => {
+    const config = createPipelineConfig({ pipeline_prefix: 'successfactors' });
+    expect(resolvePipelinePrefix(config, 'SUCCESSFACTORS')).toBe('successfactors');
+  });
+
+  it('honors an explicit custom prefix verbatim', () => {
+    const config = createPipelineConfig({ pipeline_prefix: 'hr_data', is_custom_prefix: true });
+    expect(resolvePipelinePrefix(config, 'SUCCESSFACTORS')).toBe('hr_data');
+  });
+
+  it('preserves a deliberate empty (mirror) prefix when is_custom_prefix is true', () => {
+    const config = createPipelineConfig({ pipeline_prefix: '', is_custom_prefix: true });
+    expect(resolvePipelinePrefix(config, 'SUCCESSFACTORS')).toBe('');
+  });
+
+  it('lowercases the connector type for the default', () => {
+    const config = createPipelineConfig();
+    expect(resolvePipelinePrefix(config, 'SQL_SERVER')).toBe('sql_server');
   });
 });

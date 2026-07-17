@@ -14,6 +14,7 @@ CLI for the [Supaflow](https://www.supa-flow.io) data integration platform. Mana
 | `pipelines` | list, get, create, edit, delete, disable, enable, sync, schema (list, add, select) | Full pipeline lifecycle |
 | `schedules` | list, create, edit, delete, enable, disable, run, history | Cron-based scheduling |
 | `jobs` | list, get, status, logs | Monitor async job execution |
+| `agent` | start, stop, status, logs, remove | Local Docker agent lifecycle |
 | `encrypt` | (value or --file) | Encrypt sensitive values |
 | `docs` | (topic), --list | Read connector and platform documentation |
 
@@ -340,7 +341,7 @@ Generate with `datasources catalog --output`:
 
 - `selected: true` includes the object in the pipeline
 - `selected: false` excludes it
-- `fields: null` syncs all fields (recommended). To select specific fields, provide an array of `{ "name": "field_name", "selected": true/false }`.
+- `fields: null` syncs all fields (recommended). To preserve or edit field-level selections, use `pipelines schema list --with-fields --json` or provide an array of `{ "name": "field_name", "selected": true/false, "primary_key": false, "cursor_field": false }`.
 
 ### Pipeline Config File
 
@@ -402,8 +403,14 @@ View and update which objects a pipeline syncs:
 # List selected objects
 supaflow pipelines schema list <identifier>
 
-# List all objects (including deselected)
+# List all objects only when you need currently deselected objects
 supaflow pipelines schema list <identifier> --all
+
+# Include field-level selections for currently selected objects
+supaflow pipelines schema list <identifier> --with-fields --json > objects.json
+
+# Include deselected objects only when you need to add them in bulk
+supaflow pipelines schema list <identifier> --all --json > objects.json
 
 # Add a single object by name (no file needed)
 supaflow pipelines schema add <identifier> <object-name>
@@ -411,9 +418,9 @@ supaflow pipelines schema add <identifier> <object-name>
 # Update selections from a JSON file
 supaflow pipelines schema select <identifier> --from objects.json
 
-# Roundtrip: export, edit, re-import
-supaflow pipelines schema list <identifier> --all --json > objects.json
-# Edit objects.json (toggle selected: true/false)
+# Roundtrip selected objects: export, edit, re-import
+supaflow pipelines schema list <identifier> --with-fields --json > objects.json
+# Edit objects.json (for example, set selected: false or adjust field flags)
 supaflow pipelines schema select <identifier> --from objects.json
 ```
 
@@ -527,6 +534,34 @@ supaflow jobs logs <job-id>
 ```
 
 ---
+
+## Agents (Local Docker)
+
+Run a private Supaflow agent on your own machine or server with one command. The agent executes your pipelines inside your network; only encrypted metadata reaches Supaflow Cloud.
+
+```bash
+supaflow agent start
+```
+
+`start` checks dependencies first (docker binary, daemon, ~5 GB free disk, image availability), then does the right thing for the current state:
+
+- Nothing exists: enrolls a new agent -- mints a single-use registration token (requires an API key created by an org admin), runs the agent container with a persistent identity volume, waits for registration, and asks whether to approve it for jobs.
+- Container stopped: restarts it. The identity is preserved, so the agent reconnects in seconds without a new token or re-approval.
+- Container gone but the identity volume remains: recreates the container and resumes the same agent.
+
+| Command | What it does |
+|---------|-------------|
+| `agent start` | Preflight, then enroll or resume (flags: `--name`, `--image`, `--api-url`, `--approve` / `--no-approve`, `--timeout`) |
+| `agent stop` | Stop the container; identity preserved |
+| `agent status` | Container state joined with the agent record (lifecycle, connectivity, last heartbeat) |
+| `agent logs` | Container logs (`-f/--follow`, `--tail <n>`) |
+| `agent remove` | Remove the container; `--purge` also deletes the identity volume so the next start enrolls a brand-new agent |
+
+Notes:
+
+- `--name` runs multiple agents side by side; the identity volume is named `<name>-data`.
+- Re-enrolling on the same host after revoking an agent requires `agent remove --purge` first -- a kept volume deliberately outranks a new registration token.
+- In `--json` mode nothing prompts: `start` leaves the agent pending unless `--approve` is passed, and `remove` requires `--yes`.
 
 ## End-to-End Example
 

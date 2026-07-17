@@ -10,6 +10,101 @@ export interface SchemaMapping {
   selected_merge_keys?: unknown;
 }
 
+type JsonObject = Record<string, unknown>;
+
+function asObject(value: unknown): JsonObject | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as JsonObject
+    : null;
+}
+
+function hasOwn(obj: JsonObject, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function toFieldSelection(fields: unknown): Array<JsonObject> | null {
+  if (!Array.isArray(fields) || fields.length === 0) return null;
+
+  const result: JsonObject[] = [];
+  for (const field of fields) {
+    const source = asObject(field);
+    if (!source || typeof source.name !== 'string' || source.name.length === 0) {
+      continue;
+    }
+
+    const mapped: JsonObject = {
+      name: source.name,
+      selected: source.selected === true,
+      primary_key: source.primary_key === true,
+      cursor_field: source.cursor_field === true,
+    };
+
+    if (hasOwn(source, 'activation_target_field')) {
+      mapped.activation_target_field = source.activation_target_field;
+    }
+    if (hasOwn(source, 'activation_lookup')) {
+      mapped.activation_lookup = source.activation_lookup;
+    }
+
+    result.push(mapped);
+  }
+
+  return result.length > 0 ? result : null;
+}
+
+export interface SchemaMappingExportOptions {
+  withFields?: boolean;
+}
+
+/**
+ * Convert a get_pipeline_metadata_mappings RPC row into the raw JSON array item
+ * accepted by save_pipeline_metadata_mappings / pipelines create --objects.
+ */
+export function schemaMappingFromRpcRow(
+  row: JsonObject,
+  options: SchemaMappingExportOptions = {},
+): SchemaMapping {
+  const selectedMetadata = asObject(row.selected_source_metadata);
+  const mergedMetadata = asObject(row.merged_metadata);
+  const sourceMetadata = asObject(row.source_metadata);
+  const metadata = mergedMetadata ?? selectedMetadata ?? sourceMetadata ?? {};
+
+  const fqn = String(
+    row.fully_qualified_source_object_name
+      ?? row.source_fully_qualified_name
+      ?? metadata.fully_qualified_name
+      ?? '',
+  );
+
+  const hasSavedMapping = row.mapping_id !== null && row.mapping_id !== undefined
+    || selectedMetadata !== null;
+  const selected = hasSavedMapping
+    ? (typeof selectedMetadata?.selected === 'boolean'
+        ? selectedMetadata.selected
+        : typeof mergedMetadata?.selected === 'boolean'
+          ? mergedMetadata.selected
+          : true)
+    : false;
+
+  const mapping: SchemaMapping = {
+    fully_qualified_name: fqn,
+    selected,
+    fields: options.withFields === true ? toFieldSelection(metadata.fields) : null,
+  };
+
+  if (hasOwn(metadata, 'activation_target')) {
+    mapping.activation_target = metadata.activation_target;
+  }
+  if (hasOwn(metadata, 'activation_behaviour')) {
+    mapping.activation_behaviour = metadata.activation_behaviour;
+  }
+  if (hasOwn(metadata, 'selected_merge_keys')) {
+    mapping.selected_merge_keys = metadata.selected_merge_keys;
+  }
+
+  return mapping;
+}
+
 /**
  * Read and validate a schema mapping file.
  * Requires a raw JSON array where every item has `fully_qualified_name`.
@@ -32,7 +127,7 @@ export function readSchemaMappingFile(filePath: string): SchemaMapping[] {
     if (parsed && typeof parsed === 'object' && 'data' in (parsed as Record<string, unknown>)) {
       throw new CliError(
         `"${filePath}" contains wrapped list JSON ({ "data": [...] }). ` +
-        'Expected a raw JSON array. Re-export with: supaflow pipelines schema list <pipeline> --all --json',
+        'Expected a raw JSON array. Re-export with: supaflow pipelines schema list <pipeline> --json',
         ErrorCode.INVALID_INPUT,
       );
     }

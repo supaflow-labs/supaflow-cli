@@ -39,8 +39,9 @@ echo "Bumping $BUMP_TYPE version..."
 NEW_VERSION=$(npm version "$BUMP_TYPE" --no-git-tag-version | tr -d 'v')
 echo "New version: $NEW_VERSION"
 
-# Update version in src/index.ts (Commander hardcodes it)
-sed -i '' "s/\.version('[^']*')/\.version('$NEW_VERSION')/" src/index.ts
+# Update the single version source (both the CLI --version and the MCP server
+# metadata read src/version.ts; src/index.ts uses .version(VERSION)).
+sed -i '' "s/export const VERSION = '[^']*';/export const VERSION = '$NEW_VERSION';/" src/version.ts
 
 # Build
 echo "Building..."
@@ -50,7 +51,7 @@ npm run build
 npm test
 
 # Commit and tag
-git add package.json package-lock.json src/index.ts
+git add package.json package-lock.json src/version.ts
 git commit -m "Release v$NEW_VERSION"
 git tag "v$NEW_VERSION"
 
