@@ -53,7 +53,13 @@ describe('annotations', () => {
     const destructive = TOOLS.filter((t) => t.destructive === true);
     const destructiveNames = destructive.map((t) => t.name);
     expect(destructiveNames).toEqual(
-      expect.arrayContaining(['pipelines_delete', 'datasources_delete', 'schedules_delete', 'agent_remove']),
+      expect.arrayContaining([
+        'pipelines_delete',
+        'datasources_delete',
+        'schedules_delete',
+        'agent_remove',
+        'agent_upgrade',
+      ]),
     );
     for (const t of destructive) {
       expect(defByName.get(t.name)!.annotations.destructiveHint).toBe(true);

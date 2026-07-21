@@ -13,14 +13,17 @@ import {
   createAgentDataVolume,
   defaultRunner,
   getContainerStatus,
+  isNotFound,
   readVolumeIdentity,
   volumeExists,
+  waitForContainerStartup,
   type ExecRunner,
   type PreflightCheck,
 } from '../lib/docker.js';
 
 const DEFAULT_CONTAINER = 'supaflow-agent';
 const DEFAULT_IMAGE = 'supaflow/supaflow-agent:latest';
+const PRODUCTION_AGENT_API_URL = 'https://app.supa-flow.io';
 const REGISTRATION_POLL_MS = 5000;
 
 const NEEDS_APPROVAL = new Set(['registered', 'pending_approval']);
@@ -108,7 +111,7 @@ async function promptYesNo(question: string): Promise<boolean> {
  */
 export function resolveAgentApiUrl(override?: string): string {
   if (override) return override;
-  const appUrl = process.env.SUPAFLOW_APP_URL || 'https://app.supa-flow.io';
+  const appUrl = process.env.SUPAFLOW_APP_URL || PRODUCTION_AGENT_API_URL;
   return appUrl.replace(
     /^(https?:\/\/)(localhost|127\.0\.0\.1)(?=[:/]|$)/i,
     '$1host.docker.internal',
@@ -193,7 +196,14 @@ export async function upgradeAgentContainer(
   }
 
   const existingApiUrl = await containerEnvValue(run, opts.container, 'SUPAFLOW_API_URL');
-  const effectiveApiUrl = opts.apiUrl ?? existingApiUrl ?? resolveAgentApiUrl();
+  const effectiveApiUrl = opts.apiUrl ?? existingApiUrl;
+  if (!effectiveApiUrl) {
+    throw new CliError(
+      `Container "${opts.container}" has no SUPAFLOW_API_URL. ` +
+        'Pass --api-url explicitly; the upgrade will not infer it from the CLI shell.',
+      ErrorCode.INVALID_INPUT,
+    );
+  }
   if (opts.pull) await run('docker', ['pull', opts.image]);
 
   const identity = await readVolumeIdentity(run, opts.volume, opts.image, 'never');
@@ -254,23 +264,37 @@ export async function upgradeAgentContainer(
         pull: 'never',
       }),
     );
+    await waitForContainerStartup(run, opts.container);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (current.image) {
+    try {
+      await run('docker', ['rm', '-f', opts.container]);
+    } catch (cleanupError) {
+      if (!isNotFound(cleanupError)) {
+        const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        throw new CliError(
+          `Image upgrade failed: ${message}. Removing the failed replacement also failed: ${cleanupMessage}. ` +
+            `The persistent volume "${opts.volume}" is intact.`,
+          ErrorCode.API_ERROR,
+        );
+      }
+    }
+    if (current.imageId) {
       try {
         await run(
           'docker',
           buildRunArgs({
             container: opts.container,
             volume: opts.volume,
-            image: current.image,
+            image: current.imageId,
             instanceId: identity.instanceIdentifier,
             apiUrl: effectiveApiUrl,
             pull: 'never',
           }),
         );
+        await waitForContainerStartup(run, opts.container);
         throw new CliError(
-          `Image upgrade failed: ${message}. The previous image "${current.image}" was restored, ` +
+          `Image upgrade failed: ${message}. The previous image "${current.imageId}" was restored, ` +
             `and the persistent volume "${opts.volume}" was preserved.`,
           ErrorCode.API_ERROR,
         );
@@ -280,7 +304,7 @@ export async function upgradeAgentContainer(
         throw new CliError(
           `Image upgrade failed: ${message}. Restoring the previous image also failed: ${rollbackMessage}. ` +
             `The persistent volume "${opts.volume}" is intact; run "supaflow agent start --name ${opts.container} ` +
-            `--image ${current.image}" to recover.`,
+            `--image ${current.imageId}" to recover.`,
           ErrorCode.API_ERROR,
         );
       }

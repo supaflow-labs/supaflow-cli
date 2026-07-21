@@ -45,6 +45,12 @@ export const defaultRunner: ExecRunner = (cmd, args) =>
 
 export type ContainerStatus = 'running' | 'exited' | 'missing';
 
+export interface ContainerDetails {
+  status: ContainerStatus;
+  image: string | null;
+  imageId: string | null;
+}
+
 export const AGENT_DATA_VOLUME_LABEL = 'io.supaflow.agent.data';
 export const AGENT_CONTAINER_VOLUME_LABEL = 'io.supaflow.agent.container';
 export const AGENT_CONNECTOR_SYNC_LOCK = '/data/supaflow-agent/global/connectors.sync.lock';
@@ -80,14 +86,63 @@ const MIN_FREE_DISK_GB = 5;
 /** Approximate compressed pull size of supaflow/supaflow-agent, used in messaging only. */
 const IMAGE_PULL_HINT = '~600 MB download';
 
-export async function getContainerStatus(run: ExecRunner, name: string): Promise<{ status: ContainerStatus; image: string | null }> {
+export async function getContainerStatus(run: ExecRunner, name: string): Promise<ContainerDetails> {
   try {
-    const { stdout } = await run('docker', ['inspect', '--format', '{{.State.Status}} {{.Config.Image}}', name]);
-    const [state, image] = stdout.trim().split(/\s+/, 2);
-    return { status: state === 'running' ? 'running' : 'exited', image: image ?? null };
+    const { stdout } = await run('docker', [
+      'inspect',
+      '--format',
+      '{{.State.Status}} {{.Config.Image}} {{.Image}}',
+      name,
+    ]);
+    const [state, image, imageId] = stdout.trim().split(/\s+/, 3);
+    return {
+      status: state === 'running' ? 'running' : 'exited',
+      image: image ?? null,
+      imageId: imageId ?? null,
+    };
   } catch (err) {
-    if (isNotFound(err)) return { status: 'missing', image: null };
+    if (isNotFound(err)) return { status: 'missing', image: null, imageId: null };
     throw err;
+  }
+}
+
+/**
+ * Observe a newly-created container through a short local startup window.
+ * A Docker healthcheck can complete the check early. Images without one are
+ * accepted after remaining running for the full window.
+ */
+export async function waitForContainerStartup(
+  run: ExecRunner,
+  name: string,
+  options: {
+    attempts?: number;
+    intervalMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<void> {
+  const attempts = Math.max(1, options.attempts ?? 6);
+  const intervalMs = Math.max(0, options.intervalMs ?? 2000);
+  const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const { stdout } = await run('docker', ['inspect', '--format', '{{json .State}}', name]);
+    let state: { Status?: string; Health?: { Status?: string } };
+    try {
+      state = JSON.parse(stdout) as { Status?: string; Health?: { Status?: string } };
+    } catch {
+      throw new Error(`Docker returned an unreadable startup state for container "${name}".`);
+    }
+
+    const status = state.Status ?? 'unknown';
+    const health = state.Health?.Status;
+    if (status !== 'running') {
+      throw new Error(`Container "${name}" entered Docker state "${status}" during startup.`);
+    }
+    if (health === 'unhealthy') {
+      throw new Error(`Container "${name}" became unhealthy during startup.`);
+    }
+    if (health === 'healthy') return;
+    if (attempt < attempts - 1) await sleep(intervalMs);
   }
 }
 

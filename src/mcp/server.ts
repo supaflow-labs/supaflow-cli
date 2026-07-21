@@ -630,8 +630,9 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "agent_upgrade",
     description:
-      "Pull and install a newer local Docker agent image while preserving the named identity/keystore volume. Pulling and identity validation finish before the existing container is stopped. Set pull=false only to install a local image that is already present.",
+      "Pull and install a newer local Docker agent image while preserving the named identity/keystore volume. This stops and replaces the current container, so the skill must get explicit user confirmation before this tool call; MCP approval alone is not the workflow confirmation. Pulling and identity validation finish before the existing container is stopped. Set pull=false only to install a local image that is already present.",
     write: true,
+    destructive: true,
     timeoutMs: 420000,
     inputSchema: {
       type: "object",
