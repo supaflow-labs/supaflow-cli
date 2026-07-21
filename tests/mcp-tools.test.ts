@@ -14,9 +14,9 @@ import {
 const defByName = new Map(listToolDefinitions().map((d) => [d.name, d]));
 
 describe('MCP tool surface', () => {
-  it('exposes 49 unique tools', () => {
+  it('exposes 50 unique tools', () => {
     const names = TOOLS.map((t) => t.name);
-    expect(TOOLS.length).toBe(49);
+    expect(TOOLS.length).toBe(50);
     expect(new Set(names).size).toBe(names.length);
   });
 
@@ -97,6 +97,8 @@ describe('argv mapping', () => {
       .toEqual(['pipelines', 'sync', 'orders', '--full-resync', '--reset-target', '--json']);
     expect(buildSupaflowArgv('docs', { topic: 'postgres', output_file: '/tmp/postgres-docs.md', refresh: true }))
       .toEqual(['docs', 'postgres', '--output', '/tmp/postgres-docs.md', '--refresh']); // docs omits --json
+    expect(buildSupaflowArgv('agent_upgrade', { name: 'edge-agent', pull: false }))
+      .toEqual(['agent', 'upgrade', '--name', 'edge-agent', '--no-pull', '--json']);
   });
 
   it('always passes the prepared objects file in guided create', () => {

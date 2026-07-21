@@ -45,6 +45,9 @@ export const defaultRunner: ExecRunner = (cmd, args) =>
 
 export type ContainerStatus = 'running' | 'exited' | 'missing';
 
+export const AGENT_DATA_VOLUME_LABEL = 'io.supaflow.agent.data';
+export const AGENT_CONTAINER_VOLUME_LABEL = 'io.supaflow.agent.container';
+
 /**
  * Docker prints "No such object/container/volume/image" for genuinely
  * absent resources. Anything else (daemon down, permission denied) is a
@@ -73,7 +76,7 @@ export interface PreflightCheck {
 
 /** The named volume grows to roughly 3.5 GB (connector artifacts + Python envs). */
 const MIN_FREE_DISK_GB = 5;
-/** Approximate compressed pull size of supaflow/agent, used in messaging only. */
+/** Approximate compressed pull size of supaflow/supaflow-agent, used in messaging only. */
 const IMAGE_PULL_HINT = '~600 MB download';
 
 export async function getContainerStatus(run: ExecRunner, name: string): Promise<{ status: ContainerStatus; image: string | null }> {
@@ -93,6 +96,50 @@ export async function volumeExists(run: ExecRunner, name: string): Promise<boole
     return true;
   } catch (err) {
     if (isNotFound(err)) return false;
+    throw err;
+  }
+}
+
+/**
+ * Create the agent's persistent named volume before starting the container.
+ * Docker would create it implicitly for `-v name:/data`, but doing it here
+ * lets maintenance tooling distinguish identity/keystore state from
+ * disposable build and test volumes.
+ */
+export async function createAgentDataVolume(
+  run: ExecRunner,
+  volume: string,
+  container: string,
+): Promise<void> {
+  await run('docker', [
+    'volume',
+    'create',
+    '--label',
+    `${AGENT_DATA_VOLUME_LABEL}=true`,
+    '--label',
+    `${AGENT_CONTAINER_VOLUME_LABEL}=${container}`,
+    volume,
+  ]);
+}
+
+/** Read one environment variable from an existing container definition. */
+export async function containerEnvValue(
+  run: ExecRunner,
+  container: string,
+  key: string,
+): Promise<string | null> {
+  try {
+    const { stdout } = await run('docker', [
+      'inspect',
+      '--format',
+      '{{range .Config.Env}}{{println .}}{{end}}',
+      container,
+    ]);
+    const prefix = `${key}=`;
+    const entry = stdout.split(/\r?\n/).find((line) => line.startsWith(prefix));
+    return entry ? entry.slice(prefix.length) : null;
+  } catch (err) {
+    if (isNotFound(err)) return null;
     throw err;
   }
 }
@@ -157,19 +204,24 @@ export async function readVolumeIdentity(
   run: ExecRunner,
   volume: string,
   image: string,
+  pullPolicy?: 'always' | 'missing' | 'never',
 ): Promise<VolumeIdentity> {
   let stdout: string;
   try {
-    ({ stdout } = await run('docker', [
+    const args = [
       'run',
       '--rm',
+    ];
+    if (pullPolicy) args.push(`--pull=${pullPolicy}`);
+    args.push(
       '--entrypoint',
       'cat',
       '-v',
       `${volume}:/data:ro`,
       image,
       '/data/identity.json',
-    ]));
+    );
+    ({ stdout } = await run('docker', args));
   } catch (err) {
     // 'missing' requires cat's own not-found report about identity.json,
     // matched in stderr ONLY: execFile puts the full command line --

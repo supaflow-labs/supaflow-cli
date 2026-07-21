@@ -609,7 +609,7 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       properties: {
         name: { type: "string", description: "Container name (default supaflow-agent; volume becomes <name>-data)." },
-        image: { type: "string", description: "Agent image (default supaflow/agent:latest)." },
+        image: { type: "string", description: "Agent image (default supaflow/supaflow-agent:latest)." },
         api_url: { type: "string", description: "Supaflow app URL override for the agent (local dev)." },
         approve: { type: "boolean", description: "true approves after registration; false (or omitted) leaves it pending." },
         timeout: { type: "number", description: "Registration wait in seconds (default 180)." },
@@ -624,6 +624,31 @@ export const TOOLS: ToolSpec[] = [
       if (a.approve === true) argv.push("--approve");
       else argv.push("--no-approve");
       opt(argv, "--timeout", a.timeout);
+      return argv;
+    },
+  },
+  {
+    name: "agent_upgrade",
+    description:
+      "Pull and install a newer local Docker agent image while preserving the named identity/keystore volume. Pulling and identity validation finish before the existing container is stopped. Set pull=false only to install a local image that is already present.",
+    write: true,
+    timeoutMs: 420000,
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Container name (default supaflow-agent; volume is <name>-data)." },
+        image: { type: "string", description: "Agent image (default supaflow/supaflow-agent:latest)." },
+        api_url: { type: "string", description: "Override the bootstrap URL preserved from the current container." },
+        pull: { type: "boolean", description: "Pull from the registry before upgrading (default true)." },
+      },
+      additionalProperties: false,
+    },
+    build: (a) => {
+      const argv = ["agent", "upgrade"];
+      opt(argv, "--name", a.name);
+      opt(argv, "--image", a.image);
+      opt(argv, "--api-url", a.api_url);
+      if (a.pull === false) argv.push("--no-pull");
       return argv;
     },
   },
