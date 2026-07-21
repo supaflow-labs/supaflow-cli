@@ -1,6 +1,6 @@
 {
   "name": "@getsupaflow/cli",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "CLI for Supaflow data integration platform",
   "type": "module",
   "bin": {
