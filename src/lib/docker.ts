@@ -47,6 +47,7 @@ export type ContainerStatus = 'running' | 'exited' | 'missing';
 
 export const AGENT_DATA_VOLUME_LABEL = 'io.supaflow.agent.data';
 export const AGENT_CONTAINER_VOLUME_LABEL = 'io.supaflow.agent.container';
+export const AGENT_CONNECTOR_SYNC_LOCK = '/data/supaflow-agent/global/connectors.sync.lock';
 
 /**
  * Docker prints "No such object/container/volume/image" for genuinely
@@ -119,6 +120,31 @@ export async function createAgentDataVolume(
     '--label',
     `${AGENT_CONTAINER_VOLUME_LABEL}=${container}`,
     volume,
+  ]);
+}
+
+/**
+ * Remove the repo-sync mkdir lock after the owning container has stopped.
+ * Unlike an OS-backed lock, this directory survives container replacement in
+ * the persistent volume even though its owning process is gone. The path is a
+ * fixed agent-internal contract; rmdir deliberately refuses non-empty paths.
+ */
+export async function clearStoppedAgentSyncLock(
+  run: ExecRunner,
+  volume: string,
+  image: string,
+): Promise<void> {
+  await run('docker', [
+    'run',
+    '--rm',
+    '--pull=never',
+    '--entrypoint',
+    'sh',
+    '-v',
+    `${volume}:/data`,
+    image,
+    '-c',
+    `if [ -d '${AGENT_CONNECTOR_SYNC_LOCK}' ]; then rmdir '${AGENT_CONNECTOR_SYNC_LOCK}'; fi`,
   ]);
 }
 

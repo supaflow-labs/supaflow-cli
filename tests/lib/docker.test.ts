@@ -442,6 +442,12 @@ describe('upgradeAgentContainer', () => {
     });
     expect(calls.findIndex((c) => c.startsWith('docker pull')))
       .toBeLessThan(calls.findIndex((c) => c.startsWith('docker stop')));
+    const stopIndex = calls.findIndex((c) => c.startsWith('docker stop'));
+    const lockCleanupIndex = calls.findIndex((c) => c.includes('--entrypoint sh'));
+    const removeIndex = calls.findIndex((c) => c.startsWith('docker rm'));
+    expect(stopIndex).toBeLessThan(lockCleanupIndex);
+    expect(lockCleanupIndex).toBeLessThan(removeIndex);
+    expect(calls[lockCleanupIndex]).toContain('/data/supaflow-agent/global/connectors.sync.lock');
     const replacement = calls.find((c) => c.startsWith('docker run -d --pull=never')) ?? '';
     expect(replacement).toContain('RESOURCE_INSTANCE_ID=supaflow-agent-3fa2b1');
     expect(replacement).toContain('SUPAFLOW_API_URL=http://host.docker.internal:3000');
@@ -470,6 +476,42 @@ describe('upgradeAgentContainer', () => {
     })).rejects.toThrow('registry unavailable');
     expect(calls.some((c) => c.startsWith('docker stop'))).toBe(false);
     expect(calls.some((c) => c.startsWith('docker rm '))).toBe(false);
+  });
+
+  it('restarts the existing container when stale-lock cleanup fails', async () => {
+    const calls: string[] = [];
+    const run: ExecRunner = async (cmd, args) => {
+      const key = [cmd, ...args].join(' ');
+      calls.push(key);
+      if (key.startsWith('docker inspect --format {{.State.Status}}')) {
+        return { stdout: 'running supaflow/supaflow-agent:old\n', stderr: '' };
+      }
+      if (key.startsWith('docker volume inspect')) return { stdout: '[]', stderr: '' };
+      if (key.startsWith('docker inspect --format {{range .Config.Env}}')) {
+        return { stdout: 'SUPAFLOW_API_URL=https://app.supa-flow.io\n', stderr: '' };
+      }
+      if (key.startsWith('docker pull')) return { stdout: 'pulled', stderr: '' };
+      if (key.startsWith('docker run --rm --pull=never') && !key.includes('--entrypoint sh')) {
+        return { stdout: IDENTITY, stderr: '' };
+      }
+      if (key.startsWith('docker stop')) return { stdout: '', stderr: '' };
+      if (key.includes('--entrypoint sh')) {
+        throw new ExecError('lock directory is not empty', { code: 1 });
+      }
+      if (key.startsWith('docker start')) return { stdout: 'supaflow-agent\n', stderr: '' };
+      throw new ExecError(`unexpected mutation: ${key}`, { code: 1 });
+    };
+
+    await expect(upgradeAgentContainer(run, {
+      container: 'supaflow-agent',
+      volume: 'supaflow-agent-data',
+      image: 'supaflow/supaflow-agent:latest',
+      pull: true,
+    })).rejects.toThrow('existing container was restarted and left unchanged');
+
+    expect(calls.some((c) => c.startsWith('docker start supaflow-agent'))).toBe(true);
+    expect(calls.some((c) => c.startsWith('docker rm '))).toBe(false);
+    expect(calls.some((c) => c.startsWith('docker run -d '))).toBe(false);
   });
 
   it('restores the previous image when replacement fails after removal', async () => {

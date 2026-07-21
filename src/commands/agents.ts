@@ -7,6 +7,7 @@ import { formatGetJson, formatTable, printOutput, relativeTime } from '../lib/ou
 import { CliError, ErrorCode, handleError } from '../lib/errors.js';
 import {
   buildPreflight,
+  clearStoppedAgentSyncLock,
   containerEnvValue,
   containerIdentifier,
   createAgentDataVolume,
@@ -211,6 +212,35 @@ export async function upgradeAgentContainer(
   }
 
   if (current.status === 'running') await run('docker', ['stop', opts.container]);
+  try {
+    await clearStoppedAgentSyncLock(run, opts.volume, opts.image);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (current.status === 'running') {
+      try {
+        await run('docker', ['start', opts.container]);
+        throw new CliError(
+          `Image upgrade preparation failed while clearing the stopped agent's connector sync lock: ${message}. ` +
+            'The existing container was restarted and left unchanged.',
+          ErrorCode.API_ERROR,
+        );
+      } catch (restartError) {
+        if (restartError instanceof CliError) throw restartError;
+        const restartMessage = restartError instanceof Error ? restartError.message : String(restartError);
+        throw new CliError(
+          `Image upgrade preparation failed while clearing the stopped agent's connector sync lock: ${message}. ` +
+            `Restarting the existing container also failed: ${restartMessage}. ` +
+            `The container was not removed; run "docker start ${opts.container}" to recover.`,
+          ErrorCode.API_ERROR,
+        );
+      }
+    }
+    throw new CliError(
+      `Image upgrade preparation failed while clearing the stopped agent's connector sync lock: ${message}. ` +
+        'The existing stopped container was left unchanged.',
+      ErrorCode.API_ERROR,
+    );
+  }
   await run('docker', ['rm', opts.container]);
   try {
     await run(
