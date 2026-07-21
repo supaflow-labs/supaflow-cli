@@ -630,7 +630,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "agent_upgrade",
     description:
-      "Pull and install a newer local Docker agent image while preserving the named identity/keystore volume. This stops and replaces the current container, so the skill must get explicit user confirmation before this tool call; MCP approval alone is not the workflow confirmation. Pulling and identity validation finish before the existing container is stopped. Set pull=false only to install a local image that is already present.",
+      "Available in CLI 0.5.0+. Pull and install a newer local Docker agent image while preserving the named identity/keystore volume. This stops and replaces the current container, so the skill must get explicit user confirmation before this tool call; MCP approval alone is not the workflow confirmation. Pulling and identity validation finish before the existing container is stopped. The replacement startup is checked and restoration of the previous immutable image is attempted on failure. Set pull=false only to install a local image that is already present.",
     write: true,
     destructive: true,
     timeoutMs: 420000,
@@ -639,7 +639,7 @@ export const TOOLS: ToolSpec[] = [
       properties: {
         name: { type: "string", description: "Container name (default supaflow-agent; volume is <name>-data)." },
         image: { type: "string", description: "Agent image (default supaflow/supaflow-agent:latest)." },
-        api_url: { type: "string", description: "Override the bootstrap URL preserved from the current container." },
+        api_url: { type: "string", description: "Override the bootstrap URL preserved from the current container; required when the existing container has no SUPAFLOW_API_URL." },
         pull: { type: "boolean", description: "Pull from the registry before upgrading (default true)." },
       },
       additionalProperties: false,

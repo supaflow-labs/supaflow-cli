@@ -86,6 +86,13 @@ describe('guided defaults + delete safety wording', () => {
       expect(/MCP approval prompt is the confirmation/i.test(desc)).toBe(false);
     }
   });
+
+  it('documents the reversible agent-upgrade contract', () => {
+    const tool = TOOLS.find((t) => t.name === 'agent_upgrade')!;
+    expect(tool.destructive).toBe(true);
+    expect(tool.description).toMatch(/restoration of the previous immutable image is attempted on failure/i);
+    expect((tool.inputSchema as any).properties.api_url.description).toMatch(/required.*no SUPAFLOW_API_URL/i);
+  });
 });
 
 describe('argv mapping', () => {
