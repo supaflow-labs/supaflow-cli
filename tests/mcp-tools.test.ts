@@ -14,9 +14,9 @@ import {
 const defByName = new Map(listToolDefinitions().map((d) => [d.name, d]));
 
 describe('MCP tool surface', () => {
-  it('exposes 49 unique tools', () => {
+  it('exposes 50 unique tools', () => {
     const names = TOOLS.map((t) => t.name);
-    expect(TOOLS.length).toBe(49);
+    expect(TOOLS.length).toBe(50);
     expect(new Set(names).size).toBe(names.length);
   });
 
@@ -53,7 +53,13 @@ describe('annotations', () => {
     const destructive = TOOLS.filter((t) => t.destructive === true);
     const destructiveNames = destructive.map((t) => t.name);
     expect(destructiveNames).toEqual(
-      expect.arrayContaining(['pipelines_delete', 'datasources_delete', 'schedules_delete', 'agent_remove']),
+      expect.arrayContaining([
+        'pipelines_delete',
+        'datasources_delete',
+        'schedules_delete',
+        'agent_remove',
+        'agent_upgrade',
+      ]),
     );
     for (const t of destructive) {
       expect(defByName.get(t.name)!.annotations.destructiveHint).toBe(true);
@@ -80,6 +86,13 @@ describe('guided defaults + delete safety wording', () => {
       expect(/MCP approval prompt is the confirmation/i.test(desc)).toBe(false);
     }
   });
+
+  it('documents the reversible agent-upgrade contract', () => {
+    const tool = TOOLS.find((t) => t.name === 'agent_upgrade')!;
+    expect(tool.destructive).toBe(true);
+    expect(tool.description).toMatch(/restoration of the previous immutable image is attempted on failure/i);
+    expect((tool.inputSchema as any).properties.api_url.description).toMatch(/required.*no SUPAFLOW_API_URL/i);
+  });
 });
 
 describe('argv mapping', () => {
@@ -97,6 +110,8 @@ describe('argv mapping', () => {
       .toEqual(['pipelines', 'sync', 'orders', '--full-resync', '--reset-target', '--json']);
     expect(buildSupaflowArgv('docs', { topic: 'postgres', output_file: '/tmp/postgres-docs.md', refresh: true }))
       .toEqual(['docs', 'postgres', '--output', '/tmp/postgres-docs.md', '--refresh']); // docs omits --json
+    expect(buildSupaflowArgv('agent_upgrade', { name: 'edge-agent', pull: false }))
+      .toEqual(['agent', 'upgrade', '--name', 'edge-agent', '--no-pull', '--json']);
   });
 
   it('always passes the prepared objects file in guided create', () => {

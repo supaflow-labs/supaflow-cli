@@ -1,7 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import {
   buildPreflight,
+  containerEnvValue,
   containerIdentifier,
+  createAgentDataVolume,
   getContainerStatus,
   freeDiskGb,
   isNotFound,
@@ -10,7 +12,7 @@ import {
   ExecError,
   type ExecRunner,
 } from '../../src/lib/docker.js';
-import { buildRunArgs, resolveAgentApiUrl } from '../../src/commands/agents.js';
+import { buildRunArgs, resolveAgentApiUrl, upgradeAgentContainer } from '../../src/commands/agents.js';
 
 /**
  * Scripted runner: each entry maps "cmd arg0 arg1 ..." prefixes to a stdout
@@ -36,7 +38,7 @@ const DAEMON_DOWN = new ExecError('Cannot connect to the Docker daemon at unix:/
 const DF_OK = 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk1 500000000 100000000 209715200 33% /\n'; // 200 GB avail
 const DF_LOW = 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk1 500000000 490000000 1048576 99% /\n'; // 1 GB avail
 
-const NAMES = { container: 'supaflow-agent', volume: 'supaflow-agent-data', image: 'supaflow/agent:latest' };
+const NAMES = { container: 'supaflow-agent', volume: 'supaflow-agent-data', image: 'supaflow/supaflow-agent:latest' };
 
 describe('buildPreflight', () => {
   it('all green on a healthy fresh host', async () => {
@@ -45,7 +47,7 @@ describe('buildPreflight', () => {
       'docker version --format': '28.0.0\n',
       'docker inspect --format': NOT_FOUND('object: supaflow-agent'),
       'docker volume inspect': NOT_FOUND('volume: supaflow-agent-data'),
-      'docker image inspect': NOT_FOUND('image: supaflow/agent:latest'),
+      'docker image inspect': NOT_FOUND('image: supaflow/supaflow-agent:latest'),
       'df -Pk /': DF_OK,
     });
     const { checks, ok, state } = await buildPreflight(run, NAMES);
@@ -135,17 +137,50 @@ describe('not-found vs real failures', () => {
   });
 });
 
+describe('agent data volume lifecycle', () => {
+  it('creates the named volume explicitly with durable-agent labels', async () => {
+    const calls: string[][] = [];
+    const run: ExecRunner = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      return { stdout: 'supaflow-agent-data\n', stderr: '' };
+    };
+
+    await createAgentDataVolume(run, 'supaflow-agent-data', 'supaflow-agent');
+
+    expect(calls).toEqual([[
+      'docker', 'volume', 'create',
+      '--label', 'io.supaflow.agent.data=true',
+      '--label', 'io.supaflow.agent.container=supaflow-agent',
+      'supaflow-agent-data',
+    ]]);
+  });
+
+  it('reads the current bootstrap URL from the container environment', async () => {
+    const run = scriptedRunner({
+      'docker inspect --format {{range .Config.Env}}':
+        'PATH=/usr/bin\nSUPAFLOW_API_URL=http://host.docker.internal:3000\nRESOURCE_INSTANCE_ID=agent-1\n',
+    });
+    await expect(containerEnvValue(run, 'supaflow-agent', 'SUPAFLOW_API_URL'))
+      .resolves.toBe('http://host.docker.internal:3000');
+    await expect(containerEnvValue(run, 'supaflow-agent', 'MISSING'))
+      .resolves.toBeNull();
+  });
+});
+
 describe('getContainerStatus parsing', () => {
   it('parses running state and image', async () => {
-    const run = scriptedRunner({ 'docker inspect --format': 'running supaflow/agent:latest\n' });
+    const run = scriptedRunner({
+      'docker inspect --format': 'running supaflow/supaflow-agent:latest sha256:abc123\n',
+    });
     expect(await getContainerStatus(run, 'supaflow-agent')).toEqual({
       status: 'running',
-      image: 'supaflow/agent:latest',
+      image: 'supaflow/supaflow-agent:latest',
+      imageId: 'sha256:abc123',
     });
   });
 
   it('maps any non-running state to exited', async () => {
-    const run = scriptedRunner({ 'docker inspect --format': 'exited supaflow/agent:latest\n' });
+    const run = scriptedRunner({ 'docker inspect --format': 'exited supaflow/supaflow-agent:latest\n' });
     expect((await getContainerStatus(run, 'supaflow-agent')).status).toBe('exited');
   });
 });
@@ -173,7 +208,7 @@ describe('containerIdentifier', () => {
 
 describe('readVolumeIdentity', () => {
   const read = (script: Record<string, string | ExecError>) =>
-    readVolumeIdentity(scriptedRunner(script), 'supaflow-agent-data', 'supaflow/agent:latest');
+    readVolumeIdentity(scriptedRunner(script), 'supaflow-agent-data', 'supaflow/supaflow-agent:latest');
 
   const FULL_IDENTITY = {
     signing_identity_id: 'f4b23418-2d59-4d62-98e3-86ab9b8f1199',
@@ -204,7 +239,7 @@ describe('readVolumeIdentity', () => {
   // /data/identity.json -- into err.message. Fixtures model that real
   // shape so the classifier cannot pass by matching the command echo.
   const PROBE_CMD =
-    'Command failed: docker run --rm --entrypoint cat -v supaflow-agent-data:/data:ro supaflow/agent:latest /data/identity.json';
+    'Command failed: docker run --rm --entrypoint cat -v supaflow-agent-data:/data:ro supaflow/supaflow-agent:latest /data/identity.json';
 
   it('reports missing only for cat not-found about identity.json in stderr with exit code 1', async () => {
     expect(
@@ -281,7 +316,7 @@ describe('readVolumeIdentity', () => {
     await expect(
       read({
         'docker run --rm --entrypoint cat': new ExecError(
-          'Unable to find image; pull access denied for supaflow/agent',
+          'Unable to find image; pull access denied for supaflow/supaflow-agent',
           { code: 125, stderr: 'pull access denied' },
         ),
       }),
@@ -306,7 +341,7 @@ describe('buildRunArgs', () => {
     const args = buildRunArgs({
       container: 'supaflow-agent',
       volume: 'supaflow-agent-data',
-      image: 'supaflow/agent:latest',
+      image: 'supaflow/supaflow-agent:latest',
       instanceId: 'supaflow-agent-3fa2b1',
       token: 'supa_otp_aws_us-east-1_abc',
     });
@@ -315,7 +350,7 @@ describe('buildRunArgs', () => {
       '-v', 'supaflow-agent-data:/data',
       '-e', 'RESOURCE_INSTANCE_ID=supaflow-agent-3fa2b1',
       '-e', 'AGENT_REGISTRATION_TOKEN=supa_otp_aws_us-east-1_abc',
-      'supaflow/agent:latest',
+      'supaflow/supaflow-agent:latest',
     ]);
   });
 
@@ -323,21 +358,21 @@ describe('buildRunArgs', () => {
     const args = buildRunArgs({
       container: 'supaflow-agent',
       volume: 'supaflow-agent-data',
-      image: 'supaflow/agent:latest',
+      image: 'supaflow/supaflow-agent:latest',
       instanceId: 'supaflow-agent-3fa2b1',
       apiUrl: 'http://host.docker.internal:3000',
     });
     expect(args.join(' ')).not.toContain('AGENT_REGISTRATION_TOKEN');
     expect(args).toContain('RESOURCE_INSTANCE_ID=supaflow-agent-3fa2b1');
     expect(args).toContain('SUPAFLOW_API_URL=http://host.docker.internal:3000');
-    expect(args[args.length - 1]).toBe('supaflow/agent:latest');
+    expect(args[args.length - 1]).toBe('supaflow/supaflow-agent:latest');
   });
 
   it('adds the host-gateway mapping only when the api url targets host.docker.internal', () => {
     const local = buildRunArgs({
       container: 'supaflow-agent',
       volume: 'supaflow-agent-data',
-      image: 'supaflow/agent:latest',
+      image: 'supaflow/supaflow-agent:latest',
       apiUrl: 'http://host.docker.internal:3000',
     });
     // Native Docker Engine on Linux does not resolve host.docker.internal
@@ -345,15 +380,262 @@ describe('buildRunArgs', () => {
     const flagIdx = local.indexOf('--add-host');
     expect(flagIdx).toBeGreaterThan(-1);
     expect(local[flagIdx + 1]).toBe('host.docker.internal:host-gateway');
-    expect(local[local.length - 1]).toBe('supaflow/agent:latest');
+    expect(local[local.length - 1]).toBe('supaflow/supaflow-agent:latest');
 
     const prod = buildRunArgs({
       container: 'supaflow-agent',
       volume: 'supaflow-agent-data',
-      image: 'supaflow/agent:latest',
+      image: 'supaflow/supaflow-agent:latest',
       apiUrl: 'https://app.supa-flow.io',
     });
     expect(prod).not.toContain('--add-host');
+  });
+
+  it('pins the pull policy when an upgrade has already resolved the image', () => {
+    const args = buildRunArgs({
+      container: 'supaflow-agent',
+      volume: 'supaflow-agent-data',
+      image: 'supaflow/supaflow-agent:latest',
+      pull: 'never',
+    });
+    expect(args.slice(0, 4)).toEqual(['run', '-d', '--pull=never', '--name']);
+  });
+});
+
+describe('upgradeAgentContainer', () => {
+  const IDENTITY = JSON.stringify({
+    signing_identity_id: 'f4b23418-2d59-4d62-98e3-86ab9b8f1199',
+    tenant_id: 'e29bf9fa-9b1a-4664-92cd-e7463112e834',
+    instance_identifier: 'supaflow-agent-3fa2b1',
+    cloud_provider: 'aws',
+    region: 'us-east-1',
+  });
+
+  it('pulls and validates before replacing the container, then preserves identity and API URL', async () => {
+    const calls: string[] = [];
+    const run: ExecRunner = async (cmd, args) => {
+      const key = [cmd, ...args].join(' ');
+      calls.push(key);
+      if (key.startsWith('docker inspect --format {{.State.Status}}')) {
+        return { stdout: 'running supaflow/supaflow-agent:old sha256:old-image-id\n', stderr: '' };
+      }
+      if (key.startsWith('docker inspect --format {{json .State}}')) {
+        return { stdout: '{"Status":"running","Health":{"Status":"healthy"}}\n', stderr: '' };
+      }
+      if (key.startsWith('docker volume inspect')) return { stdout: '[]', stderr: '' };
+      if (key.startsWith('docker inspect --format {{range .Config.Env}}')) {
+        return { stdout: 'SUPAFLOW_API_URL=http://host.docker.internal:3000\n', stderr: '' };
+      }
+      if (key.startsWith('docker pull')) return { stdout: 'pulled', stderr: '' };
+      if (key.startsWith('docker run --rm --pull=never')) return { stdout: IDENTITY, stderr: '' };
+      if (key.startsWith('docker stop') || key.startsWith('docker rm')) return { stdout: '', stderr: '' };
+      if (key.startsWith('docker run -d --pull=never')) return { stdout: 'new-container-id', stderr: '' };
+      throw new ExecError(`unscripted: ${key}`, { code: 1 });
+    };
+
+    const result = await upgradeAgentContainer(run, {
+      container: 'supaflow-agent',
+      volume: 'supaflow-agent-data',
+      image: 'supaflow/supaflow-agent:latest',
+      pull: true,
+    });
+
+    expect(result).toMatchObject({
+      previous_image: 'supaflow/supaflow-agent:old',
+      image: 'supaflow/supaflow-agent:latest',
+      agent_identifier: 'supaflow-agent-3fa2b1',
+      pulled: true,
+    });
+    expect(calls.findIndex((c) => c.startsWith('docker pull')))
+      .toBeLessThan(calls.findIndex((c) => c.startsWith('docker stop')));
+    const stopIndex = calls.findIndex((c) => c.startsWith('docker stop'));
+    const lockCleanupIndex = calls.findIndex((c) => c.includes('--entrypoint sh'));
+    const removeIndex = calls.findIndex((c) => c.startsWith('docker rm'));
+    expect(stopIndex).toBeLessThan(lockCleanupIndex);
+    expect(lockCleanupIndex).toBeLessThan(removeIndex);
+    expect(calls[lockCleanupIndex]).toContain('/data/supaflow-agent/global/connectors.sync.lock');
+    const replacement = calls.find((c) => c.startsWith('docker run -d --pull=never')) ?? '';
+    expect(replacement).toContain('RESOURCE_INSTANCE_ID=supaflow-agent-3fa2b1');
+    expect(replacement).toContain('SUPAFLOW_API_URL=http://host.docker.internal:3000');
+    expect(replacement).not.toContain('AGENT_REGISTRATION_TOKEN');
+  });
+
+  it('leaves the running container untouched when the image pull fails', async () => {
+    const calls: string[] = [];
+    const run: ExecRunner = async (cmd, args) => {
+      const key = [cmd, ...args].join(' ');
+      calls.push(key);
+      if (key.startsWith('docker inspect --format {{.State.Status}}')) {
+        return { stdout: 'running supaflow/supaflow-agent:old sha256:old-image-id\n', stderr: '' };
+      }
+      if (key.startsWith('docker volume inspect')) return { stdout: '[]', stderr: '' };
+      if (key.startsWith('docker inspect --format {{range .Config.Env}}')) {
+        return { stdout: 'SUPAFLOW_API_URL=https://app.supa-flow.io\n', stderr: '' };
+      }
+      if (key.startsWith('docker pull')) throw new ExecError('registry unavailable', { code: 1 });
+      throw new ExecError(`unexpected mutation: ${key}`, { code: 1 });
+    };
+
+    await expect(upgradeAgentContainer(run, {
+      container: 'supaflow-agent',
+      volume: 'supaflow-agent-data',
+      image: 'supaflow/supaflow-agent:latest',
+      pull: true,
+    })).rejects.toThrow('registry unavailable');
+    expect(calls.some((c) => c.startsWith('docker stop'))).toBe(false);
+    expect(calls.some((c) => c.startsWith('docker rm '))).toBe(false);
+  });
+
+  it('refuses to infer a missing container API URL from the CLI shell', async () => {
+    const calls: string[] = [];
+    const savedAppUrl = process.env.SUPAFLOW_APP_URL;
+    process.env.SUPAFLOW_APP_URL = 'http://localhost:3000';
+    const run: ExecRunner = async (cmd, args) => {
+      const key = [cmd, ...args].join(' ');
+      calls.push(key);
+      if (key.startsWith('docker inspect --format {{.State.Status}}')) {
+        return { stdout: 'running supaflow/supaflow-agent:latest sha256:old-image-id\n', stderr: '' };
+      }
+      if (key.startsWith('docker volume inspect')) return { stdout: '[]', stderr: '' };
+      if (key.startsWith('docker inspect --format {{range .Config.Env}}')) return { stdout: '', stderr: '' };
+      throw new ExecError(`unexpected mutation: ${key}`, { code: 1 });
+    };
+
+    try {
+      await expect(upgradeAgentContainer(run, {
+        container: 'supaflow-agent',
+        volume: 'supaflow-agent-data',
+        image: 'supaflow/supaflow-agent:latest',
+        pull: true,
+      })).rejects.toThrow('Pass --api-url explicitly');
+    } finally {
+      if (savedAppUrl === undefined) delete process.env.SUPAFLOW_APP_URL;
+      else process.env.SUPAFLOW_APP_URL = savedAppUrl;
+    }
+
+    expect(calls.some((c) => c.startsWith('docker pull'))).toBe(false);
+    expect(calls.some((c) => c.startsWith('docker stop'))).toBe(false);
+  });
+
+  it('restarts the existing container when stale-lock cleanup fails', async () => {
+    const calls: string[] = [];
+    const run: ExecRunner = async (cmd, args) => {
+      const key = [cmd, ...args].join(' ');
+      calls.push(key);
+      if (key.startsWith('docker inspect --format {{.State.Status}}')) {
+        return { stdout: 'running supaflow/supaflow-agent:old sha256:old-image-id\n', stderr: '' };
+      }
+      if (key.startsWith('docker volume inspect')) return { stdout: '[]', stderr: '' };
+      if (key.startsWith('docker inspect --format {{range .Config.Env}}')) {
+        return { stdout: 'SUPAFLOW_API_URL=https://app.supa-flow.io\n', stderr: '' };
+      }
+      if (key.startsWith('docker pull')) return { stdout: 'pulled', stderr: '' };
+      if (key.startsWith('docker run --rm --pull=never') && !key.includes('--entrypoint sh')) {
+        return { stdout: IDENTITY, stderr: '' };
+      }
+      if (key.startsWith('docker stop')) return { stdout: '', stderr: '' };
+      if (key.includes('--entrypoint sh')) {
+        throw new ExecError('lock directory is not empty', { code: 1 });
+      }
+      if (key.startsWith('docker start')) return { stdout: 'supaflow-agent\n', stderr: '' };
+      throw new ExecError(`unexpected mutation: ${key}`, { code: 1 });
+    };
+
+    await expect(upgradeAgentContainer(run, {
+      container: 'supaflow-agent',
+      volume: 'supaflow-agent-data',
+      image: 'supaflow/supaflow-agent:latest',
+      pull: true,
+    })).rejects.toThrow('existing container was restarted and left unchanged');
+
+    expect(calls.some((c) => c.startsWith('docker start supaflow-agent'))).toBe(true);
+    expect(calls.some((c) => c.startsWith('docker rm '))).toBe(false);
+    expect(calls.some((c) => c.startsWith('docker run -d '))).toBe(false);
+  });
+
+  it('restores the previous image when replacement fails after removal', async () => {
+    const calls: string[] = [];
+    let detachedRuns = 0;
+    const run: ExecRunner = async (cmd, args) => {
+      const key = [cmd, ...args].join(' ');
+      calls.push(key);
+      if (key.startsWith('docker inspect --format {{.State.Status}}')) {
+        return { stdout: 'running supaflow/supaflow-agent:latest sha256:old-image-id\n', stderr: '' };
+      }
+      if (key.startsWith('docker inspect --format {{json .State}}')) {
+        return { stdout: '{"Status":"running","Health":{"Status":"healthy"}}\n', stderr: '' };
+      }
+      if (key.startsWith('docker volume inspect')) return { stdout: '[]', stderr: '' };
+      if (key.startsWith('docker inspect --format {{range .Config.Env}}')) {
+        return { stdout: 'SUPAFLOW_API_URL=https://app.supa-flow.io\n', stderr: '' };
+      }
+      if (key.startsWith('docker pull')) return { stdout: 'pulled', stderr: '' };
+      if (key.startsWith('docker run --rm --pull=never')) return { stdout: IDENTITY, stderr: '' };
+      if (key.startsWith('docker stop') || key.startsWith('docker rm')) return { stdout: '', stderr: '' };
+      if (key.startsWith('docker run -d --pull=never')) {
+        detachedRuns += 1;
+        if (detachedRuns === 1) throw new ExecError('new image failed to start', { code: 125 });
+        return { stdout: 'restored-container-id', stderr: '' };
+      }
+      throw new ExecError(`unscripted: ${key}`, { code: 1 });
+    };
+
+    await expect(upgradeAgentContainer(run, {
+      container: 'supaflow-agent',
+      volume: 'supaflow-agent-data',
+      image: 'supaflow/supaflow-agent:latest',
+      pull: true,
+    })).rejects.toThrow('previous image "sha256:old-image-id" was restored');
+
+    const detached = calls.filter((c) => c.startsWith('docker run -d --pull=never'));
+    expect(detached).toHaveLength(2);
+    expect(detached[0]).toContain('supaflow/supaflow-agent:latest');
+    expect(detached[1]).toContain('sha256:old-image-id');
+    expect(detached[1]).toContain('supaflow-agent-data:/data');
+    expect(detached[1]).toContain('RESOURCE_INSTANCE_ID=supaflow-agent-3fa2b1');
+  });
+
+  it('rolls back when the replacement exits after docker run succeeds', async () => {
+    const calls: string[] = [];
+    let detachedRuns = 0;
+    let startupInspects = 0;
+    const run: ExecRunner = async (cmd, args) => {
+      const key = [cmd, ...args].join(' ');
+      calls.push(key);
+      if (key.startsWith('docker inspect --format {{.State.Status}}')) {
+        return { stdout: 'running supaflow/supaflow-agent:latest sha256:old-image-id\n', stderr: '' };
+      }
+      if (key.startsWith('docker inspect --format {{json .State}}')) {
+        startupInspects += 1;
+        return startupInspects === 1
+          ? { stdout: '{"Status":"exited"}\n', stderr: '' }
+          : { stdout: '{"Status":"running","Health":{"Status":"healthy"}}\n', stderr: '' };
+      }
+      if (key.startsWith('docker volume inspect')) return { stdout: '[]', stderr: '' };
+      if (key.startsWith('docker inspect --format {{range .Config.Env}}')) {
+        return { stdout: 'SUPAFLOW_API_URL=https://app.supa-flow.io\n', stderr: '' };
+      }
+      if (key.startsWith('docker pull')) return { stdout: 'pulled', stderr: '' };
+      if (key.startsWith('docker run --rm --pull=never')) return { stdout: IDENTITY, stderr: '' };
+      if (key.startsWith('docker stop') || key.startsWith('docker rm')) return { stdout: '', stderr: '' };
+      if (key.startsWith('docker run -d --pull=never')) {
+        detachedRuns += 1;
+        return { stdout: detachedRuns === 1 ? 'replacement-id' : 'restored-id', stderr: '' };
+      }
+      throw new ExecError(`unscripted: ${key}`, { code: 1 });
+    };
+
+    await expect(upgradeAgentContainer(run, {
+      container: 'supaflow-agent',
+      volume: 'supaflow-agent-data',
+      image: 'supaflow/supaflow-agent:latest',
+      pull: true,
+    })).rejects.toThrow('previous image "sha256:old-image-id" was restored');
+
+    expect(calls).toContain('docker rm -f supaflow-agent');
+    const detached = calls.filter((c) => c.startsWith('docker run -d --pull=never'));
+    expect(detached).toHaveLength(2);
+    expect(detached[1]).toContain('sha256:old-image-id');
   });
 });
 

@@ -552,6 +552,7 @@ supaflow agent start
 | Command | What it does |
 |---------|-------------|
 | `agent start` | Preflight, then enroll or resume (flags: `--name`, `--image`, `--api-url`, `--approve` / `--no-approve`, `--timeout`) |
+| `agent upgrade` | CLI 0.5.0+: pull and replace the container while preserving its identity/keystore volume; verify startup and attempt to restore the previous immutable image on failure (`--no-pull` installs an already-built local image) |
 | `agent stop` | Stop the container; identity preserved |
 | `agent status` | Container state joined with the agent record (lifecycle, connectivity, last heartbeat) |
 | `agent logs` | Container logs (`-f/--follow`, `--tail <n>`) |
@@ -560,6 +561,8 @@ supaflow agent start
 Notes:
 
 - `--name` runs multiple agents side by side; the identity volume is named `<name>-data`.
+- `start` explicitly creates and labels the named data volume before enrollment. It refuses to replace an existing container that uses a different image; use `upgrade` for image changes.
+- `upgrade` is available in CLI 0.5.0+. It preserves the container's saved `SUPAFLOW_API_URL`, validates the persisted identity before replacement, and verifies the replacement starts. A legacy container without that environment value requires `--api-url` explicitly. If startup fails, the CLI automatically attempts to restore the exact previous image while keeping the identity volume intact.
 - Re-enrolling on the same host after revoking an agent requires `agent remove --purge` first -- a kept volume deliberately outranks a new registration token.
 - In `--json` mode nothing prompts: `start` leaves the agent pending unless `--approve` is passed, and `remove` requires `--yes`.
 

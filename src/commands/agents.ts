@@ -7,17 +7,23 @@ import { formatGetJson, formatTable, printOutput, relativeTime } from '../lib/ou
 import { CliError, ErrorCode, handleError } from '../lib/errors.js';
 import {
   buildPreflight,
+  clearStoppedAgentSyncLock,
+  containerEnvValue,
   containerIdentifier,
+  createAgentDataVolume,
   defaultRunner,
   getContainerStatus,
+  isNotFound,
   readVolumeIdentity,
   volumeExists,
+  waitForContainerStartup,
   type ExecRunner,
   type PreflightCheck,
 } from '../lib/docker.js';
 
 const DEFAULT_CONTAINER = 'supaflow-agent';
-const DEFAULT_IMAGE = 'supaflow/agent:latest';
+const DEFAULT_IMAGE = 'supaflow/supaflow-agent:latest';
+const PRODUCTION_AGENT_API_URL = 'https://app.supa-flow.io';
 const REGISTRATION_POLL_MS = 5000;
 
 const NEEDS_APPROVAL = new Set(['registered', 'pending_approval']);
@@ -105,7 +111,7 @@ async function promptYesNo(question: string): Promise<boolean> {
  */
 export function resolveAgentApiUrl(override?: string): string {
   if (override) return override;
-  const appUrl = process.env.SUPAFLOW_APP_URL || 'https://app.supa-flow.io';
+  const appUrl = process.env.SUPAFLOW_APP_URL || PRODUCTION_AGENT_API_URL;
   return appUrl.replace(
     /^(https?:\/\/)(localhost|127\.0\.0\.1)(?=[:/]|$)/i,
     '$1host.docker.internal',
@@ -120,17 +126,21 @@ export function buildRunArgs(opts: {
   instanceId?: string;
   token?: string;
   apiUrl?: string;
+  pull?: 'always' | 'missing' | 'never';
 }): string[] {
   const args = [
     'run',
     '-d',
+  ];
+  if (opts.pull) args.push(`--pull=${opts.pull}`);
+  args.push(
     '--name',
     opts.container,
     '--restart',
     'unless-stopped',
     '-v',
     `${opts.volume}:/data`,
-  ];
+  );
   if (opts.instanceId) args.push('-e', `RESOURCE_INSTANCE_ID=${opts.instanceId}`);
   if (opts.token) args.push('-e', `AGENT_REGISTRATION_TOKEN=${opts.token}`);
   if (opts.apiUrl) {
@@ -144,6 +154,177 @@ export function buildRunArgs(opts: {
   }
   args.push(opts.image);
   return args;
+}
+
+export interface UpgradeAgentResult {
+  container: string;
+  volume: string;
+  previous_image: string | null;
+  image: string;
+  agent_identifier: string;
+  pulled: boolean;
+}
+
+/**
+ * Replace an existing CLI/wizard Docker container while preserving its named
+ * data volume and persisted identity. Pull happens before the running
+ * container is touched, so registry failures leave the current agent online.
+ */
+export async function upgradeAgentContainer(
+  run: ExecRunner,
+  opts: {
+    container: string;
+    volume: string;
+    image: string;
+    apiUrl?: string;
+    pull: boolean;
+  },
+): Promise<UpgradeAgentResult> {
+  const current = await getContainerStatus(run, opts.container);
+  if (current.status === 'missing') {
+    throw new CliError(
+      `No container named "${opts.container}" found. Run "supaflow agent start" to deploy one.`,
+      ErrorCode.NOT_FOUND,
+    );
+  }
+  if (!(await volumeExists(run, opts.volume))) {
+    throw new CliError(
+      `Container "${opts.container}" has no persistent volume named "${opts.volume}". ` +
+        'Refusing to upgrade because its identity and keystore cannot be preserved.',
+      ErrorCode.INVALID_INPUT,
+    );
+  }
+
+  const existingApiUrl = await containerEnvValue(run, opts.container, 'SUPAFLOW_API_URL');
+  const effectiveApiUrl = opts.apiUrl ?? existingApiUrl;
+  if (!effectiveApiUrl) {
+    throw new CliError(
+      `Container "${opts.container}" has no SUPAFLOW_API_URL. ` +
+        'Pass --api-url explicitly; the upgrade will not infer it from the CLI shell.',
+      ErrorCode.INVALID_INPUT,
+    );
+  }
+  if (opts.pull) await run('docker', ['pull', opts.image]);
+
+  const identity = await readVolumeIdentity(run, opts.volume, opts.image, 'never');
+  if (identity.kind === 'missing') {
+    throw new CliError(
+      `Volume "${opts.volume}" has no agent identity. Refusing to replace the existing container.`,
+      ErrorCode.INVALID_INPUT,
+    );
+  }
+  if (identity.kind === 'corrupt') {
+    throw new CliError(
+      `Volume "${opts.volume}" holds an unreadable agent identity (${identity.reason}). ` +
+        'Refusing to replace the existing container.',
+      ErrorCode.INVALID_INPUT,
+    );
+  }
+
+  if (current.status === 'running') await run('docker', ['stop', opts.container]);
+  try {
+    await clearStoppedAgentSyncLock(run, opts.volume, opts.image);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (current.status === 'running') {
+      try {
+        await run('docker', ['start', opts.container]);
+        throw new CliError(
+          `Image upgrade preparation failed while clearing the stopped agent's connector sync lock: ${message}. ` +
+            'The existing container was restarted and left unchanged.',
+          ErrorCode.API_ERROR,
+        );
+      } catch (restartError) {
+        if (restartError instanceof CliError) throw restartError;
+        const restartMessage = restartError instanceof Error ? restartError.message : String(restartError);
+        throw new CliError(
+          `Image upgrade preparation failed while clearing the stopped agent's connector sync lock: ${message}. ` +
+            `Restarting the existing container also failed: ${restartMessage}. ` +
+            `The container was not removed; run "docker start ${opts.container}" to recover.`,
+          ErrorCode.API_ERROR,
+        );
+      }
+    }
+    throw new CliError(
+      `Image upgrade preparation failed while clearing the stopped agent's connector sync lock: ${message}. ` +
+        'The existing stopped container was left unchanged.',
+      ErrorCode.API_ERROR,
+    );
+  }
+  await run('docker', ['rm', opts.container]);
+  try {
+    await run(
+      'docker',
+      buildRunArgs({
+        container: opts.container,
+        volume: opts.volume,
+        image: opts.image,
+        instanceId: identity.instanceIdentifier,
+        apiUrl: effectiveApiUrl,
+        pull: 'never',
+      }),
+    );
+    await waitForContainerStartup(run, opts.container);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    try {
+      await run('docker', ['rm', '-f', opts.container]);
+    } catch (cleanupError) {
+      if (!isNotFound(cleanupError)) {
+        const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        throw new CliError(
+          `Image upgrade failed: ${message}. Removing the failed replacement also failed: ${cleanupMessage}. ` +
+            `The persistent volume "${opts.volume}" is intact.`,
+          ErrorCode.API_ERROR,
+        );
+      }
+    }
+    if (current.imageId) {
+      try {
+        await run(
+          'docker',
+          buildRunArgs({
+            container: opts.container,
+            volume: opts.volume,
+            image: current.imageId,
+            instanceId: identity.instanceIdentifier,
+            apiUrl: effectiveApiUrl,
+            pull: 'never',
+          }),
+        );
+        await waitForContainerStartup(run, opts.container);
+        throw new CliError(
+          `Image upgrade failed: ${message}. The previous image "${current.imageId}" was restored, ` +
+            `and the persistent volume "${opts.volume}" was preserved.`,
+          ErrorCode.API_ERROR,
+        );
+      } catch (rollbackError) {
+        if (rollbackError instanceof CliError) throw rollbackError;
+        const rollbackMessage = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+        throw new CliError(
+          `Image upgrade failed: ${message}. Restoring the previous image also failed: ${rollbackMessage}. ` +
+            `The persistent volume "${opts.volume}" is intact; run "supaflow agent start --name ${opts.container} ` +
+            `--image ${current.imageId}" to recover.`,
+          ErrorCode.API_ERROR,
+        );
+      }
+    }
+    throw new CliError(
+      `Image upgrade failed after removing the old container: ${message}. ` +
+        `The persistent volume "${opts.volume}" is intact; run "supaflow agent start --name ${opts.container} ` +
+        `--image ${opts.image}" to recover.`,
+      ErrorCode.API_ERROR,
+    );
+  }
+
+  return {
+    container: opts.container,
+    volume: opts.volume,
+    previous_image: current.image,
+    image: opts.image,
+    agent_identifier: identity.instanceIdentifier,
+    pulled: opts.pull,
+  };
 }
 
 export function registerAgentsCommands(program: Command, run: ExecRunner = defaultRunner): void {
@@ -174,6 +355,24 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
         if (!outputOptions.json) printChecks(preflight.checks);
         if (!preflight.ok) {
           throw new CliError('Preflight failed. Fix the checks marked FAIL and retry.', ErrorCode.INVALID_INPUT);
+        }
+
+        if (
+          preflight.state.containerStatus !== 'missing' &&
+          preflight.state.containerImage &&
+          preflight.state.containerImage !== opts.image
+        ) {
+          throw new CliError(
+            `Container "${container}" uses image "${preflight.state.containerImage}", ` +
+              `but this start requested "${opts.image}". Run "supaflow agent upgrade --name ${container} ` +
+              `--image ${opts.image}" to replace it while preserving its identity.`,
+            ErrorCode.INVALID_INPUT,
+          );
+        }
+
+        if (preflight.state.containerStatus === 'missing' && !preflight.state.volumeExists) {
+          await createAgentDataVolume(run, volume, container);
+          if (!outputOptions.json) console.log(`Created persistent agent data volume "${volume}".`);
         }
 
         // Resolve how to bring the container up. Every path converges on
@@ -329,6 +528,43 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
         }
       }),
     );
+
+  agent
+    .command('upgrade')
+    .description('Pull and install a newer agent image while preserving the agent identity volume')
+    .option('--name <container>', 'Container name (volume is <name>-data)', DEFAULT_CONTAINER)
+    .option('--image <image>', 'Agent image', DEFAULT_IMAGE)
+    .option('--api-url <url>', 'Override the existing container bootstrap URL')
+    .option('--no-pull', 'Use the requested image already present locally')
+    .action(async (...args) => {
+      const cmd = args[args.length - 1] as Command;
+      const opts = cmd.optsWithGlobals() as {
+        name: string;
+        image: string;
+        apiUrl?: string;
+        pull: boolean;
+        json?: boolean;
+      };
+      const json = opts.json ?? false;
+      try {
+        const result = await upgradeAgentContainer(run, {
+          container: opts.name,
+          volume: volumeNameFor(opts.name),
+          image: opts.image,
+          apiUrl: opts.apiUrl,
+          pull: opts.pull,
+        });
+        if (json) {
+          printOutput(formatGetJson({ status: 'upgraded', ...result }));
+        } else {
+          const pullText = result.pulled ? 'pulled and installed' : 'installed from the local image cache';
+          console.log(`Agent "${result.container}" ${pullText}: ${result.image}`);
+          console.log(`Identity preserved in "${result.volume}" (${result.agent_identifier}).`);
+        }
+      } catch (error) {
+        handleError(error, json);
+      }
+    });
 
   agent
     .command('stop')

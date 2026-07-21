@@ -45,6 +45,16 @@ export const defaultRunner: ExecRunner = (cmd, args) =>
 
 export type ContainerStatus = 'running' | 'exited' | 'missing';
 
+export interface ContainerDetails {
+  status: ContainerStatus;
+  image: string | null;
+  imageId: string | null;
+}
+
+export const AGENT_DATA_VOLUME_LABEL = 'io.supaflow.agent.data';
+export const AGENT_CONTAINER_VOLUME_LABEL = 'io.supaflow.agent.container';
+export const AGENT_CONNECTOR_SYNC_LOCK = '/data/supaflow-agent/global/connectors.sync.lock';
+
 /**
  * Docker prints "No such object/container/volume/image" for genuinely
  * absent resources. Anything else (daemon down, permission denied) is a
@@ -73,17 +83,66 @@ export interface PreflightCheck {
 
 /** The named volume grows to roughly 3.5 GB (connector artifacts + Python envs). */
 const MIN_FREE_DISK_GB = 5;
-/** Approximate compressed pull size of supaflow/agent, used in messaging only. */
+/** Approximate compressed pull size of supaflow/supaflow-agent, used in messaging only. */
 const IMAGE_PULL_HINT = '~600 MB download';
 
-export async function getContainerStatus(run: ExecRunner, name: string): Promise<{ status: ContainerStatus; image: string | null }> {
+export async function getContainerStatus(run: ExecRunner, name: string): Promise<ContainerDetails> {
   try {
-    const { stdout } = await run('docker', ['inspect', '--format', '{{.State.Status}} {{.Config.Image}}', name]);
-    const [state, image] = stdout.trim().split(/\s+/, 2);
-    return { status: state === 'running' ? 'running' : 'exited', image: image ?? null };
+    const { stdout } = await run('docker', [
+      'inspect',
+      '--format',
+      '{{.State.Status}} {{.Config.Image}} {{.Image}}',
+      name,
+    ]);
+    const [state, image, imageId] = stdout.trim().split(/\s+/, 3);
+    return {
+      status: state === 'running' ? 'running' : 'exited',
+      image: image ?? null,
+      imageId: imageId ?? null,
+    };
   } catch (err) {
-    if (isNotFound(err)) return { status: 'missing', image: null };
+    if (isNotFound(err)) return { status: 'missing', image: null, imageId: null };
     throw err;
+  }
+}
+
+/**
+ * Observe a newly-created container through a short local startup window.
+ * A Docker healthcheck can complete the check early. Images without one are
+ * accepted after remaining running for the full window.
+ */
+export async function waitForContainerStartup(
+  run: ExecRunner,
+  name: string,
+  options: {
+    attempts?: number;
+    intervalMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<void> {
+  const attempts = Math.max(1, options.attempts ?? 6);
+  const intervalMs = Math.max(0, options.intervalMs ?? 2000);
+  const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const { stdout } = await run('docker', ['inspect', '--format', '{{json .State}}', name]);
+    let state: { Status?: string; Health?: { Status?: string } };
+    try {
+      state = JSON.parse(stdout) as { Status?: string; Health?: { Status?: string } };
+    } catch {
+      throw new Error(`Docker returned an unreadable startup state for container "${name}".`);
+    }
+
+    const status = state.Status ?? 'unknown';
+    const health = state.Health?.Status;
+    if (status !== 'running') {
+      throw new Error(`Container "${name}" entered Docker state "${status}" during startup.`);
+    }
+    if (health === 'unhealthy') {
+      throw new Error(`Container "${name}" became unhealthy during startup.`);
+    }
+    if (health === 'healthy') return;
+    if (attempt < attempts - 1) await sleep(intervalMs);
   }
 }
 
@@ -93,6 +152,75 @@ export async function volumeExists(run: ExecRunner, name: string): Promise<boole
     return true;
   } catch (err) {
     if (isNotFound(err)) return false;
+    throw err;
+  }
+}
+
+/**
+ * Create the agent's persistent named volume before starting the container.
+ * Docker would create it implicitly for `-v name:/data`, but doing it here
+ * lets maintenance tooling distinguish identity/keystore state from
+ * disposable build and test volumes.
+ */
+export async function createAgentDataVolume(
+  run: ExecRunner,
+  volume: string,
+  container: string,
+): Promise<void> {
+  await run('docker', [
+    'volume',
+    'create',
+    '--label',
+    `${AGENT_DATA_VOLUME_LABEL}=true`,
+    '--label',
+    `${AGENT_CONTAINER_VOLUME_LABEL}=${container}`,
+    volume,
+  ]);
+}
+
+/**
+ * Remove the repo-sync mkdir lock after the owning container has stopped.
+ * Unlike an OS-backed lock, this directory survives container replacement in
+ * the persistent volume even though its owning process is gone. The path is a
+ * fixed agent-internal contract; rmdir deliberately refuses non-empty paths.
+ */
+export async function clearStoppedAgentSyncLock(
+  run: ExecRunner,
+  volume: string,
+  image: string,
+): Promise<void> {
+  await run('docker', [
+    'run',
+    '--rm',
+    '--pull=never',
+    '--entrypoint',
+    'sh',
+    '-v',
+    `${volume}:/data`,
+    image,
+    '-c',
+    `if [ -d '${AGENT_CONNECTOR_SYNC_LOCK}' ]; then rmdir '${AGENT_CONNECTOR_SYNC_LOCK}'; fi`,
+  ]);
+}
+
+/** Read one environment variable from an existing container definition. */
+export async function containerEnvValue(
+  run: ExecRunner,
+  container: string,
+  key: string,
+): Promise<string | null> {
+  try {
+    const { stdout } = await run('docker', [
+      'inspect',
+      '--format',
+      '{{range .Config.Env}}{{println .}}{{end}}',
+      container,
+    ]);
+    const prefix = `${key}=`;
+    const entry = stdout.split(/\r?\n/).find((line) => line.startsWith(prefix));
+    return entry ? entry.slice(prefix.length) : null;
+  } catch (err) {
+    if (isNotFound(err)) return null;
     throw err;
   }
 }
@@ -157,19 +285,24 @@ export async function readVolumeIdentity(
   run: ExecRunner,
   volume: string,
   image: string,
+  pullPolicy?: 'always' | 'missing' | 'never',
 ): Promise<VolumeIdentity> {
   let stdout: string;
   try {
-    ({ stdout } = await run('docker', [
+    const args = [
       'run',
       '--rm',
+    ];
+    if (pullPolicy) args.push(`--pull=${pullPolicy}`);
+    args.push(
       '--entrypoint',
       'cat',
       '-v',
       `${volume}:/data:ro`,
       image,
       '/data/identity.json',
-    ]));
+    );
+    ({ stdout } = await run('docker', args));
   } catch (err) {
     // 'missing' requires cat's own not-found report about identity.json,
     // matched in stderr ONLY: execFile puts the full command line --
