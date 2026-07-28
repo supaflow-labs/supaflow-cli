@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { createPipelineConfig, resolvePipelinePrefix, PIPELINE_DEFAULTS } from '../../src/lib/pipeline-config.js';
+import {
+  createPipelineConfig,
+  generateCapabilityAwareConfig,
+  resolvePipelinePrefix,
+  PIPELINE_DEFAULTS,
+} from '../../src/lib/pipeline-config.js';
 
 describe('createPipelineConfig', () => {
   it('returns defaults when no overrides provided', () => {
@@ -53,6 +58,31 @@ describe('createPipelineConfig', () => {
 
   it('accepts valid override keys', () => {
     expect(() => createPipelineConfig({ pipeline_prefix: 'my_prefix', is_custom_prefix: true })).not.toThrow();
+  });
+});
+
+describe('generateCapabilityAwareConfig', () => {
+  it('resolves error_handling from a STRICT-only destination (e.g. Databricks)', () => {
+    const config = generateCapabilityAwareConfig(
+      null,
+      { error_handling: { supported_values: ['STRICT'], default_value: 'STRICT' } },
+      'MYSQL',
+    );
+    expect(config.error_handling).toBe('STRICT');
+  });
+
+  it('keeps the destination default when both error handling modes are supported', () => {
+    const config = generateCapabilityAwareConfig(
+      null,
+      { error_handling: { supported_values: ['STRICT', 'MODERATE'], default_value: 'MODERATE' } },
+      'MYSQL',
+    );
+    expect(config.error_handling).toBe('MODERATE');
+  });
+
+  it('keeps the static MODERATE default when the destination declares no error_handling capability', () => {
+    const config = generateCapabilityAwareConfig(null, {}, 'MYSQL');
+    expect(config.error_handling).toBe('MODERATE');
   });
 });
 

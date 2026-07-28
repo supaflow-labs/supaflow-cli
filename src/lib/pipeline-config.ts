@@ -47,6 +47,7 @@ const CAPABILITY_OWNERSHIP: Record<string, 'source' | 'destination' | 'both'> = 
   schema_evolution_mode: 'destination',
   load_optimization_mode: 'destination',
   checksum_validation_level: 'both',
+  error_handling: 'destination',
   perform_hard_deletes: 'both',
   trigger_auto_re_sync_on_new_table: 'destination',
   trigger_auto_re_sync_on_new_column: 'destination',
