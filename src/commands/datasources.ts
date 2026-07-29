@@ -18,6 +18,7 @@ import { shouldShowProperty, filterVisibleFormValues, validateProperty } from '.
 import { pollJobUntilDone } from '../lib/polling.js';
 import { resolveEncryptedConfigs, encryptValue, encodeEnvelope } from '../lib/encryption.js';
 import { softDeleteRecord } from '../lib/client.js';
+import { buildDbtTestSnapshot } from '../lib/dbtSnapshot.js';
 
 // Exclude connector_icon (SVG markup) and configs -- wastes agent context in list output
 const DATASOURCE_LIST_SELECT = `
@@ -679,6 +680,68 @@ export function registerDatasourcesCommands(program: Command): void {
           ]);
           printOutput(formatTable(headers, rows));
         }
+      }),
+    );
+
+  // -----------------------------------------------------------------------
+  // datasources export-dbt-test-snapshot
+  // -----------------------------------------------------------------------
+  datasources
+    .command('export-dbt-test-snapshot <identifier>')
+    .description('Export an encrypted datasource snapshot for the local dbt E2E harness')
+    .requiredOption('--output <file>', 'Snapshot output path')
+    .action(
+      withAuth(async (ctx: AuthContext, identifier: string, opts: { output: string }) => {
+        const { supabase, workspaceId } = ctx;
+
+        // Resolve datasource -- full row, same uuid-vs-api_name pattern as `catalog`.
+        let dsQuery = supabase
+          .from('datasources_with_access')
+          .select('*')
+          .eq('workspace_id', workspaceId);
+
+        if (isUuid(identifier)) {
+          dsQuery = dsQuery.eq('id', identifier);
+        } else {
+          dsQuery = dsQuery.eq('api_name', identifier);
+        }
+
+        const { data: row, error: dsError } = await dsQuery.single();
+        if (dsError || !row) {
+          throw new CliError(`Datasource "${identifier}" not found.`, ErrorCode.NOT_FOUND);
+        }
+
+        // The CLI has no other query that fetches tenant_id -- neither
+        // datasources_with_access nor workspaces_with_access expose it.
+        // This is the first direct `workspaces` query in the codebase; the
+        // RLS SELECT policy on `workspaces` permits it for a member of the
+        // workspace.
+        const { data: ws, error: wsError } = await supabase
+          .from('workspaces')
+          .select('id, tenant_id')
+          .eq('id', workspaceId)
+          .single();
+
+        if (wsError || !ws?.tenant_id) {
+          throw new CliError('Could not resolve workspace tenant.', ErrorCode.NOT_FOUND);
+        }
+
+        const snapshot = buildDbtTestSnapshot({ row, tenantId: ws.tenant_id as string });
+
+        if (fs.existsSync(opts.output)) {
+          throw new CliError(`Output file already exists: ${opts.output}`, ErrorCode.INVALID_INPUT);
+        }
+
+        // 'wx' = exclusive create: mode is applied at creation (never repaired
+        // on an already-existing file) and a symlink at opts.output cannot be
+        // followed to overwrite an unrelated file.
+        fs.writeFileSync(opts.output, JSON.stringify(snapshot, null, 2) + '\n', {
+          encoding: 'utf-8',
+          mode: 0o600,
+          flag: 'wx',
+        });
+
+        process.stderr.write(`Snapshot written to ${opts.output}\n`);
       }),
     );
 
