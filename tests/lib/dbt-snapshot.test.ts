@@ -112,6 +112,36 @@ describe('buildDbtTestSnapshot', () => {
     expect(() => buildDbtTestSnapshot({ row, tenantId: '' })).toThrow(CliError);
     expect(() => buildDbtTestSnapshot({ row, tenantId: '   ' })).toThrow(CliError);
   });
+
+  it.each([
+    ['missing', undefined],
+    ['null', null],
+    ['object', { password: true }],
+    ['empty', []],
+    [
+      'malformed entry',
+      [{ name: 'password', encrypted: true, sensitive: false }],
+    ],
+  ])('rejects %s connector property metadata', (_label, connectorVersionProperties) => {
+    const row = baseRow({ connector_version_properties: connectorVersionProperties });
+
+    expect(() => buildDbtTestSnapshot({ row, tenantId: 'tenant-789' })).toThrow(
+      /property metadata is missing or malformed/,
+    );
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['null', null],
+    ['array', []],
+    ['string', 'not-an-object'],
+  ])('rejects %s encrypted configs metadata', (_label, configs) => {
+    const row = baseRow({ configs });
+
+    expect(() => buildDbtTestSnapshot({ row, tenantId: 'tenant-789' })).toThrow(
+      /encrypted config metadata is missing or malformed/,
+    );
+  });
 });
 
 describe('looksEncrypted', () => {

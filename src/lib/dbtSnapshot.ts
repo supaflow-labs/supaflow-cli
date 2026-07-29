@@ -13,10 +13,10 @@ export interface DbtSnapshotInput {
 }
 
 interface ConnectorPropertyFlags {
-  name?: unknown;
-  encrypted?: unknown;
-  sensitive?: unknown;
-  password?: unknown;
+  name: string;
+  encrypted: boolean;
+  sensitive: boolean;
+  password: boolean;
 }
 
 // Mirrors io.supaflow.utils.crypto.EncryptionEnvelope#POSTGRES_HEX_PATTERN
@@ -73,12 +73,25 @@ export function looksEncrypted(value: unknown): boolean {
   return false;
 }
 
-function isSensitiveProperty(prop: unknown): prop is ConnectorPropertyFlags {
-  if (prop === null || typeof prop !== 'object') {
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isConnectorPropertyMetadata(prop: unknown): prop is ConnectorPropertyFlags {
+  if (!isObjectRecord(prop)) {
     return false;
   }
-  const p = prop as ConnectorPropertyFlags;
-  return p.encrypted === true || p.sensitive === true || p.password === true;
+  return (
+    typeof prop.name === 'string' &&
+    prop.name.trim() !== '' &&
+    typeof prop.encrypted === 'boolean' &&
+    typeof prop.sensitive === 'boolean' &&
+    typeof prop.password === 'boolean'
+  );
+}
+
+function isSensitiveProperty(prop: ConnectorPropertyFlags): boolean {
+  return prop.encrypted || prop.sensitive || prop.password;
 }
 
 /**
@@ -101,10 +114,25 @@ export function buildDbtTestSnapshot(input: DbtSnapshotInput): Record<string, un
     );
   }
 
-  const configs = (row.configs as Record<string, unknown> | null | undefined) ?? {};
-  const properties = Array.isArray(row.connector_version_properties)
-    ? (row.connector_version_properties as unknown[])
-    : [];
+  if (!isObjectRecord(row.configs)) {
+    throw new CliError(
+      'Datasource encrypted config metadata is missing or malformed. Refusing to export the dbt test snapshot.',
+      ErrorCode.INVALID_INPUT,
+    );
+  }
+  const configs = row.configs;
+
+  const properties = row.connector_version_properties;
+  if (
+    !Array.isArray(properties) ||
+    properties.length === 0 ||
+    !properties.every(isConnectorPropertyMetadata)
+  ) {
+    throw new CliError(
+      'Connector property metadata is missing or malformed. Refusing to export the dbt test snapshot.',
+      ErrorCode.INVALID_INPUT,
+    );
+  }
 
   for (const prop of properties) {
     if (!isSensitiveProperty(prop)) {
