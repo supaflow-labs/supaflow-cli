@@ -15,6 +15,7 @@ import { softDeleteRecord } from '../lib/client.js';
 import { CliError, ErrorCode } from '../lib/errors.js';
 import { createPipelineConfig, generateCapabilityAwareConfig, generateConfigJson, generateConfigReference, resolvePipelinePrefix } from '../lib/pipeline-config.js';
 import { generateApiName } from '../lib/connector.js';
+import { fetchAllMetadataMappings } from '../lib/metadata-mappings.js';
 
 interface PipelineRow {
   pipeline_id: string;
@@ -729,29 +730,20 @@ export function registerPipelinesCommands(program: Command): void {
         const rows: Array<{ row: Record<string, unknown>; mapping: ReturnType<typeof schemaMappingFromRpcRow> }> = [];
 
         if (opts.all) {
-          // --all is intentionally explicit: it scans the full catalog so users can include
-          // currently deselected objects. Without --all, keep the request scoped to saved selections.
-          const allMappings: Array<Record<string, unknown>> = [];
-          const batchSize = opts.withFields ? 50 : 500;
-          let offset = 0;
-
-          while (true) {
-            const { data, error: mappingError } = await supabase.rpc('get_pipeline_metadata_mappings', {
-              p_pipeline_id: pipelineRow.pipeline_id,
-              p_datasource_id: pipelineRow.source_datasource_id,
-              p_limit: batchSize,
-              p_offset: offset,
-              p_include_fields: opts.withFields === true,
+          // --all is intentionally explicit: it scans every active catalog object plus
+          // selected tombstones. Without --all, keep the request scoped to saved selections.
+          let allMappings: Array<Record<string, unknown>>;
+          try {
+            allMappings = await fetchAllMetadataMappings(supabase, {
+              pipelineId: pipelineRow.pipeline_id,
+              datasourceId: pipelineRow.source_datasource_id,
+              includeFields: opts.withFields === true,
+              deletedObjectMode: 'INCLUDE_SELECTED',
+              fullFieldsPageSize: 50,
             });
-
-            if (mappingError) {
-              throw new CliError(`Failed to fetch schema: ${mappingError.message}`, ErrorCode.API_ERROR);
-            }
-
-            const batch = (data || []) as Array<Record<string, unknown>>;
-            allMappings.push(...batch);
-            if (batch.length < batchSize) break;
-            offset += batchSize;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new CliError(`Failed to fetch schema: ${message}`, ErrorCode.API_ERROR);
           }
 
           rows.push(

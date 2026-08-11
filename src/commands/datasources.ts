@@ -19,6 +19,7 @@ import { pollJobUntilDone } from '../lib/polling.js';
 import { resolveEncryptedConfigs, encryptValue, encodeEnvelope } from '../lib/encryption.js';
 import { softDeleteRecord } from '../lib/client.js';
 import { buildDbtTestSnapshot } from '../lib/dbtSnapshot.js';
+import { fetchAllMetadataMappings } from '../lib/metadata-mappings.js';
 
 // Exclude connector_icon (SVG markup) and configs -- wastes agent context in list output
 const DATASOURCE_LIST_SELECT = `
@@ -579,28 +580,20 @@ export function registerDatasourcesCommands(program: Command): void {
 
         // Fetch discovered objects using the same RPC as the FE wizard
         // p_pipeline_id = null means "no pipeline yet, just show discovered catalog"
-        const allObjects: Array<Record<string, unknown>> = [];
-        const batchSize = 100;
-        let offset = 0;
-        let hasMore = true;
-
-        while (hasMore) {
-          const { data, error } = await supabase.rpc('get_pipeline_metadata_mappings', {
-            p_pipeline_id: null,
-            p_datasource_id: ds.id,
-            p_limit: batchSize,
-            p_offset: offset,
-            p_include_fields: opts.withFields === true,
+        let allObjects: Array<Record<string, unknown>>;
+        try {
+          allObjects = await fetchAllMetadataMappings(supabase, {
+            pipelineId: null,
+            datasourceId: ds.id,
+            includeFields: opts.withFields === true,
+            deletedObjectMode: 'EXCLUDE',
+            // Preserve the existing full-field page size. Object-only requests
+            // use the keyset helper's 500-row default.
+            fullFieldsPageSize: 100,
           });
-
-          if (error) {
-            throw new CliError(`Failed to fetch catalog: ${error.message}`, ErrorCode.API_ERROR);
-          }
-
-          const batch = data || [];
-          allObjects.push(...batch);
-          offset += batchSize;
-          hasMore = batch.length === batchSize;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new CliError(`Failed to fetch catalog: ${message}`, ErrorCode.API_ERROR);
         }
 
         if (allObjects.length === 0) {
