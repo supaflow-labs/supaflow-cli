@@ -98,4 +98,62 @@ describe('catalog reset polling', () => {
     expect(onError).toHaveBeenCalledOnce();
     expect(rpc).toHaveBeenCalledTimes(2);
   });
+
+  it('stops after bounded consecutive status failures with a sanitized reattach message', async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: null,
+      error: {
+        code: 'PGRST202',
+        message: 'raw database detail that must not be shown',
+      },
+    });
+    const wait = vi.fn().mockResolvedValue(undefined);
+    const onError = vi.fn();
+
+    await expect(
+      pollCatalogResetUntilFinished({ rpc } as unknown as SupabaseClient, 'job-1', {
+        wait,
+        onError,
+      }),
+    ).rejects.toMatchObject({
+      code: 'API_ERROR',
+      message: expect.stringMatching(/rerun this command to reattach/i),
+    });
+    await expect(
+      pollCatalogResetUntilFinished(
+        {
+          rpc: vi.fn().mockResolvedValue({
+            data: null,
+            error: { message: 'different raw connector detail' },
+          }),
+        } as unknown as SupabaseClient,
+        'job-1',
+        { maxConsecutiveErrors: 1 },
+      ),
+    ).rejects.not.toThrow(/raw|database|connector detail/i);
+    expect(rpc).toHaveBeenCalledTimes(5);
+    expect(wait).toHaveBeenCalledTimes(4);
+    expect(onError).toHaveBeenCalledTimes(5);
+  });
+
+  it('resets the consecutive failure count after a successful status read', async () => {
+    const active = status('maintenance_in_progress', true);
+    const completed = status('completed', false);
+    const rpc = vi
+      .fn()
+      .mockResolvedValueOnce({ data: null, error: { code: 'temporary' } })
+      .mockResolvedValueOnce({ data: null, error: { code: 'temporary' } })
+      .mockResolvedValueOnce({ data: [active], error: null })
+      .mockResolvedValueOnce({ data: null, error: { code: 'temporary' } })
+      .mockResolvedValueOnce({ data: null, error: { code: 'temporary' } })
+      .mockResolvedValueOnce({ data: [completed], error: null });
+
+    await expect(
+      pollCatalogResetUntilFinished({ rpc } as unknown as SupabaseClient, 'job-1', {
+        maxConsecutiveErrors: 3,
+        wait: async () => undefined,
+      }),
+    ).resolves.toEqual(completed);
+    expect(rpc).toHaveBeenCalledTimes(6);
+  });
 });

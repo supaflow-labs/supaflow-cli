@@ -1091,6 +1091,7 @@ export function registerDatasourcesCommands(program: Command): void {
         }
 
         const jobId = await enqueueCatalogReset(supabase, ds.id);
+        process.stderr.write(`Source catalog reset job: ${jobId}\n`);
 
         let lastState: string | null = null;
         if (!outputOptions.json) {

@@ -17,10 +17,13 @@ export interface CatalogResetStatus {
 
 interface PollOptions {
   intervalMs?: number;
+  maxConsecutiveErrors?: number;
   wait?: (milliseconds: number) => Promise<void>;
   onStatus?: (status: CatalogResetStatus) => void;
   onError?: () => void;
 }
+
+const MAX_CONSECUTIVE_STATUS_ERRORS = 5;
 
 const STATES = new Set<CatalogResetState>([
   'maintenance_in_progress',
@@ -75,10 +78,12 @@ export async function pollCatalogResetUntilFinished(
 ): Promise<CatalogResetStatus> {
   const {
     intervalMs = 2000,
+    maxConsecutiveErrors = MAX_CONSECUTIVE_STATUS_ERRORS,
     wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     onStatus,
     onError,
   } = options;
+  let consecutiveErrors = 0;
 
   while (true) {
     let status: CatalogResetStatus;
@@ -86,9 +91,17 @@ export async function pollCatalogResetUntilFinished(
       status = await getCatalogResetStatus(supabase, jobId);
     } catch {
       onError?.();
+      consecutiveErrors += 1;
+      if (consecutiveErrors >= maxConsecutiveErrors) {
+        throw new CliError(
+          'Unable to check source catalog maintenance status after repeated attempts. Rerun this command to reattach to the source catalog reset.',
+          ErrorCode.API_ERROR,
+        );
+      }
       await wait(intervalMs);
       continue;
     }
+    consecutiveErrors = 0;
     onStatus?.(status);
 
     if (!status.maintenance_active) return status;
