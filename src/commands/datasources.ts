@@ -20,6 +20,11 @@ import { resolveEncryptedConfigs, encryptValue, encodeEnvelope } from '../lib/en
 import { softDeleteRecord } from '../lib/client.js';
 import { buildDbtTestSnapshot } from '../lib/dbtSnapshot.js';
 import { fetchAllMetadataMappings } from '../lib/metadata-mappings.js';
+import {
+  catalogResetOutcomeMessage,
+  enqueueCatalogReset,
+  pollCatalogResetUntilFinished,
+} from '../lib/catalog-reset.js';
 
 // Exclude connector_icon (SVG markup) and configs -- wastes agent context in list output
 const DATASOURCE_LIST_SELECT = `
@@ -1028,6 +1033,97 @@ export function registerDatasourcesCommands(program: Command): void {
           }));
         } else {
           console.log(`Schema refresh completed for "${ds.name}".`);
+        }
+      }),
+    );
+
+  // -----------------------------------------------------------------------
+  // datasources reset-catalog
+  // -----------------------------------------------------------------------
+  datasources
+    .command('reset-catalog <identifier>')
+    .description('Reset a source catalog while preserving pipelines and selections')
+    .option('-y, --yes', 'Confirm the source catalog reset without prompting')
+    .action(
+      withAuth(async (ctx: AuthContext, identifier: string, opts: { yes?: boolean }) => {
+        const { supabase, workspaceId, outputOptions } = ctx;
+
+        let query = supabase
+          .from('datasources_with_access')
+          .select('id, name, api_name, state')
+          .eq('workspace_id', workspaceId);
+
+        if (isUuid(identifier)) {
+          query = query.eq('id', identifier);
+        } else {
+          query = query.eq('api_name', identifier);
+        }
+
+        const { data: ds, error } = await query.single();
+        if (error || !ds) {
+          throw new CliError(`Datasource "${identifier}" not found.`, ErrorCode.NOT_FOUND);
+        }
+        if (ds.state !== 'active') {
+          throw new CliError(
+            `Datasource "${ds.name}" is "${ds.state}". Source catalog reset requires active state.`,
+            ErrorCode.INVALID_INPUT,
+          );
+        }
+
+        if (!opts.yes) {
+          if (outputOptions.json || !process.stdin.isTTY) {
+            throw new CliError(
+              'Refusing to reset the source catalog without --yes in non-interactive mode.',
+              ErrorCode.INVALID_INPUT,
+            );
+          }
+
+          const { createInterface } = await import('node:readline/promises');
+          const rl = createInterface({ input: process.stdin, output: process.stderr });
+          const answer = await rl.question(
+            `Reset the source catalog for "${ds.name}"? This preserves pipelines and selections, temporarily pauses affected pipeline activity, and may change cursor, type, or schema behavior on the next pipeline run. [y/N] `,
+          );
+          rl.close();
+          if (answer.toLowerCase() !== 'y' && answer.toLowerCase() !== 'yes') {
+            console.log('Aborted.');
+            return;
+          }
+        }
+
+        const jobId = await enqueueCatalogReset(supabase, ds.id);
+        process.stderr.write(`Source catalog reset job: ${jobId}\n`);
+
+        let lastState: string | null = null;
+        if (!outputOptions.json) {
+          process.stderr.write('Source catalog maintenance started. Affected pipeline activity is temporarily paused.\n');
+        }
+
+        const outcome = await pollCatalogResetUntilFinished(supabase, jobId, {
+          onStatus: current => {
+            if (outputOptions.json || current.catalog_state === lastState) return;
+            lastState = current.catalog_state;
+            if (current.catalog_state === 'restoration_pending') {
+              process.stderr.write('The reset stopped. Restoring the previous source catalog...\n');
+            }
+          },
+        });
+        const message = catalogResetOutcomeMessage(outcome);
+
+        if (outputOptions.json) {
+          printOutput(formatGetJson({
+            datasource_id: ds.id,
+            name: ds.name,
+            job_id: jobId,
+            status: outcome.catalog_state,
+            finished_at: outcome.finished_at,
+            message,
+          }));
+        } else {
+          console.log(message);
+        }
+
+        if (outcome.catalog_state !== 'completed') {
+          process.exitCode = 1;
         }
       }),
     );
