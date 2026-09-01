@@ -658,6 +658,10 @@ Schedules resolve by **name** or **UUID** (not api_name), since schedule names a
 | `SUPAFLOW_SUPABASE_URL` | Override Supabase URL (dev/testing) |
 | `SUPAFLOW_SUPABASE_ANON_KEY` | Override Supabase anon key (dev/testing) |
 
+## Maintainer Documentation
+
+See [RELEASING.md](RELEASING.md) for the npm release process, browser-based CLI authentication, failure recovery, and post-release verification.
+
 ## License
 
 MIT
