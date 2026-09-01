@@ -13,7 +13,7 @@ CLI for the [Supaflow](https://www.supa-flow.io) data integration platform. Mana
 | `projects` | list, create | Manage pipeline projects |
 | `pipelines` | list, get, create, edit, delete, disable, enable, sync, schema (list, add, select) | Full pipeline lifecycle |
 | `schedules` | list, create, edit, delete, enable, disable, run, history | Cron-based scheduling |
-| `jobs` | list, get, status, logs | Monitor async job execution |
+| `jobs` | list, get, status, cancel, logs | Monitor and cancel async job execution |
 | `agent` | start, stop, status, logs, remove | Local Docker agent lifecycle |
 | `encrypt` | (value or --file) | Encrypt sensitive values |
 | `docs` | (topic), --list | Read connector and platform documentation |
@@ -507,6 +507,9 @@ supaflow jobs list --filter pipeline=<pipeline-uuid>
 # Lightweight status check (for polling)
 supaflow jobs status <job-id>
 
+# Cancel a queued, picked, or running job
+supaflow jobs cancel <job-id>
+
 # Full details with per-object metrics (after terminal state)
 supaflow jobs get <job-id>
 ```
@@ -532,6 +535,10 @@ Each object goes through ingestion (read from source), staging (write to temp), 
 # View job response/logs
 supaflow jobs logs <job-id>
 ```
+
+`jobs cancel` makes one atomic cancellation RPC call. On success, JSON output is
+`{ "id": "<job-id>", "job_status": "cancelled" }`. The command returns an error
+when the job is already terminal, inaccessible, or missing.
 
 ---
 

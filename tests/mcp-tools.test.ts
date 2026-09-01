@@ -14,9 +14,9 @@ import {
 const defByName = new Map(listToolDefinitions().map((d) => [d.name, d]));
 
 describe('MCP tool surface', () => {
-  it('exposes 50 unique tools', () => {
+  it('exposes 51 unique tools', () => {
     const names = TOOLS.map((t) => t.name);
-    expect(TOOLS.length).toBe(50);
+    expect(TOOLS.length).toBe(51);
     expect(new Set(names).size).toBe(names.length);
   });
 
@@ -57,6 +57,7 @@ describe('annotations', () => {
         'pipelines_delete',
         'datasources_delete',
         'schedules_delete',
+        'jobs_cancel',
         'agent_remove',
         'agent_upgrade',
       ]),
@@ -108,6 +109,8 @@ describe('argv mapping', () => {
       .toEqual(['pipelines', 'delete', 'orders', '--yes', '--json']);
     expect(buildSupaflowArgv('pipelines_sync', { identifier: 'orders', full_resync: true, reset_target: true }))
       .toEqual(['pipelines', 'sync', 'orders', '--full-resync', '--reset-target', '--json']);
+    expect(buildSupaflowArgv('jobs_cancel', { id: '13cfe303-c67e-4a5b-8f9d-1e2f3a4b5c6d' }))
+      .toEqual(['jobs', 'cancel', '13cfe303-c67e-4a5b-8f9d-1e2f3a4b5c6d', '--json']);
     expect(buildSupaflowArgv('docs', { topic: 'postgres', output_file: '/tmp/postgres-docs.md', refresh: true }))
       .toEqual(['docs', 'postgres', '--output', '/tmp/postgres-docs.md', '--refresh']); // docs omits --json
     expect(buildSupaflowArgv('agent_upgrade', { name: 'edge-agent', pull: false }))

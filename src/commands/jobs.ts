@@ -1,5 +1,6 @@
 import { Command } from 'commander';
-import { withAuth, type AuthContext } from '../lib/middleware.js';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { withAuth, withAuthOnly, type AuthContext } from '../lib/middleware.js';
 import { formatTable, formatListJson, formatGetJson, printOutput, truncateUuid, relativeTime } from '../lib/output.js';
 import { CliError, ErrorCode } from '../lib/errors.js';
 
@@ -9,6 +10,25 @@ function assertUuid(value: string, label: string): void {
   if (!UUID_REGEX.test(value)) {
     throw new CliError(
       `${label} must be a UUID (e.g. 550e8400-e29b-41d4-a716-446655440000), got: ${value}`,
+      ErrorCode.INVALID_INPUT,
+    );
+  }
+}
+
+export async function cancelJobById(supabase: SupabaseClient, id: string): Promise<void> {
+  assertUuid(id, 'Job ID');
+
+  const { data, error } = await supabase.rpc('cancel_job', {
+    p_job_id: id,
+  });
+
+  if (error) {
+    throw new CliError(`Failed to cancel job: ${error.message}`, ErrorCode.API_ERROR);
+  }
+
+  if (data !== true) {
+    throw new CliError(
+      `Job "${id}" is no longer active or cannot be cancelled.`,
       ErrorCode.INVALID_INPUT,
     );
   }
@@ -135,6 +155,26 @@ export function registerJobsCommands(program: Command): void {
           printOutput(formatGetJson(job));
         } else {
           console.log(`${job.job_status}${job.status_message ? ': ' + job.status_message : ''}`);
+        }
+      }),
+    );
+
+  // -----------------------------------------------------------------------
+  // jobs cancel
+  // -----------------------------------------------------------------------
+  jobs
+    .command('cancel <id>')
+    .description('Cancel a queued, picked, or running job by UUID')
+    .action(
+      withAuthOnly(async (ctx, id: string) => {
+        const { supabase, outputOptions } = ctx;
+
+        await cancelJobById(supabase, id);
+
+        if (outputOptions.json) {
+          printOutput(formatGetJson({ id, job_status: 'cancelled' }));
+        } else {
+          console.log(`Cancellation requested for job ${truncateUuid(id)}.`);
         }
       }),
     );

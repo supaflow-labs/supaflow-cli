@@ -586,6 +586,15 @@ export const TOOLS: ToolSpec[] = [
     build: (a) => ["jobs", "status", a.id],
   },
   {
+    name: "jobs_cancel",
+    description:
+      "Cancel a queued, picked, or running job by UUID. The skill must get explicit user confirmation before this tool call; MCP approval alone is not the workflow confirmation.",
+    write: true,
+    destructive: true,
+    inputSchema: jobIdSchema,
+    build: (a) => ["jobs", "cancel", a.id],
+  },
+  {
     name: "jobs_get",
     description: "Get a job by UUID including per-object metrics (execution_duration_ms, ended_at, object_details).",
     readOnly: true,
