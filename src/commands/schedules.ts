@@ -1,8 +1,16 @@
 import { Command } from 'commander';
 import { withAuth, type AuthContext } from '../lib/middleware.js';
-import { formatTable, formatListJson, formatGetJson, printOutput, truncateUuid, relativeTime } from '../lib/output.js';
+import {
+  formatTable,
+  formatListJson,
+  formatGetJson,
+  printOutput,
+  truncateUuid,
+  relativeTime,
+} from '../lib/output.js';
 import { isUuid } from '../lib/resolve.js';
 import { CliError, ErrorCode } from '../lib/errors.js';
+import { confirmDestructiveAction } from '../lib/confirmation.js';
 
 /**
  * Resolve a schedule by UUID or name (schedules have unique names per workspace, not api_name).
@@ -36,7 +44,10 @@ async function resolveSchedule(
  * Resolve target: exactly one of --pipeline, --task, --orchestration on create,
  * at most one on edit. Returns { targetType, targetId } or null if none provided.
  */
-function resolveTarget(opts: { pipeline?: string; task?: string; orchestration?: string }, required: boolean): { targetType: string; targetId: string } | null {
+function resolveTarget(
+  opts: { pipeline?: string; task?: string; orchestration?: string },
+  required: boolean,
+): { targetType: string; targetId: string } | null {
   const targets = [
     opts.pipeline && { targetType: 'pipeline', targetId: opts.pipeline },
     opts.task && { targetType: 'task', targetId: opts.task },
@@ -76,7 +87,9 @@ export function registerSchedulesCommands(program: Command): void {
 
         let query = supabase
           .from('schedule_jobs')
-          .select('id, name, description, cron_schedule, timezone, state, target_type, target_id, last_run_at, created_at')
+          .select(
+            'id, name, description, cron_schedule, timezone, state, target_type, target_id, last_run_at, created_at',
+          )
           .eq('workspace_id', workspaceId)
           .neq('state', 'deleted')
           .order('created_at', { ascending: false });
@@ -92,7 +105,10 @@ export function registerSchedulesCommands(program: Command): void {
         if (outputOptions.json) {
           printOutput(formatListJson(rows, rows.length, rows.length, 0));
         } else {
-          if (rows.length === 0) { console.log('No schedules found.'); return; }
+          if (rows.length === 0) {
+            console.log('No schedules found.');
+            return;
+          }
           const headers = ['ID', 'NAME', 'CRON', 'TARGET', 'STATE', 'LAST RUN'];
           const tableRows = rows.map((s) => [
             truncateUuid(s.id),
@@ -121,65 +137,84 @@ export function registerSchedulesCommands(program: Command): void {
     .option('--timezone <tz>', 'Display timezone (e.g., America/New_York)', 'UTC')
     .option('--description <desc>', 'Schedule description')
     .action(
-      withAuth(async (ctx: AuthContext, opts: {
-        name: string;
-        cron: string;
-        pipeline?: string;
-        task?: string;
-        orchestration?: string;
-        timezone: string;
-        description?: string;
-      }) => {
-        const { supabase, workspaceId, outputOptions } = ctx;
+      withAuth(
+        async (
+          ctx: AuthContext,
+          opts: {
+            name: string;
+            cron: string;
+            pipeline?: string;
+            task?: string;
+            orchestration?: string;
+            timezone: string;
+            description?: string;
+          },
+        ) => {
+          const { supabase, workspaceId, outputOptions } = ctx;
 
-        // Resolve target (exactly one required)
-        const target = resolveTarget(opts, true)!;
+          // Resolve target (exactly one required)
+          const target = resolveTarget(opts, true)!;
 
-        // If target is a pipeline, resolve by api_name if needed
-        let targetId = target.targetId;
-        if (!isUuid(targetId)) {
-          // Resolve by name/api_name based on target type
-          const table = target.targetType === 'pipeline' ? 'pipelines_and_datasources' : target.targetType === 'task' ? 'tasks' : 'orchestrations';
-          const idCol = target.targetType === 'pipeline' ? 'pipeline_id' : 'id';
-          const nameCol = target.targetType === 'pipeline' ? 'pipeline_api_name' : 'api_name';
+          // If target is a pipeline, resolve by api_name if needed
+          let targetId = target.targetId;
+          if (!isUuid(targetId)) {
+            // Resolve by name/api_name based on target type
+            const table =
+              target.targetType === 'pipeline'
+                ? 'pipelines_and_datasources'
+                : target.targetType === 'task'
+                  ? 'tasks'
+                  : 'orchestrations';
+            const idCol = target.targetType === 'pipeline' ? 'pipeline_id' : 'id';
+            const nameCol = target.targetType === 'pipeline' ? 'pipeline_api_name' : 'api_name';
 
-          const resolveQuery = supabase.from(table).select(idCol).eq(nameCol, targetId).eq('workspace_id', workspaceId);
-          const { data, error } = await resolveQuery.limit(1).single();
-          if (error || !data) {
-            throw new CliError(`${target.targetType} "${targetId}" not found.`, ErrorCode.NOT_FOUND);
+            const resolveQuery = supabase
+              .from(table)
+              .select(idCol)
+              .eq(nameCol, targetId)
+              .eq('workspace_id', workspaceId);
+            const { data, error } = await resolveQuery.limit(1).single();
+            if (error || !data) {
+              throw new CliError(
+                `${target.targetType} "${targetId}" not found.`,
+                ErrorCode.NOT_FOUND,
+              );
+            }
+            targetId = (data as Record<string, string>)[idCol];
           }
-          targetId = (data as Record<string, string>)[idCol];
-        }
 
-        const { data: scheduleId, error } = await supabase.rpc('create_schedule', {
-          p_workspace_id: workspaceId,
-          p_name: opts.name,
-          p_description: opts.description || '',
-          p_cron_schedule: opts.cron,
-          p_target_type: target.targetType,
-          p_target_id: targetId,
-          p_run_config: {},
-          p_timezone: opts.timezone,
-        });
+          const { data: scheduleId, error } = await supabase.rpc('create_schedule', {
+            p_workspace_id: workspaceId,
+            p_name: opts.name,
+            p_description: opts.description || '',
+            p_cron_schedule: opts.cron,
+            p_target_type: target.targetType,
+            p_target_id: targetId,
+            p_run_config: {},
+            p_timezone: opts.timezone,
+          });
 
-        if (error) {
-          throw new CliError(`Failed to create schedule: ${error.message}`, ErrorCode.API_ERROR);
-        }
+          if (error) {
+            throw new CliError(`Failed to create schedule: ${error.message}`, ErrorCode.API_ERROR);
+          }
 
-        if (outputOptions.json) {
-          printOutput(formatGetJson({
-            id: scheduleId,
-            name: opts.name,
-            cron: opts.cron,
-            target_type: target.targetType,
-            target_id: targetId,
-            state: 'active',
-          }));
-        } else {
-          console.log(`Schedule "${opts.name}" created. ID: ${scheduleId}`);
-          console.log(`Cron: ${opts.cron} (${opts.timezone})`);
-        }
-      }),
+          if (outputOptions.json) {
+            printOutput(
+              formatGetJson({
+                id: scheduleId,
+                name: opts.name,
+                cron: opts.cron,
+                target_type: target.targetType,
+                target_id: targetId,
+                state: 'active',
+              }),
+            );
+          } else {
+            console.log(`Schedule "${opts.name}" created. ID: ${scheduleId}`);
+            console.log(`Cron: ${opts.cron} (${opts.timezone})`);
+          }
+        },
+      ),
     );
 
   // -----------------------------------------------------------------------
@@ -196,72 +231,98 @@ export function registerSchedulesCommands(program: Command): void {
     .option('--task <identifier>', 'Change target to task')
     .option('--orchestration <identifier>', 'Change target to orchestration')
     .action(
-      withAuth(async (ctx: AuthContext, identifier: string, opts: {
-        name?: string;
-        cron?: string;
-        timezone?: string;
-        description?: string;
-        pipeline?: string;
-        task?: string;
-        orchestration?: string;
-      }) => {
-        const { supabase, workspaceId, outputOptions } = ctx;
+      withAuth(
+        async (
+          ctx: AuthContext,
+          identifier: string,
+          opts: {
+            name?: string;
+            cron?: string;
+            timezone?: string;
+            description?: string;
+            pipeline?: string;
+            task?: string;
+            orchestration?: string;
+          },
+        ) => {
+          const { supabase, workspaceId, outputOptions } = ctx;
 
-        const schedule = await resolveSchedule(supabase, identifier, workspaceId);
+          const schedule = await resolveSchedule(supabase, identifier, workspaceId);
 
-        // Resolve target change (at most one)
-        const target = resolveTarget(opts, false);
+          // Resolve target change (at most one)
+          const target = resolveTarget(opts, false);
 
-        // Must change at least something
-        if (!opts.name && !opts.cron && !opts.timezone && !opts.description && !target) {
-          throw new CliError(
-            'Nothing to update. Provide at least one of --name, --cron, --timezone, --description, or a target flag.',
-            ErrorCode.INVALID_INPUT,
-          );
-        }
-
-        // Resolve target ID if changing target
-        let targetType: string | null = null;
-        let targetId: string | null = null;
-        if (target) {
-          targetType = target.targetType;
-          targetId = target.targetId;
-          if (!isUuid(targetId)) {
-            const table = target.targetType === 'pipeline' ? 'pipelines_and_datasources' : target.targetType === 'task' ? 'tasks' : 'orchestrations';
-            const idCol = target.targetType === 'pipeline' ? 'pipeline_id' : 'id';
-            const nameCol = target.targetType === 'pipeline' ? 'pipeline_api_name' : 'api_name';
-
-            const resolveQuery = supabase.from(table).select(idCol).eq(nameCol, targetId).eq('workspace_id', workspaceId);
-            const { data, error } = await resolveQuery.limit(1).single();
-            if (error || !data) {
-              throw new CliError(`${target.targetType} "${targetId}" not found.`, ErrorCode.NOT_FOUND);
-            }
-            targetId = (data as Record<string, string>)[idCol];
+          // Must change at least something
+          if (!opts.name && !opts.cron && !opts.timezone && !opts.description && !target) {
+            throw new CliError(
+              'Nothing to update. Provide at least one of --name, --cron, --timezone, --description, or a target flag.',
+              ErrorCode.INVALID_INPUT,
+            );
           }
-        }
 
-        const { error } = await supabase.rpc('update_schedule', {
-          p_schedule_id: schedule.id,
-          p_workspace_id: workspaceId,
-          p_name: opts.name || null,
-          p_description: opts.description || null,
-          p_cron_schedule: opts.cron || null,
-          p_timezone: opts.timezone || null,
-          p_target_type: targetType,
-          p_target_id: targetId,
-          p_run_config: null,
-        });
+          // Resolve target ID if changing target
+          let targetType: string | null = null;
+          let targetId: string | null = null;
+          if (target) {
+            targetType = target.targetType;
+            targetId = target.targetId;
+            if (!isUuid(targetId)) {
+              const table =
+                target.targetType === 'pipeline'
+                  ? 'pipelines_and_datasources'
+                  : target.targetType === 'task'
+                    ? 'tasks'
+                    : 'orchestrations';
+              const idCol = target.targetType === 'pipeline' ? 'pipeline_id' : 'id';
+              const nameCol = target.targetType === 'pipeline' ? 'pipeline_api_name' : 'api_name';
 
-        if (error) {
-          throw new CliError(`Failed to update schedule: ${error.message}`, ErrorCode.API_ERROR);
-        }
+              const resolveQuery = supabase
+                .from(table)
+                .select(idCol)
+                .eq(nameCol, targetId)
+                .eq('workspace_id', workspaceId);
+              const { data, error } = await resolveQuery.limit(1).single();
+              if (error || !data) {
+                throw new CliError(
+                  `${target.targetType} "${targetId}" not found.`,
+                  ErrorCode.NOT_FOUND,
+                );
+              }
+              targetId = (data as Record<string, string>)[idCol];
+            }
+          }
 
-        if (outputOptions.json) {
-          printOutput(formatGetJson({ id: schedule.id, name: opts.name || schedule.name, updated: true }));
-        } else {
-          console.log(`Schedule "${opts.name || schedule.name}" updated.`);
-        }
-      }),
+          const { data: updatedScheduleId, error } = await supabase.rpc('update_schedule', {
+            p_schedule_id: schedule.id,
+            p_workspace_id: workspaceId,
+            p_name: opts.name || null,
+            p_description: opts.description || null,
+            p_cron_schedule: opts.cron || null,
+            p_timezone: opts.timezone || null,
+            p_target_type: targetType,
+            p_target_id: targetId,
+            p_run_config: null,
+          });
+
+          if (error) {
+            throw new CliError(`Failed to update schedule: ${error.message}`, ErrorCode.API_ERROR);
+          }
+          if (updatedScheduleId !== schedule.id) {
+            throw new CliError(
+              'Failed to update schedule: no row was affected.',
+              ErrorCode.API_ERROR,
+            );
+          }
+
+          if (outputOptions.json) {
+            printOutput(
+              formatGetJson({ id: schedule.id, name: opts.name || schedule.name, updated: true }),
+            );
+          } else {
+            console.log(`Schedule "${opts.name || schedule.name}" updated.`);
+          }
+        },
+      ),
     );
 
   // -----------------------------------------------------------------------
@@ -270,20 +331,41 @@ export function registerSchedulesCommands(program: Command): void {
   schedules
     .command('delete <identifier>')
     .description('Delete a schedule')
+    .option('-y, --yes', 'Confirm deletion without prompting')
     .action(
-      withAuth(async (ctx: AuthContext, identifier: string) => {
+      withAuth(async (ctx: AuthContext, identifier: string, opts: { yes?: boolean }) => {
         const { supabase, workspaceId, outputOptions } = ctx;
 
         const schedule = await resolveSchedule(supabase, identifier, workspaceId);
 
-        const { error } = await supabase
+        const confirmed = await confirmDestructiveAction({
+          yes: opts.yes,
+          json: outputOptions.json,
+          question: `Delete schedule "${schedule.name}"? This cannot be undone. [y/N] `,
+          nonInteractiveMessage:
+            'Refusing to delete a schedule without --yes in non-interactive mode.',
+        });
+        if (!confirmed) {
+          console.log('Aborted.');
+          return;
+        }
+
+        const { data: updatedSchedule, error } = await supabase
           .from('schedule_jobs')
           .update({ state: 'deleted' })
           .eq('id', schedule.id)
-          .eq('workspace_id', workspaceId);
+          .eq('workspace_id', workspaceId)
+          .select('id')
+          .maybeSingle();
 
         if (error) {
           throw new CliError(`Failed to delete schedule: ${error.message}`, ErrorCode.API_ERROR);
+        }
+        if (!updatedSchedule) {
+          throw new CliError(
+            'Failed to delete schedule: no row was affected.',
+            ErrorCode.API_ERROR,
+          );
         }
 
         if (outputOptions.json) {
@@ -304,22 +386,38 @@ export function registerSchedulesCommands(program: Command): void {
       withAuth(async (ctx: AuthContext, identifier: string) => {
         const { supabase, workspaceId, outputOptions } = ctx;
 
-        const schedule = await resolveSchedule(supabase, identifier, workspaceId, 'id, name, state');
+        const schedule = await resolveSchedule(
+          supabase,
+          identifier,
+          workspaceId,
+          'id, name, state',
+        );
 
         if (schedule.state === 'active') {
-          throw new CliError(`Schedule "${schedule.name}" is already active.`, ErrorCode.INVALID_INPUT);
+          throw new CliError(
+            `Schedule "${schedule.name}" is already active.`,
+            ErrorCode.INVALID_INPUT,
+          );
         }
 
         // Direct table update (same as FE) -- the update_schedule_state RPC
         // calls bw_internal.manage_cron_job which requires elevated privileges
-        const { error } = await supabase
+        const { data: updatedSchedule, error } = await supabase
           .from('schedule_jobs')
           .update({ state: 'active' })
           .eq('id', schedule.id)
-          .eq('workspace_id', workspaceId);
+          .eq('workspace_id', workspaceId)
+          .select('id')
+          .maybeSingle();
 
         if (error) {
           throw new CliError(`Failed to enable schedule: ${error.message}`, ErrorCode.API_ERROR);
+        }
+        if (!updatedSchedule) {
+          throw new CliError(
+            'Failed to enable schedule: no row was affected.',
+            ErrorCode.API_ERROR,
+          );
         }
 
         if (outputOptions.json) {
@@ -340,20 +438,36 @@ export function registerSchedulesCommands(program: Command): void {
       withAuth(async (ctx: AuthContext, identifier: string) => {
         const { supabase, workspaceId, outputOptions } = ctx;
 
-        const schedule = await resolveSchedule(supabase, identifier, workspaceId, 'id, name, state');
+        const schedule = await resolveSchedule(
+          supabase,
+          identifier,
+          workspaceId,
+          'id, name, state',
+        );
 
         if (schedule.state === 'inactive') {
-          throw new CliError(`Schedule "${schedule.name}" is already inactive.`, ErrorCode.INVALID_INPUT);
+          throw new CliError(
+            `Schedule "${schedule.name}" is already inactive.`,
+            ErrorCode.INVALID_INPUT,
+          );
         }
 
-        const { error } = await supabase
+        const { data: updatedSchedule, error } = await supabase
           .from('schedule_jobs')
           .update({ state: 'inactive' })
           .eq('id', schedule.id)
-          .eq('workspace_id', workspaceId);
+          .eq('workspace_id', workspaceId)
+          .select('id')
+          .maybeSingle();
 
         if (error) {
           throw new CliError(`Failed to disable schedule: ${error.message}`, ErrorCode.API_ERROR);
+        }
+        if (!updatedSchedule) {
+          throw new CliError(
+            'Failed to disable schedule: no row was affected.',
+            ErrorCode.API_ERROR,
+          );
         }
 
         if (outputOptions.json) {
@@ -420,7 +534,10 @@ export function registerSchedulesCommands(program: Command): void {
         if (outputOptions.json) {
           printOutput(formatListJson(rows, rows.length, limit, 0));
         } else {
-          if (rows.length === 0) { console.log(`No execution history for "${schedule.name}".`); return; }
+          if (rows.length === 0) {
+            console.log(`No execution history for "${schedule.name}".`);
+            return;
+          }
           const headers = ['TRIGGERED', 'STATUS', 'DURATION', 'TOTAL', 'OK', 'FAILED'];
           const tableRows = rows.map((r) => [
             relativeTime(r.triggered_at as string | null),

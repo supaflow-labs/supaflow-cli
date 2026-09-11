@@ -94,35 +94,41 @@ export async function createAuthenticatedClient(
   // Bootstrap unreachable -- fail explicitly.
   throw new Error(
     'Bootstrap endpoint unavailable. Cannot resolve Supabase connection.\n' +
-    'Set SUPAFLOW_SUPABASE_URL and SUPAFLOW_SUPABASE_ANON_KEY environment variables,\n' +
-    'or ensure https://app.supa-flow.io is reachable.',
+      'Set SUPAFLOW_SUPABASE_URL and SUPAFLOW_SUPABASE_ANON_KEY environment variables,\n' +
+      'or ensure https://app.supa-flow.io is reachable.',
   );
 }
 
+export type SoftDeletableEntity = 'datasource' | 'pipeline' | 'project';
+
 /**
- * Soft delete using PostgREST directly with Prefer: return=minimal.
- * Supabase JS .update() adds RETURNING which triggers RLS violation after state='deleted'.
+ * Soft-delete through the same recursive RPCs used by the Supaflow UI.
+ * The affected count prevents RLS-filtered zero-row updates from being
+ * reported as successful.
  */
-export async function softDeleteRecord(
-  conn: { supabaseUrl: string; anonKey: string; bearerToken: string },
-  tableName: string,
+export async function softDeleteEntity(
+  supabase: SupabaseClient,
+  entityType: SoftDeletableEntity,
   recordId: string,
-): Promise<void> {
-  const url = `${conn.supabaseUrl}/rest/v1/${encodeURIComponent(tableName)}?id=eq.${encodeURIComponent(recordId)}`;
-
-  const response = await fetch(url, {
-    method: 'PATCH',
-    headers: {
-      'Content-Type': 'application/json',
-      apikey: conn.anonKey,
-      Authorization: `Bearer ${conn.bearerToken}`,
-      Prefer: 'return=minimal',
-    },
-    body: JSON.stringify({ state: 'deleted' }),
+): Promise<Record<string, unknown>> {
+  const argumentName = `p_${entityType}_id`;
+  const { data, error } = await supabase.rpc(`soft_delete_${entityType}`, {
+    [argumentName]: recordId,
   });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Failed to delete ${tableName}: ${response.status} ${errorText}`);
+  if (error) {
+    throw new Error(`Failed to delete ${entityType}: ${error.message}`);
   }
+
+  const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
+  if (
+    !row ||
+    row.entity_type !== entityType ||
+    typeof row.affected_count !== 'number' ||
+    row.affected_count < 1
+  ) {
+    throw new Error(
+      `Failed to delete ${entityType}: no row was affected; it may no longer exist or access was denied`,
+    );
+  }
+  return row;
 }
