@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import { Command } from 'commander';
 import {
+  INTENTIONALLY_UNEXPOSED_CLI_COMMANDS,
+  MCP_ONLY_TOOL_NAMES,
   TOOLS,
   listToolDefinitions,
   buildSupaflowArgv,
@@ -10,23 +13,61 @@ import {
   validatePlanBinding,
   validatePlanWorkspace,
 } from '../src/mcp/server.js';
+import { registerAgentsCommands } from '../src/commands/agents.js';
+import { registerAuthCommands } from '../src/commands/auth.js';
+import { registerConnectorsCommands } from '../src/commands/connectors.js';
+import { registerDatasourcesCommands } from '../src/commands/datasources.js';
+import { registerDocsCommand } from '../src/commands/docs.js';
+import { registerEncryptCommand } from '../src/commands/encrypt.js';
+import { registerJobsCommands } from '../src/commands/jobs.js';
+import { registerPipelinesCommands } from '../src/commands/pipelines.js';
+import { registerProjectsCommands } from '../src/commands/projects.js';
+import { registerSchedulesCommands } from '../src/commands/schedules.js';
+import { registerWorkspacesCommands } from '../src/commands/workspaces.js';
 
 const defByName = new Map(listToolDefinitions().map((d) => [d.name, d]));
 
+function cliLeafCommandNames(): string[] {
+  const program = new Command();
+  registerAuthCommands(program);
+  registerWorkspacesCommands(program);
+  registerDatasourcesCommands(program);
+  registerPipelinesCommands(program);
+  registerProjectsCommands(program);
+  registerJobsCommands(program);
+  registerEncryptCommand(program);
+  registerConnectorsCommands(program);
+  registerSchedulesCommands(program);
+  registerDocsCommand(program);
+  registerAgentsCommands(program);
+
+  const names = new Set<string>(['mcp']);
+  const visit = (command: Command, prefix: string[]) => {
+    for (const child of command.commands) {
+      const path = [...prefix, child.name()];
+      if (child.commands.length > 0) visit(child, path);
+      else names.add(path.join('_').replaceAll('-', '_'));
+    }
+  };
+  visit(program, []);
+  return [...names].sort();
+}
+
 describe('MCP tool surface', () => {
-  it('exposes 51 unique tools', () => {
+  it('exposes 53 unique tools', () => {
     const names = TOOLS.map((t) => t.name);
-    expect(TOOLS.length).toBe(51);
+    expect(TOOLS.length).toBe(53);
     expect(new Set(names).size).toBe(names.length);
   });
 
-  it('exposes the guided pair and excludes auth/encrypt tools', () => {
-    const names = TOOLS.map((t) => t.name);
-    expect(names).toContain('pipelines_prepare_create');
-    expect(names).toContain('pipelines_create_from_plan');
-    expect(names).not.toContain('auth_login');
-    expect(names).not.toContain('auth_logout');
-    expect(names).not.toContain('encrypt');
+  it('matches the generated CLI surface with only classified differences', () => {
+    const cliNames = cliLeafCommandNames();
+    const mcpNames = TOOLS.map((tool) => tool.name).sort();
+    const missingFromMcp = cliNames.filter((name) => !mcpNames.includes(name));
+    const mcpOnly = mcpNames.filter((name) => !cliNames.includes(name));
+
+    expect(missingFromMcp).toEqual([...INTENTIONALLY_UNEXPOSED_CLI_COMMANDS]);
+    expect(mcpOnly).toEqual([...MCP_ONLY_TOOL_NAMES].sort());
   });
 
   it('closes every input schema', () => {
@@ -56,7 +97,9 @@ describe('annotations', () => {
       expect.arrayContaining([
         'pipelines_delete',
         'datasources_delete',
+        'datasources_reset_catalog',
         'schedules_delete',
+        'projects_delete',
         'jobs_cancel',
         'agent_remove',
         'agent_upgrade',
@@ -81,9 +124,16 @@ describe('guided defaults + delete safety wording', () => {
   });
 
   it('requires skill-side confirmation in every destructive delete description (not the MCP prompt)', () => {
-    for (const name of ['pipelines_delete', 'datasources_delete', 'schedules_delete']) {
+    for (const name of [
+      'pipelines_delete',
+      'datasources_delete',
+      'projects_delete',
+      'schedules_delete',
+    ]) {
       const desc = TOOLS.find((t) => t.name === name)!.description;
-      expect(/skill must get explicit user confirmation before this tool call/i.test(desc)).toBe(true);
+      expect(/skill must get explicit user confirmation before this tool call/i.test(desc)).toBe(
+        true,
+      );
       expect(/MCP approval prompt is the confirmation/i.test(desc)).toBe(false);
     }
   });
@@ -91,39 +141,133 @@ describe('guided defaults + delete safety wording', () => {
   it('documents the reversible agent-upgrade contract', () => {
     const tool = TOOLS.find((t) => t.name === 'agent_upgrade')!;
     expect(tool.destructive).toBe(true);
-    expect(tool.description).toMatch(/restoration of the previous immutable image is attempted on failure/i);
-    expect((tool.inputSchema as any).properties.api_url.description).toMatch(/required.*no SUPAFLOW_API_URL/i);
+    expect(tool.description).toMatch(
+      /restoration of the previous immutable image is attempted on failure/i,
+    );
+    expect((tool.inputSchema as any).properties.api_url.description).toMatch(
+      /required.*no SUPAFLOW_API_URL/i,
+    );
   });
 });
 
 describe('argv mapping', () => {
   // Assert the token array directly (tokens like "Test create" contain spaces, so a joined string is ambiguous).
   it('builds exact argv for representative tools', () => {
-    expect(buildSupaflowArgv('datasources_get', { identifier: 'pg', output_file: '/tmp/pg.env' }))
-      .toEqual(['datasources', 'get', 'pg', '--output', '/tmp/pg.env', '--json']);
-    expect(buildSupaflowArgv('datasources_catalog', { identifier: 'pg', output_file: '/tmp/objects.json', refresh: true, with_fields: true }))
-      .toEqual(['datasources', 'catalog', 'pg', '--output', '/tmp/objects.json', '--refresh', '--with-fields', '--json']);
-    expect(buildSupaflowArgv('pipelines_schema_list', { identifier: 'orders', all: true, with_fields: true }))
-      .toEqual(['pipelines', 'schema', 'list', 'orders', '--all', '--with-fields', '--json']);
-    expect(buildSupaflowArgv('pipelines_delete', { identifier: 'orders' }))
-      .toEqual(['pipelines', 'delete', 'orders', '--yes', '--json']);
-    expect(buildSupaflowArgv('pipelines_sync', { identifier: 'orders', full_resync: true, reset_target: true }))
-      .toEqual(['pipelines', 'sync', 'orders', '--full-resync', '--reset-target', '--json']);
-    expect(buildSupaflowArgv('jobs_cancel', { id: '13cfe303-c67e-4a5b-8f9d-1e2f3a4b5c6d' }))
-      .toEqual(['jobs', 'cancel', '13cfe303-c67e-4a5b-8f9d-1e2f3a4b5c6d', '--json']);
-    expect(buildSupaflowArgv('docs', { topic: 'postgres', output_file: '/tmp/postgres-docs.md', refresh: true }))
-      .toEqual(['docs', 'postgres', '--output', '/tmp/postgres-docs.md', '--refresh']); // docs omits --json
-    expect(buildSupaflowArgv('agent_upgrade', { name: 'edge-agent', pull: false }))
-      .toEqual(['agent', 'upgrade', '--name', 'edge-agent', '--no-pull', '--json']);
+    expect(
+      buildSupaflowArgv('datasources_get', { identifier: 'pg', output_file: '/tmp/pg.env' }),
+    ).toEqual(['datasources', 'get', 'pg', '--output', '/tmp/pg.env', '--json']);
+    expect(
+      buildSupaflowArgv('datasources_catalog', {
+        identifier: 'pg',
+        output_file: '/tmp/objects.json',
+        refresh: true,
+        with_fields: true,
+      }),
+    ).toEqual([
+      'datasources',
+      'catalog',
+      'pg',
+      '--output',
+      '/tmp/objects.json',
+      '--refresh',
+      '--with-fields',
+      '--json',
+    ]);
+    expect(buildSupaflowArgv('datasources_reset_catalog', { identifier: 'pg' })).toEqual([
+      'datasources',
+      'reset-catalog',
+      'pg',
+      '--yes',
+      '--json',
+    ]);
+    expect(buildSupaflowArgv('datasources_delete', { identifier: 'pg' })).toEqual([
+      'datasources',
+      'delete',
+      'pg',
+      '--yes',
+      '--json',
+    ]);
+    expect(
+      buildSupaflowArgv('pipelines_schema_list', {
+        identifier: 'orders',
+        all: true,
+        with_fields: true,
+      }),
+    ).toEqual(['pipelines', 'schema', 'list', 'orders', '--all', '--with-fields', '--json']);
+    expect(buildSupaflowArgv('pipelines_delete', { identifier: 'orders' })).toEqual([
+      'pipelines',
+      'delete',
+      'orders',
+      '--yes',
+      '--json',
+    ]);
+    expect(buildSupaflowArgv('projects_delete', { identifier: 'analytics' })).toEqual([
+      'projects',
+      'delete',
+      'analytics',
+      '--yes',
+      '--json',
+    ]);
+    expect(buildSupaflowArgv('schedules_delete', { identifier: 'daily-sync' })).toEqual([
+      'schedules',
+      'delete',
+      'daily-sync',
+      '--yes',
+      '--json',
+    ]);
+    expect(
+      buildSupaflowArgv('pipelines_sync', {
+        identifier: 'orders',
+        full_resync: true,
+        reset_target: true,
+      }),
+    ).toEqual(['pipelines', 'sync', 'orders', '--full-resync', '--reset-target', '--json']);
+    expect(
+      buildSupaflowArgv('jobs_cancel', { id: '13cfe303-c67e-4a5b-8f9d-1e2f3a4b5c6d' }),
+    ).toEqual(['jobs', 'cancel', '13cfe303-c67e-4a5b-8f9d-1e2f3a4b5c6d', '--json']);
+    expect(
+      buildSupaflowArgv('docs', {
+        topic: 'postgres',
+        output_file: '/tmp/postgres-docs.md',
+        refresh: true,
+      }),
+    ).toEqual(['docs', 'postgres', '--output', '/tmp/postgres-docs.md', '--refresh']); // docs omits --json
+    expect(buildSupaflowArgv('agent_upgrade', { name: 'edge-agent', pull: false })).toEqual([
+      'agent',
+      'upgrade',
+      '--name',
+      'edge-agent',
+      '--no-pull',
+      '--json',
+    ]);
   });
 
   it('always passes the prepared objects file in guided create', () => {
-    expect(buildPipelineCreateFromPlanArgv({
-      name: 'Orders', description: 'Test create', source: 'sql_server',
-      project: 'postgres_project', configFile: '/tmp/config.json', objectsFile: '/tmp/objects.json',
-    })).toEqual([
-      'pipelines', 'create', '--name', 'Orders', '--source', 'sql_server', '--project', 'postgres_project',
-      '--config', '/tmp/config.json', '--objects', '/tmp/objects.json', '--description', 'Test create', '--json',
+    expect(
+      buildPipelineCreateFromPlanArgv({
+        name: 'Orders',
+        description: 'Test create',
+        source: 'sql_server',
+        project: 'postgres_project',
+        configFile: '/tmp/config.json',
+        objectsFile: '/tmp/objects.json',
+      }),
+    ).toEqual([
+      'pipelines',
+      'create',
+      '--name',
+      'Orders',
+      '--source',
+      'sql_server',
+      '--project',
+      'postgres_project',
+      '--config',
+      '/tmp/config.json',
+      '--objects',
+      '/tmp/objects.json',
+      '--description',
+      'Test create',
+      '--json',
     ]);
   });
 });
@@ -137,7 +281,10 @@ describe('preview limit + selection + plan binding', () => {
   });
 
   it('marks a changed pipeline_prefix as custom', () => {
-    const patched = applyConfigPatch({ pipeline_prefix: 'postgres', ingestion_mode: 'incremental' }, { pipeline_prefix: 'analytics' });
+    const patched = applyConfigPatch(
+      { pipeline_prefix: 'postgres', ingestion_mode: 'incremental' },
+      { pipeline_prefix: 'analytics' },
+    );
     expect(patched.pipeline_prefix).toBe('analytics');
     expect(patched.is_custom_prefix).toBe(true);
   });
@@ -147,14 +294,36 @@ describe('preview limit + selection + plan binding', () => {
       [{ fully_qualified_name: 'public.accounts' }, { fully_qualified_name: 'public.orders' }],
       { mode: 'subset', include: ['public.orders'] },
     );
-    expect(sel.objects.map((o: any) => `${o.fully_qualified_name}:${o.selected}`)).toEqual(['public.accounts:false', 'public.orders:true']);
-    expect(() => applyObjectSelection([{ fully_qualified_name: 'public.accounts' }], { mode: 'subset', include: ['public.missing'] })).toThrow();
+    expect(sel.objects.map((o: any) => `${o.fully_qualified_name}:${o.selected}`)).toEqual([
+      'public.accounts:false',
+      'public.orders:true',
+    ]);
+    expect(() =>
+      applyObjectSelection([{ fully_qualified_name: 'public.accounts' }], {
+        mode: 'subset',
+        include: ['public.missing'],
+      }),
+    ).toThrow();
   });
 
   it('enforces workspace/source/project plan binding', () => {
-    const plan = { workspace: { id: 'ws_1' }, resolved: { source: { id: 'src_1' }, project: { id: 'proj_1' } } };
-    expect(validatePlanBinding(plan, { workspace: { id: 'ws_1' }, source: { id: 'src_1' }, project: { id: 'proj_1' } })).toBe(true);
+    const plan = {
+      workspace: { id: 'ws_1' },
+      resolved: { source: { id: 'src_1' }, project: { id: 'proj_1' } },
+    };
+    expect(
+      validatePlanBinding(plan, {
+        workspace: { id: 'ws_1' },
+        source: { id: 'src_1' },
+        project: { id: 'proj_1' },
+      }),
+    ).toBe(true);
     expect(() => validatePlanWorkspace(plan, { id: 'ws_2' })).toThrow();
-    expect(() => validatePlanBinding({ schema_version: 1 }, { workspace: { id: 'ws_1' }, source: { id: 'src_1' }, project: { id: 'proj_1' } })).toThrow();
+    expect(() =>
+      validatePlanBinding(
+        { schema_version: 1 },
+        { workspace: { id: 'ws_1' }, source: { id: 'src_1' }, project: { id: 'proj_1' } },
+      ),
+    ).toThrow();
   });
 });

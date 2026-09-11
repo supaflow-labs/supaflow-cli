@@ -1,7 +1,13 @@
 import { Command } from 'commander';
 import fs from 'node:fs';
 import { withAuth, type AuthContext } from '../lib/middleware.js';
-import { formatTable, formatListJson, formatGetJson, printOutput, truncateUuid } from '../lib/output.js';
+import {
+  formatTable,
+  formatListJson,
+  formatGetJson,
+  printOutput,
+  truncateUuid,
+} from '../lib/output.js';
 import { isUuid } from '../lib/resolve.js';
 import { CliError, ErrorCode } from '../lib/errors.js';
 import {
@@ -14,10 +20,15 @@ import {
   generateApiName,
 } from '../lib/connector.js';
 import { parseEnvFile, extractHeader, resolveEnvVars, writeEnvFile } from '../lib/envfile.js';
-import { shouldShowProperty, filterVisibleFormValues, validateProperty } from '../lib/visibility.js';
+import {
+  shouldShowProperty,
+  filterVisibleFormValues,
+  validateProperty,
+} from '../lib/visibility.js';
+import { confirmDestructiveAction } from '../lib/confirmation.js';
 import { pollJobUntilDone } from '../lib/polling.js';
 import { resolveEncryptedConfigs, encryptValue, encodeEnvelope } from '../lib/encryption.js';
-import { softDeleteRecord } from '../lib/client.js';
+import { softDeleteEntity } from '../lib/client.js';
 import { buildDbtTestSnapshot } from '../lib/dbtSnapshot.js';
 import { fetchAllMetadataMappings } from '../lib/metadata-mappings.js';
 import {
@@ -56,7 +67,12 @@ export function registerDatasourcesCommands(program: Command): void {
     .description('List datasources in workspace')
     .option('--limit <n>', 'Max results', '25')
     .option('--offset <n>', 'Pagination offset', '0')
-    .option('--filter <field=value>', 'Filter by field', (val: string, acc: string[]) => [...acc, val], [])
+    .option(
+      '--filter <field=value>',
+      'Filter by field',
+      (val: string, acc: string[]) => [...acc, val],
+      [],
+    )
     .action(
       withAuth(async (ctx: AuthContext, opts: Record<string, unknown>) => {
         const { supabase, workspaceId, outputOptions } = ctx;
@@ -85,7 +101,10 @@ export function registerDatasourcesCommands(program: Command): void {
         if (outputOptions.json) {
           printOutput(formatListJson(rows, count ?? rows.length, limit, offset));
         } else {
-          if (rows.length === 0) { console.log('No datasources found.'); return; }
+          if (rows.length === 0) {
+            console.log('No datasources found.');
+            return;
+          }
           const headers = ['ID', 'NAME', 'TYPE', 'CONNECTOR', 'STATE', 'PIPELINES'];
           const tableRows = rows.map((d) => [
             truncateUuid(d.id),
@@ -168,7 +187,9 @@ export function registerDatasourcesCommands(program: Command): void {
                   'data' in (currentValue as Record<string, unknown>)
                 ) {
                   // Encrypted envelope -- encode as enc: format so edit can send it back
-                  valueStr = encodeEnvelope(currentValue as { v: number; fp: string; data: string });
+                  valueStr = encodeEnvelope(
+                    currentValue as { v: number; fp: string; data: string },
+                  );
                 } else {
                   valueStr = String(currentValue);
                 }
@@ -185,22 +206,30 @@ export function registerDatasourcesCommands(program: Command): void {
           fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
 
           if (outputOptions.json) {
-            printOutput(formatGetJson({
-              file: filePath,
-              name: data.name,
-              api_name: data.api_name,
-              connector: data.connector_type,
-            }));
+            printOutput(
+              formatGetJson({
+                file: filePath,
+                name: data.name,
+                api_name: data.api_name,
+                connector: data.connector_type,
+              }),
+            );
           } else {
             console.log(`Exported ${filePath} with current configuration.`);
-            console.log(`Edit values, then run: supaflow datasources edit ${data.api_name} --from ${filePath}`);
+            console.log(
+              `Edit values, then run: supaflow datasources edit ${data.api_name} --from ${filePath}`,
+            );
           }
           return;
         }
 
         if (outputOptions.json) {
           // Exclude connector_version_id from JSON output (internal field)
-          const { connector_version_id: _cvid, connector_version_capabilities_config: capabilities, ...rest } = data;
+          const {
+            connector_version_id: _cvid,
+            connector_version_capabilities_config: capabilities,
+            ...rest
+          } = data;
           if (capabilities) {
             (rest as Record<string, unknown>).capabilities = capabilities;
           }
@@ -237,64 +266,75 @@ export function registerDatasourcesCommands(program: Command): void {
     .requiredOption('--name <name>', 'Datasource name')
     .option('--output <file>', 'Output file path (default: <api_name>.env)')
     .action(
-      withAuth(async (ctx: AuthContext, opts: { connector: string; name: string; output?: string }) => {
-        const { supabase, outputOptions } = ctx;
-        const connectorType = opts.connector.toLowerCase();
-        const dsName = opts.name;
-        const apiName = generateApiName(dsName);
-        const filePath = opts.output || `${apiName}.env`;
+      withAuth(
+        async (ctx: AuthContext, opts: { connector: string; name: string; output?: string }) => {
+          const { supabase, outputOptions } = ctx;
+          const connectorType = opts.connector.toLowerCase();
+          const dsName = opts.name;
+          const apiName = generateApiName(dsName);
+          const filePath = opts.output || `${apiName}.env`;
 
-        // 1. Find connector by type
-        const connectors = await fetchConnectors(supabase);
-        const connector = connectors.find((c) => c.type.toLowerCase() === connectorType);
-        if (!connector) {
-          const available = connectors.map((c) => c.type).sort().join(', ');
-          throw new CliError(
-            `Unknown connector type "${connectorType}". Available: ${available}`,
-            ErrorCode.NOT_FOUND,
-          );
-        }
-
-        // 2. Fetch properties for latest version
-        const properties = await fetchConnectorProperties(supabase, connector.latest_version_id);
-
-        // 3. Check for OAuth-only
-        if (isOAuthOnly(properties)) {
-          throw new CliError(
-            'This connector requires OAuth authentication. Use the Supaflow web UI to create this datasource.',
-            ErrorCode.INVALID_INPUT,
-          );
-        }
-
-        // 4. Filter and group
-        const nonOAuth = filterNonOAuth(properties);
-        const groups = groupAndSortProperties(nonOAuth);
-
-        // 5. Write env file
-        writeEnvFile(filePath, dsName, connector.type, connector.name, groups);
-
-        const requiredCount = nonOAuth.filter((p) => p.required).length;
-        const optionalCount = nonOAuth.length - requiredCount;
-
-        if (outputOptions.json) {
-          printOutput(formatGetJson({
-            file: filePath,
-            name: dsName,
-            api_name: apiName,
-            connector: connector.type,
-            connector_version: connector.latest_version,
-            required_properties: requiredCount,
-            optional_properties: optionalCount,
-          }));
-        } else {
-          console.log(`Created ${filePath} (${requiredCount} required, ${optionalCount} optional)`);
-          const requiredNames = nonOAuth.filter((p) => p.required).map((p) => p.name);
-          if (requiredNames.length > 0) {
-            console.log(`Required: ${requiredNames.join(', ')}`);
+          // 1. Find connector by type
+          const connectors = await fetchConnectors(supabase);
+          const connector = connectors.find((c) => c.type.toLowerCase() === connectorType);
+          if (!connector) {
+            const available = connectors
+              .map((c) => c.type)
+              .sort()
+              .join(', ');
+            throw new CliError(
+              `Unknown connector type "${connectorType}". Available: ${available}`,
+              ErrorCode.NOT_FOUND,
+            );
           }
-          console.log(`Fill in the values and run: supaflow datasources create --from ${filePath}`);
-        }
-      }),
+
+          // 2. Fetch properties for latest version
+          const properties = await fetchConnectorProperties(supabase, connector.latest_version_id);
+
+          // 3. Check for OAuth-only
+          if (isOAuthOnly(properties)) {
+            throw new CliError(
+              'This connector requires OAuth authentication. Use the Supaflow web UI to create this datasource.',
+              ErrorCode.INVALID_INPUT,
+            );
+          }
+
+          // 4. Filter and group
+          const nonOAuth = filterNonOAuth(properties);
+          const groups = groupAndSortProperties(nonOAuth);
+
+          // 5. Write env file
+          writeEnvFile(filePath, dsName, connector.type, connector.name, groups);
+
+          const requiredCount = nonOAuth.filter((p) => p.required).length;
+          const optionalCount = nonOAuth.length - requiredCount;
+
+          if (outputOptions.json) {
+            printOutput(
+              formatGetJson({
+                file: filePath,
+                name: dsName,
+                api_name: apiName,
+                connector: connector.type,
+                connector_version: connector.latest_version,
+                required_properties: requiredCount,
+                optional_properties: optionalCount,
+              }),
+            );
+          } else {
+            console.log(
+              `Created ${filePath} (${requiredCount} required, ${optionalCount} optional)`,
+            );
+            const requiredNames = nonOAuth.filter((p) => p.required).map((p) => p.name);
+            if (requiredNames.length > 0) {
+              console.log(`Required: ${requiredNames.join(', ')}`);
+            }
+            console.log(
+              `Fill in the values and run: supaflow datasources create --from ${filePath}`,
+            );
+          }
+        },
+      ),
     );
 
   datasources
@@ -337,7 +377,9 @@ export function registerDatasourcesCommands(program: Command): void {
 
         // Step 2: Resolve latest connector version
         const connectors = await fetchConnectors(supabase);
-        const connector = connectors.find((c) => c.type.toLowerCase() === header.connector!.toLowerCase());
+        const connector = connectors.find(
+          (c) => c.type.toLowerCase() === header.connector!.toLowerCase(),
+        );
         if (!connector) {
           throw new CliError(
             `Connector type "${header.connector}" not found.`,
@@ -382,11 +424,14 @@ export function registerDatasourcesCommands(program: Command): void {
         // Validate visible required properties
         const validationErrors: string[] = [];
         for (const prop of nonOAuth) {
-          if (!shouldShowProperty(
-            { ...prop, sensitive: prop.sensitive || prop.encrypted || prop.password },
-            merged,
-            nonOAuth.map((p) => ({ ...p, sensitive: p.sensitive || p.encrypted || p.password })),
-          )) continue;
+          if (
+            !shouldShowProperty(
+              { ...prop, sensitive: prop.sensitive || prop.encrypted || prop.password },
+              merged,
+              nonOAuth.map((p) => ({ ...p, sensitive: p.sensitive || p.encrypted || p.password })),
+            )
+          )
+            continue;
           const value = String(filtered[prop.name] ?? '');
           const propErrors = validateProperty(
             { ...prop, sensitive: prop.sensitive || prop.encrypted || prop.password },
@@ -413,18 +458,22 @@ export function registerDatasourcesCommands(program: Command): void {
         // Auto-encrypt the env file in-place before submission.
         // This ensures plaintext secrets never remain on disk.
         const sensitiveNames = new Set(
-          nonOAuth
-            .filter((p) => p.sensitive || p.encrypted || p.password)
-            .map((p) => p.name),
+          nonOAuth.filter((p) => p.sensitive || p.encrypted || p.password).map((p) => p.name),
         );
         let fileModified = false;
         const fileLines = fileContent.split('\n');
         const newLines: string[] = [];
         for (const line of fileLines) {
           const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith('#')) { newLines.push(line); continue; }
+          if (!trimmed || trimmed.startsWith('#')) {
+            newLines.push(line);
+            continue;
+          }
           const eqIdx = trimmed.indexOf('=');
-          if (eqIdx === -1) { newLines.push(line); continue; }
+          if (eqIdx === -1) {
+            newLines.push(line);
+            continue;
+          }
           const key = trimmed.slice(0, eqIdx).trim();
           const val = trimmed.slice(eqIdx + 1).trim();
           if (sensitiveNames.has(key) && val && !val.startsWith('enc:') && !val.startsWith('${')) {
@@ -478,7 +527,9 @@ export function registerDatasourcesCommands(program: Command): void {
         const apiName = header.api_name || generateApiName(dsName);
         const description = header.description || `${connector.name} datasource`;
         // Extract user_id from the JWT for created_by/updated_by
-        const jwtPayload = JSON.parse(atob(conn.bearerToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+        const jwtPayload = JSON.parse(
+          atob(conn.bearerToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')),
+        );
         const userId = jwtPayload.user_id || jwtPayload.sub;
 
         const { data: ds, error: insertError } = await supabase
@@ -498,17 +549,22 @@ export function registerDatasourcesCommands(program: Command): void {
           .single();
 
         if (insertError) {
-          throw new CliError(`Failed to create datasource: ${insertError.message}`, ErrorCode.API_ERROR);
+          throw new CliError(
+            `Failed to create datasource: ${insertError.message}`,
+            ErrorCode.API_ERROR,
+          );
         }
 
         if (outputOptions.json) {
-          printOutput(formatGetJson({
-            id: ds.id,
-            name: dsName,
-            api_name: apiName,
-            connector: connector.type,
-            state: 'active',
-          }));
+          printOutput(
+            formatGetJson({
+              id: ds.id,
+              name: dsName,
+              api_name: apiName,
+              connector: connector.type,
+              state: 'active',
+            }),
+          );
         } else {
           console.log('Connection successful.');
           console.log(`Datasource "${dsName}" created. ID: ${ds.id}`);
@@ -537,148 +593,161 @@ export function registerDatasourcesCommands(program: Command): void {
           identifier: string,
           opts: { output?: string; refresh?: boolean; withFields?: boolean },
         ) => {
-        const { supabase, workspaceId, outputOptions } = ctx;
+          const { supabase, workspaceId, outputOptions } = ctx;
 
-        // Resolve datasource
-        let dsQuery = supabase
-          .from('datasources_with_access')
-          .select('id, name, api_name, state')
-          .eq('workspace_id', workspaceId);
+          // Resolve datasource
+          let dsQuery = supabase
+            .from('datasources_with_access')
+            .select('id, name, api_name, state')
+            .eq('workspace_id', workspaceId);
 
-        if (isUuid(identifier)) {
-          dsQuery = dsQuery.eq('id', identifier);
-        } else {
-          dsQuery = dsQuery.eq('api_name', identifier);
-        }
-
-        const { data: ds, error: dsError } = await dsQuery.single();
-        if (dsError || !ds) {
-          throw new CliError(`Datasource "${identifier}" not found.`, ErrorCode.NOT_FOUND);
-        }
-
-        // Optional: trigger schema refresh first
-        if (opts.refresh) {
-          if (!outputOptions.json) {
-            process.stderr.write('Refreshing schema...\n');
+          if (isUuid(identifier)) {
+            dsQuery = dsQuery.eq('id', identifier);
+          } else {
+            dsQuery = dsQuery.eq('api_name', identifier);
           }
 
-          const { data: refreshJobId, error: refreshError } = await supabase.rpc('create_datasource_job', {
-            p_datasource_id: ds.id,
-            p_job_type: 'datasource_schema_refresh',
-            p_force_refresh: true,
-          });
-
-          if (refreshError) {
-            throw new CliError(`Schema refresh failed: ${refreshError.message}`, ErrorCode.API_ERROR);
+          const { data: ds, error: dsError } = await dsQuery.single();
+          if (dsError || !ds) {
+            throw new CliError(`Datasource "${identifier}" not found.`, ErrorCode.NOT_FOUND);
           }
 
-          if (refreshJobId) {
-            const refreshResult = await pollJobUntilDone(supabase, refreshJobId as string);
-            if (!refreshResult.success) {
+          // Optional: trigger schema refresh first
+          if (opts.refresh) {
+            if (!outputOptions.json) {
+              process.stderr.write('Refreshing schema...\n');
+            }
+
+            const { data: refreshJobId, error: refreshError } = await supabase.rpc(
+              'create_datasource_job',
+              {
+                p_datasource_id: ds.id,
+                p_job_type: 'datasource_schema_refresh',
+                p_force_refresh: true,
+              },
+            );
+
+            if (refreshError) {
               throw new CliError(
-                `Schema refresh failed: ${refreshResult.statusMessage || refreshResult.jobStatus}`,
+                `Schema refresh failed: ${refreshError.message}`,
                 ErrorCode.API_ERROR,
               );
             }
-          }
-        }
 
-        // Fetch discovered objects using the same RPC as the FE wizard
-        // p_pipeline_id = null means "no pipeline yet, just show discovered catalog"
-        let allObjects: Array<Record<string, unknown>>;
-        try {
-          allObjects = await fetchAllMetadataMappings(supabase, {
-            pipelineId: null,
-            datasourceId: ds.id,
-            includeFields: opts.withFields === true,
-            deletedObjectMode: 'EXCLUDE',
-            // Preserve the existing full-field page size. Object-only requests
-            // use the keyset helper's 500-row default.
-            fullFieldsPageSize: 100,
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          throw new CliError(`Failed to fetch catalog: ${message}`, ErrorCode.API_ERROR);
-        }
-
-        if (allObjects.length === 0) {
-          if (outputOptions.json) {
-            printOutput(formatListJson([], 0, 0, 0));
-          } else {
-            console.log(`No objects discovered for "${ds.name}". Run with --refresh to trigger schema discovery.`);
-          }
-          return;
-        }
-
-        // If --output: write a selectable-objects JSON array. Always includes
-        // the keys ``pipelines create --objects`` requires (fully_qualified_name,
-        // selected, fields). When --with-fields is set, additional keys
-        // (merged_metadata, source_metadata, selected_source_metadata,
-        // catalog_version, updated_at) are appended to each entry. The
-        // schema-file reader (readSchemaMappingFile) only validates the
-        // required keys and silently ignores extras, so the same file is
-        // consumable by validators AND by ``pipelines create --objects``.
-        if (opts.output) {
-          const selectableObjects = allObjects.map((obj) => {
-            const base: Record<string, unknown> = {
-              fully_qualified_name: obj.fully_qualified_source_object_name,
-              selected: true,
-              fields: null, // null = snapshot all fields from catalog
-            };
-            if (opts.withFields) {
-              base.catalog_version = obj.catalog_version;
-              base.updated_at = obj.catalog_updated_at;
-              base.merged_metadata = obj.merged_metadata;
-              base.source_metadata = obj.source_metadata;
-              base.selected_source_metadata = obj.selected_source_metadata;
+            if (refreshJobId) {
+              const refreshResult = await pollJobUntilDone(supabase, refreshJobId as string);
+              if (!refreshResult.success) {
+                throw new CliError(
+                  `Schema refresh failed: ${refreshResult.statusMessage || refreshResult.jobStatus}`,
+                  ErrorCode.API_ERROR,
+                );
+              }
             }
-            return base;
-          });
-
-          fs.writeFileSync(opts.output, JSON.stringify(selectableObjects, null, 2) + '\n', 'utf-8');
-
-          if (outputOptions.json) {
-            printOutput(
-              formatGetJson({
-                file: opts.output,
-                datasource: ds.name,
-                objects: selectableObjects.length,
-                with_fields: opts.withFields === true,
-              }),
-            );
-          } else {
-            const suffix = opts.withFields ? ' (with field metadata)' : '';
-            console.log(`Wrote ${selectableObjects.length} objects${suffix} to ${opts.output}`);
-            console.log(`Edit the file to set "selected": false for objects you want to exclude.`);
-            console.log(`Then use: supaflow pipelines create ... --objects ${opts.output}`);
           }
-          return;
-        }
 
-        // Default: list objects in table/JSON format
-        if (outputOptions.json) {
-          const objects = allObjects.map((obj) => {
-            const base = {
-              fully_qualified_name: obj.fully_qualified_source_object_name,
-              catalog_version: obj.catalog_version,
-              updated_at: obj.catalog_updated_at,
-            };
-            return opts.withFields
-              ? { ...base, merged_metadata: obj.merged_metadata }
-              : base;
-          });
-          printOutput(formatListJson(objects, objects.length, objects.length, 0));
-        } else {
-          const headers = ['OBJECT', 'VERSION', 'UPDATED'];
-          const { relativeTime } = await import('../lib/output.js');
-          const rows = allObjects.map((obj) => [
-            String(obj.fully_qualified_source_object_name || ''),
-            String(obj.catalog_version || ''),
-            relativeTime(obj.catalog_updated_at as string | null),
-          ]);
-          printOutput(formatTable(headers, rows));
-        }
-      }),
+          // Fetch discovered objects using the same RPC as the FE wizard
+          // p_pipeline_id = null means "no pipeline yet, just show discovered catalog"
+          let allObjects: Array<Record<string, unknown>>;
+          try {
+            allObjects = await fetchAllMetadataMappings(supabase, {
+              pipelineId: null,
+              datasourceId: ds.id,
+              includeFields: opts.withFields === true,
+              deletedObjectMode: 'EXCLUDE',
+              // Preserve the existing full-field page size. Object-only requests
+              // use the keyset helper's 500-row default.
+              fullFieldsPageSize: 100,
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new CliError(`Failed to fetch catalog: ${message}`, ErrorCode.API_ERROR);
+          }
+
+          if (allObjects.length === 0) {
+            if (outputOptions.json) {
+              printOutput(formatListJson([], 0, 0, 0));
+            } else {
+              console.log(
+                `No objects discovered for "${ds.name}". Run with --refresh to trigger schema discovery.`,
+              );
+            }
+            return;
+          }
+
+          // If --output: write a selectable-objects JSON array. Always includes
+          // the keys ``pipelines create --objects`` requires (fully_qualified_name,
+          // selected, fields). When --with-fields is set, additional keys
+          // (merged_metadata, source_metadata, selected_source_metadata,
+          // catalog_version, updated_at) are appended to each entry. The
+          // schema-file reader (readSchemaMappingFile) only validates the
+          // required keys and silently ignores extras, so the same file is
+          // consumable by validators AND by ``pipelines create --objects``.
+          if (opts.output) {
+            const selectableObjects = allObjects.map((obj) => {
+              const base: Record<string, unknown> = {
+                fully_qualified_name: obj.fully_qualified_source_object_name,
+                selected: true,
+                fields: null, // null = snapshot all fields from catalog
+              };
+              if (opts.withFields) {
+                base.catalog_version = obj.catalog_version;
+                base.updated_at = obj.catalog_updated_at;
+                base.merged_metadata = obj.merged_metadata;
+                base.source_metadata = obj.source_metadata;
+                base.selected_source_metadata = obj.selected_source_metadata;
+              }
+              return base;
+            });
+
+            fs.writeFileSync(
+              opts.output,
+              JSON.stringify(selectableObjects, null, 2) + '\n',
+              'utf-8',
+            );
+
+            if (outputOptions.json) {
+              printOutput(
+                formatGetJson({
+                  file: opts.output,
+                  datasource: ds.name,
+                  objects: selectableObjects.length,
+                  with_fields: opts.withFields === true,
+                }),
+              );
+            } else {
+              const suffix = opts.withFields ? ' (with field metadata)' : '';
+              console.log(`Wrote ${selectableObjects.length} objects${suffix} to ${opts.output}`);
+              console.log(
+                `Edit the file to set "selected": false for objects you want to exclude.`,
+              );
+              console.log(`Then use: supaflow pipelines create ... --objects ${opts.output}`);
+            }
+            return;
+          }
+
+          // Default: list objects in table/JSON format
+          if (outputOptions.json) {
+            const objects = allObjects.map((obj) => {
+              const base = {
+                fully_qualified_name: obj.fully_qualified_source_object_name,
+                catalog_version: obj.catalog_version,
+                updated_at: obj.catalog_updated_at,
+              };
+              return opts.withFields ? { ...base, merged_metadata: obj.merged_metadata } : base;
+            });
+            printOutput(formatListJson(objects, objects.length, objects.length, 0));
+          } else {
+            const headers = ['OBJECT', 'VERSION', 'UPDATED'];
+            const { relativeTime } = await import('../lib/output.js');
+            const rows = allObjects.map((obj) => [
+              String(obj.fully_qualified_source_object_name || ''),
+              String(obj.catalog_version || ''),
+              relativeTime(obj.catalog_updated_at as string | null),
+            ]);
+            printOutput(formatTable(headers, rows));
+          }
+        },
+      ),
     );
 
   // -----------------------------------------------------------------------
@@ -782,7 +851,10 @@ export function registerDatasourcesCommands(program: Command): void {
           .single();
 
         if (configError || !dsRow) {
-          throw new CliError(`Failed to read datasource configs: ${configError?.message || 'not found'}`, ErrorCode.API_ERROR);
+          throw new CliError(
+            `Failed to read datasource configs: ${configError?.message || 'not found'}`,
+            ErrorCode.API_ERROR,
+          );
         }
 
         const { data: jobId, error: jobError } = await supabase.rpc('create_datasource_test_job', {
@@ -807,12 +879,14 @@ export function registerDatasourcesCommands(program: Command): void {
         }
 
         if (outputOptions.json) {
-          printOutput(formatGetJson({
-            id: ds.id,
-            name: ds.name,
-            status: 'connected',
-            job_id: jobId,
-          }));
+          printOutput(
+            formatGetJson({
+              id: ds.id,
+              name: ds.name,
+              status: 'connected',
+              job_id: jobId,
+            }),
+          );
         } else {
           console.log(`Connection successful for "${ds.name}".`);
         }
@@ -824,10 +898,11 @@ export function registerDatasourcesCommands(program: Command): void {
   // -----------------------------------------------------------------------
   datasources
     .command('delete <identifier>')
-    .description('Delete a datasource')
+    .description('Delete a datasource and its dependent projects and pipelines')
+    .option('-y, --yes', 'Confirm recursive deletion without prompting')
     .action(
-      withAuth(async (ctx: AuthContext, identifier: string) => {
-        const { supabase, workspaceId, outputOptions, conn } = ctx;
+      withAuth(async (ctx: AuthContext, identifier: string, opts: { yes?: boolean }) => {
+        const { supabase, workspaceId, outputOptions } = ctx;
 
         let query = supabase
           .from('datasources_with_access')
@@ -845,7 +920,19 @@ export function registerDatasourcesCommands(program: Command): void {
           throw new CliError(`Datasource "${identifier}" not found.`, ErrorCode.NOT_FOUND);
         }
 
-        await softDeleteRecord(conn, 'datasources', ds.id);
+        const confirmed = await confirmDestructiveAction({
+          yes: opts.yes,
+          json: outputOptions.json,
+          question: `Delete datasource "${ds.name}" and all dependent projects and pipelines? This cannot be undone. [y/N] `,
+          nonInteractiveMessage:
+            'Refusing to delete a datasource without --yes in non-interactive mode.',
+        });
+        if (!confirmed) {
+          console.log('Aborted.');
+          return;
+        }
+
+        await softDeleteEntity(supabase, 'datasource', ds.id);
 
         if (outputOptions.json) {
           printOutput(formatGetJson({ id: ds.id, name: ds.name, state: 'deleted' }));
@@ -888,14 +975,25 @@ export function registerDatasourcesCommands(program: Command): void {
           );
         }
 
-        const { error: updateError } = await supabase
+        const { data: updatedDatasource, error: updateError } = await supabase
           .from('datasources')
           .update({ state: 'inactive' })
           .eq('id', ds.id)
-          .eq('workspace_id', workspaceId);
+          .eq('workspace_id', workspaceId)
+          .select('id')
+          .maybeSingle();
 
         if (updateError) {
-          throw new CliError(`Failed to disable datasource: ${updateError.message}`, ErrorCode.API_ERROR);
+          throw new CliError(
+            `Failed to disable datasource: ${updateError.message}`,
+            ErrorCode.API_ERROR,
+          );
+        }
+        if (!updatedDatasource) {
+          throw new CliError(
+            'Failed to disable datasource: no row was affected.',
+            ErrorCode.API_ERROR,
+          );
         }
 
         if (outputOptions.json) {
@@ -939,14 +1037,25 @@ export function registerDatasourcesCommands(program: Command): void {
           );
         }
 
-        const { error: updateError } = await supabase
+        const { data: updatedDatasource, error: updateError } = await supabase
           .from('datasources')
           .update({ state: 'active' })
           .eq('id', ds.id)
-          .eq('workspace_id', workspaceId);
+          .eq('workspace_id', workspaceId)
+          .select('id')
+          .maybeSingle();
 
         if (updateError) {
-          throw new CliError(`Failed to enable datasource: ${updateError.message}`, ErrorCode.API_ERROR);
+          throw new CliError(
+            `Failed to enable datasource: ${updateError.message}`,
+            ErrorCode.API_ERROR,
+          );
+        }
+        if (!updatedDatasource) {
+          throw new CliError(
+            'Failed to enable datasource: no row was affected.',
+            ErrorCode.API_ERROR,
+          );
         }
 
         if (outputOptions.json) {
@@ -997,15 +1106,27 @@ export function registerDatasourcesCommands(program: Command): void {
         });
 
         if (jobError) {
-          throw new CliError(`Failed to trigger schema refresh: ${jobError.message}`, ErrorCode.API_ERROR);
+          throw new CliError(
+            `Failed to trigger schema refresh: ${jobError.message}`,
+            ErrorCode.API_ERROR,
+          );
         }
 
         // RPC can return NULL for destination-only connectors with no SOURCE capability
         if (!jobId) {
           if (outputOptions.json) {
-            printOutput(formatGetJson({ id: ds.id, name: ds.name, status: 'skipped', message: 'No schema refresh available for this connector type.' }));
+            printOutput(
+              formatGetJson({
+                id: ds.id,
+                name: ds.name,
+                status: 'skipped',
+                message: 'No schema refresh available for this connector type.',
+              }),
+            );
           } else {
-            console.log(`No schema refresh available for "${ds.name}". This connector may not support schema discovery.`);
+            console.log(
+              `No schema refresh available for "${ds.name}". This connector may not support schema discovery.`,
+            );
           }
           return;
         }
@@ -1024,13 +1145,15 @@ export function registerDatasourcesCommands(program: Command): void {
         }
 
         if (outputOptions.json) {
-          printOutput(formatGetJson({
-            id: ds.id,
-            name: ds.name,
-            job_id: jobId,
-            status: 'completed',
-            message: result.statusMessage,
-          }));
+          printOutput(
+            formatGetJson({
+              id: ds.id,
+              name: ds.name,
+              job_id: jobId,
+              status: 'completed',
+              message: result.statusMessage,
+            }),
+          );
         } else {
           console.log(`Schema refresh completed for "${ds.name}".`);
         }
@@ -1095,11 +1218,13 @@ export function registerDatasourcesCommands(program: Command): void {
 
         let lastState: string | null = null;
         if (!outputOptions.json) {
-          process.stderr.write('Source catalog maintenance started. Affected pipeline activity is temporarily paused.\n');
+          process.stderr.write(
+            'Source catalog maintenance started. Affected pipeline activity is temporarily paused.\n',
+          );
         }
 
         const outcome = await pollCatalogResetUntilFinished(supabase, jobId, {
-          onStatus: current => {
+          onStatus: (current) => {
             if (outputOptions.json || current.catalog_state === lastState) return;
             lastState = current.catalog_state;
             if (current.catalog_state === 'restoration_pending') {
@@ -1110,14 +1235,16 @@ export function registerDatasourcesCommands(program: Command): void {
         const message = catalogResetOutcomeMessage(outcome);
 
         if (outputOptions.json) {
-          printOutput(formatGetJson({
-            datasource_id: ds.id,
-            name: ds.name,
-            job_id: jobId,
-            status: outcome.catalog_state,
-            finished_at: outcome.finished_at,
-            message,
-          }));
+          printOutput(
+            formatGetJson({
+              datasource_id: ds.id,
+              name: ds.name,
+              job_id: jobId,
+              status: outcome.catalog_state,
+              finished_at: outcome.finished_at,
+              message,
+            }),
+          );
         } else {
           console.log(message);
         }
@@ -1137,217 +1264,277 @@ export function registerDatasourcesCommands(program: Command): void {
     .requiredOption('--from <file>', 'Path to env file')
     .option('--skip-test', 'Save without testing connection')
     .action(
-      withAuth(async (ctx: AuthContext, identifier: string, opts: { from: string; skipTest?: boolean }) => {
-        const { supabase, workspaceId, outputOptions, conn } = ctx;
-        const filePath = opts.from;
+      withAuth(
+        async (
+          ctx: AuthContext,
+          identifier: string,
+          opts: { from: string; skipTest?: boolean },
+        ) => {
+          const { supabase, workspaceId, outputOptions, conn } = ctx;
+          const filePath = opts.from;
 
-        // Step 1: Read and parse env file
-        if (!fs.existsSync(filePath)) {
-          throw new CliError(`File "${filePath}" not found.`, ErrorCode.NOT_FOUND);
-        }
-
-        const fileContent = fs.readFileSync(filePath, 'utf-8');
-        const header = extractHeader(fileContent);
-        if (!header.connector) {
-          throw new CliError(
-            `File "${filePath}" is missing the "# Connector: <type>" header.`,
-            ErrorCode.INVALID_INPUT,
-          );
-        }
-
-        // Find existing datasource by identifier (UUID or api_name)
-        let findQuery = supabase
-          .from('datasources_with_access')
-          .select('id, name, api_name, state, connector_version_id')
-          .eq('workspace_id', workspaceId);
-
-        if (isUuid(identifier)) {
-          findQuery = findQuery.eq('id', identifier);
-        } else {
-          findQuery = findQuery.eq('api_name', identifier);
-        }
-
-        const { data: existingDs, error: findError } = await findQuery.single();
-        if (findError || !existingDs) {
-          throw new CliError(
-            `Datasource "${identifier}" not found. Use "datasources create" for new datasources.`,
-            ErrorCode.NOT_FOUND,
-          );
-        }
-
-        const rawValues = parseEnvFile(fileContent);
-        const envValues = resolveEnvVars(rawValues);
-
-        // Step 2: Resolve latest connector version
-        const connectors = await fetchConnectors(supabase);
-        const connector = connectors.find(
-          (c) => c.type.toLowerCase() === header.connector!.toLowerCase(),
-        );
-        if (!connector) {
-          throw new CliError(`Connector type "${header.connector}" not found.`, ErrorCode.NOT_FOUND);
-        }
-
-        const properties = await fetchConnectorProperties(supabase, connector.latest_version_id);
-        const nonOAuth = filterNonOAuth(properties);
-
-        // Step 3: Merge and validate
-        const { merged, warnings, errors: mergeErrors } = mergeEnvWithSchema(envValues, properties);
-
-        if (!outputOptions.json) {
-          for (const w of warnings) {
-            console.error(`Warning: ${w}`);
-          }
-        }
-        if (mergeErrors.length > 0) {
-          throw new CliError(mergeErrors.join('\n'), ErrorCode.INVALID_INPUT);
-        }
-
-        // Step 4: Visibility rules and validation
-        const filtered = filterVisibleFormValues(
-          nonOAuth.map((p) => ({
-            name: p.name,
-            type: p.type,
-            required: p.required,
-            sensitive: p.sensitive || p.encrypted || p.password,
-            hidden: p.hidden,
-            defaultValue: p.defaultValue,
-            enumValues: p.enumValues,
-            minValue: p.minValue,
-            maxValue: p.maxValue,
-            minLength: p.minLength,
-            maxLength: p.maxLength,
-            relatedPropertyNameAndValue: p.relatedPropertyNameAndValue,
-          })),
-          merged,
-        );
-
-        const validationErrors: string[] = [];
-        for (const prop of nonOAuth) {
-          const propShape = { ...prop, sensitive: prop.sensitive || prop.encrypted || prop.password };
-          if (!shouldShowProperty(propShape, merged, nonOAuth.map((p) => ({ ...p, sensitive: p.sensitive || p.encrypted || p.password })))) continue;
-          const value = String(filtered[prop.name] ?? '');
-          const propErrors = validateProperty(propShape, value);
-          validationErrors.push(...propErrors);
-        }
-
-        if (validationErrors.length > 0) {
-          throw new CliError(
-            `Validation failed:\n${validationErrors.map((e) => `  - ${e}`).join('\n')}`,
-            ErrorCode.INVALID_INPUT,
-          );
-        }
-
-        // Auto-encrypt sensitive fields on disk
-        const sensitiveNames = new Set(
-          nonOAuth.filter((p) => p.sensitive || p.encrypted || p.password).map((p) => p.name),
-        );
-        const rawConfigs: Record<string, unknown> = {};
-        for (const [key, value] of Object.entries(filtered)) {
-          if (value !== null && value !== undefined) {
-            rawConfigs[key] = value;
-          }
-        }
-
-        let fileModified = false;
-        const fileLines = fileContent.split('\n');
-        const newLines: string[] = [];
-        for (const line of fileLines) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith('#')) { newLines.push(line); continue; }
-          const eqIdx = trimmed.indexOf('=');
-          if (eqIdx === -1) { newLines.push(line); continue; }
-          const key = trimmed.slice(0, eqIdx).trim();
-          const val = trimmed.slice(eqIdx + 1).trim();
-          if (sensitiveNames.has(key) && val && !val.startsWith('enc:') && !val.startsWith('${')) {
-            if (!outputOptions.json) {
-              process.stderr.write(`Encrypting ${key} in ${filePath}...\n`);
-            }
-            const envelope = await encryptValue(supabase, val, workspaceId);
-            const encoded = encodeEnvelope(envelope);
-            newLines.push(`${key}=${encoded}`);
-            rawConfigs[key] = encoded;
-            fileModified = true;
-          } else {
-            newLines.push(line);
-          }
-        }
-        if (fileModified) {
-          fs.writeFileSync(filePath, newLines.join('\n'), 'utf-8');
-        }
-
-        const configs = resolveEncryptedConfigs(rawConfigs);
-
-        // Step 5: Optional connection test
-        if (!opts.skipTest) {
-          if (!outputOptions.json) {
-            process.stderr.write('Testing connection... (this may take up to a minute)\n');
+          // Step 1: Read and parse env file
+          if (!fs.existsSync(filePath)) {
+            throw new CliError(`File "${filePath}" not found.`, ErrorCode.NOT_FOUND);
           }
 
-          const { data: jobId, error: jobError } = await supabase.rpc('create_datasource_test_job', {
-            p_workspace_id: workspaceId,
-            p_connector_version_id: connector.latest_version_id,
-            p_configs: configs,
-            p_job_name: `CLI edit test: ${existingDs.name}`,
-            p_datasource_id: existingDs.id,
-          });
-
-          if (jobError) {
-            throw new CliError(`Failed to create test job: ${jobError.message}`, ErrorCode.API_ERROR);
-          }
-
-          const result = await pollJobUntilDone(supabase, jobId as string);
-          if (!result.success) {
+          const fileContent = fs.readFileSync(filePath, 'utf-8');
+          const header = extractHeader(fileContent);
+          if (!header.connector) {
             throw new CliError(
-              `Connection failed: ${result.statusMessage || result.jobStatus}\nDatasource was not updated. Fix the config and try again.`,
+              `File "${filePath}" is missing the "# Connector: <type>" header.`,
+              ErrorCode.INVALID_INPUT,
+            );
+          }
+
+          // Find existing datasource by identifier (UUID or api_name)
+          let findQuery = supabase
+            .from('datasources_with_access')
+            .select('id, name, api_name, state, connector_version_id')
+            .eq('workspace_id', workspaceId);
+
+          if (isUuid(identifier)) {
+            findQuery = findQuery.eq('id', identifier);
+          } else {
+            findQuery = findQuery.eq('api_name', identifier);
+          }
+
+          const { data: existingDs, error: findError } = await findQuery.single();
+          if (findError || !existingDs) {
+            throw new CliError(
+              `Datasource "${identifier}" not found. Use "datasources create" for new datasources.`,
+              ErrorCode.NOT_FOUND,
+            );
+          }
+
+          const rawValues = parseEnvFile(fileContent);
+          const envValues = resolveEnvVars(rawValues);
+
+          // Step 2: Resolve latest connector version
+          const connectors = await fetchConnectors(supabase);
+          const connector = connectors.find(
+            (c) => c.type.toLowerCase() === header.connector!.toLowerCase(),
+          );
+          if (!connector) {
+            throw new CliError(
+              `Connector type "${header.connector}" not found.`,
+              ErrorCode.NOT_FOUND,
+            );
+          }
+
+          const properties = await fetchConnectorProperties(supabase, connector.latest_version_id);
+          const nonOAuth = filterNonOAuth(properties);
+
+          // Step 3: Merge and validate
+          const {
+            merged,
+            warnings,
+            errors: mergeErrors,
+          } = mergeEnvWithSchema(envValues, properties);
+
+          if (!outputOptions.json) {
+            for (const w of warnings) {
+              console.error(`Warning: ${w}`);
+            }
+          }
+          if (mergeErrors.length > 0) {
+            throw new CliError(mergeErrors.join('\n'), ErrorCode.INVALID_INPUT);
+          }
+
+          // Step 4: Visibility rules and validation
+          const filtered = filterVisibleFormValues(
+            nonOAuth.map((p) => ({
+              name: p.name,
+              type: p.type,
+              required: p.required,
+              sensitive: p.sensitive || p.encrypted || p.password,
+              hidden: p.hidden,
+              defaultValue: p.defaultValue,
+              enumValues: p.enumValues,
+              minValue: p.minValue,
+              maxValue: p.maxValue,
+              minLength: p.minLength,
+              maxLength: p.maxLength,
+              relatedPropertyNameAndValue: p.relatedPropertyNameAndValue,
+            })),
+            merged,
+          );
+
+          const validationErrors: string[] = [];
+          for (const prop of nonOAuth) {
+            const propShape = {
+              ...prop,
+              sensitive: prop.sensitive || prop.encrypted || prop.password,
+            };
+            if (
+              !shouldShowProperty(
+                propShape,
+                merged,
+                nonOAuth.map((p) => ({
+                  ...p,
+                  sensitive: p.sensitive || p.encrypted || p.password,
+                })),
+              )
+            )
+              continue;
+            const value = String(filtered[prop.name] ?? '');
+            const propErrors = validateProperty(propShape, value);
+            validationErrors.push(...propErrors);
+          }
+
+          if (validationErrors.length > 0) {
+            throw new CliError(
+              `Validation failed:\n${validationErrors.map((e) => `  - ${e}`).join('\n')}`,
+              ErrorCode.INVALID_INPUT,
+            );
+          }
+
+          // Auto-encrypt sensitive fields on disk
+          const sensitiveNames = new Set(
+            nonOAuth.filter((p) => p.sensitive || p.encrypted || p.password).map((p) => p.name),
+          );
+          const rawConfigs: Record<string, unknown> = {};
+          for (const [key, value] of Object.entries(filtered)) {
+            if (value !== null && value !== undefined) {
+              rawConfigs[key] = value;
+            }
+          }
+
+          let fileModified = false;
+          const fileLines = fileContent.split('\n');
+          const newLines: string[] = [];
+          for (const line of fileLines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#')) {
+              newLines.push(line);
+              continue;
+            }
+            const eqIdx = trimmed.indexOf('=');
+            if (eqIdx === -1) {
+              newLines.push(line);
+              continue;
+            }
+            const key = trimmed.slice(0, eqIdx).trim();
+            const val = trimmed.slice(eqIdx + 1).trim();
+            if (
+              sensitiveNames.has(key) &&
+              val &&
+              !val.startsWith('enc:') &&
+              !val.startsWith('${')
+            ) {
+              if (!outputOptions.json) {
+                process.stderr.write(`Encrypting ${key} in ${filePath}...\n`);
+              }
+              const envelope = await encryptValue(supabase, val, workspaceId);
+              const encoded = encodeEnvelope(envelope);
+              newLines.push(`${key}=${encoded}`);
+              rawConfigs[key] = encoded;
+              fileModified = true;
+            } else {
+              newLines.push(line);
+            }
+          }
+          if (fileModified) {
+            fs.writeFileSync(filePath, newLines.join('\n'), 'utf-8');
+          }
+
+          const configs = resolveEncryptedConfigs(rawConfigs);
+
+          // Step 5: Optional connection test
+          if (!opts.skipTest) {
+            if (!outputOptions.json) {
+              process.stderr.write('Testing connection... (this may take up to a minute)\n');
+            }
+
+            const { data: jobId, error: jobError } = await supabase.rpc(
+              'create_datasource_test_job',
+              {
+                p_workspace_id: workspaceId,
+                p_connector_version_id: connector.latest_version_id,
+                p_configs: configs,
+                p_job_name: `CLI edit test: ${existingDs.name}`,
+                p_datasource_id: existingDs.id,
+              },
+            );
+
+            if (jobError) {
+              throw new CliError(
+                `Failed to create test job: ${jobError.message}`,
+                ErrorCode.API_ERROR,
+              );
+            }
+
+            const result = await pollJobUntilDone(supabase, jobId as string);
+            if (!result.success) {
+              throw new CliError(
+                `Connection failed: ${result.statusMessage || result.jobStatus}\nDatasource was not updated. Fix the config and try again.`,
+                ErrorCode.API_ERROR,
+              );
+            }
+
+            if (!outputOptions.json) {
+              console.log('Connection successful.');
+            }
+          }
+
+          // Step 6: Update datasource
+          const dsName = header.name || existingDs.name;
+          const description = header.description || undefined;
+          const jwtPayload = JSON.parse(
+            atob(conn.bearerToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')),
+          );
+          const userId = jwtPayload.user_id || jwtPayload.sub;
+
+          // Only update configs, name, state, and audit fields.
+          // Do NOT update connector_version_id -- connector identity is locked
+          // on create, matching the web app behavior.
+          const updateData: Record<string, unknown> = {
+            configs,
+            name: dsName,
+            updated_by: userId,
+            state: opts.skipTest ? existingDs.state : 'active',
+          };
+          if (description) {
+            updateData.description = description;
+          }
+
+          const { data: updatedDatasource, error: updateError } = await supabase
+            .from('datasources')
+            .update(updateData)
+            .eq('id', existingDs.id)
+            .eq('workspace_id', workspaceId)
+            .select('id')
+            .maybeSingle();
+
+          if (updateError) {
+            throw new CliError(
+              `Failed to update datasource: ${updateError.message}`,
+              ErrorCode.API_ERROR,
+            );
+          }
+          if (!updatedDatasource) {
+            throw new CliError(
+              'Failed to update datasource: no row was affected.',
               ErrorCode.API_ERROR,
             );
           }
 
-          if (!outputOptions.json) {
-            console.log('Connection successful.');
+          if (outputOptions.json) {
+            printOutput(
+              formatGetJson({
+                id: existingDs.id,
+                name: dsName,
+                api_name: existingDs.api_name,
+                state: opts.skipTest ? existingDs.state : 'active',
+                tested: !opts.skipTest,
+              }),
+            );
+          } else {
+            console.log(
+              `Datasource "${dsName}" updated.${opts.skipTest ? '' : ' Connection tested.'}`,
+            );
           }
-        }
-
-        // Step 6: Update datasource
-        const dsName = header.name || existingDs.name;
-        const description = header.description || undefined;
-        const jwtPayload = JSON.parse(atob(conn.bearerToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-        const userId = jwtPayload.user_id || jwtPayload.sub;
-
-        // Only update configs, name, state, and audit fields.
-        // Do NOT update connector_version_id -- connector identity is locked
-        // on create, matching the web app behavior.
-        const updateData: Record<string, unknown> = {
-          configs,
-          name: dsName,
-          updated_by: userId,
-          state: opts.skipTest ? existingDs.state : 'active',
-        };
-        if (description) {
-          updateData.description = description;
-        }
-
-        const { error: updateError } = await supabase
-          .from('datasources')
-          .update(updateData)
-          .eq('id', existingDs.id)
-          .eq('workspace_id', workspaceId);
-
-        if (updateError) {
-          throw new CliError(`Failed to update datasource: ${updateError.message}`, ErrorCode.API_ERROR);
-        }
-
-        if (outputOptions.json) {
-          printOutput(formatGetJson({
-            id: existingDs.id,
-            name: dsName,
-            api_name: existingDs.api_name,
-            state: opts.skipTest ? existingDs.state : 'active',
-            tested: !opts.skipTest,
-          }));
-        } else {
-          console.log(`Datasource "${dsName}" updated.${opts.skipTest ? '' : ' Connection tested.'}`);
-        }
-      }),
+        },
+      ),
     );
 }
