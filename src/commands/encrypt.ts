@@ -4,8 +4,9 @@ import { withAuth, type AuthContext } from '../lib/middleware.js';
 import { printOutput, formatGetJson } from '../lib/output.js';
 import { CliError, ErrorCode } from '../lib/errors.js';
 import { encryptValue, encodeEnvelope } from '../lib/encryption.js';
-import { parseEnvFile, extractHeader } from '../lib/envfile.js';
+import { parseEnvFile, extractHeader, resolveEnvVars } from '../lib/envfile.js';
 import { fetchConnectors, fetchConnectorProperties, filterNonOAuth } from '../lib/connector.js';
+import { normalizeFileValue } from '../lib/file-value.js';
 
 export function registerEncryptCommand(program: Command): void {
   program
@@ -71,7 +72,9 @@ export function registerEncryptCommand(program: Command): void {
 
             if (sensitiveNames.has(key) && val && !val.startsWith('enc:') && !val.startsWith('${')) {
               // Encrypt this value
-              const envelope = await encryptValue(supabase, val, workspaceId);
+              const property = nonOAuth.find((p) => p.name === key);
+              const resolvedValue = resolveEnvVars({ [key]: val })[key];
+              const envelope = await encryptValue(supabase, normalizeFileValue(resolvedValue, property), workspaceId);
               const encoded = encodeEnvelope(envelope);
               newLines.push(`${key}=${encoded}`);
               encrypted.push(key);

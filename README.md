@@ -269,6 +269,18 @@ supaflow encrypt --file my_postgres.env
 
 The `enc:` prefix is recognized by `datasources create` and `datasources edit` -- encrypted values are passed through to the server without re-encryption.
 
+Connector FILE properties (such as a service-account JSON key) are Base64-encoded before
+submission or encryption by `datasources create`, `datasources edit`, and `encrypt --file`,
+matching the web app. You can supply raw file content through an environment variable;
+existing canonical Base64 values are preserved without double encoding. Use `raw:` before
+literal content that could itself be mistaken for Base64 (for example, `raw:test`). FILE
+values contain file content, not a filesystem path.
+
+Existing `enc:` values are opaque to the CLI and remain unchanged. To correct an older
+encrypted FILE value containing raw content, replace it with the original content and
+run `encrypt --file` or `datasources edit` again. The generic `encrypt <value>` command has
+no connector schema, so FILE content must already be Base64 when using that command.
+
 ---
 
 ## Projects
@@ -423,6 +435,11 @@ supaflow pipelines schema list <identifier> --with-fields --json > objects.json
 # Edit objects.json (for example, set selected: false or adjust field flags)
 supaflow pipelines schema select <identifier> --from objects.json
 ```
+
+Field exports preserve `deleted` when the source metadata supplies it. A field
+can retain `selected: true` as saved intent while `deleted: true` means it is no
+longer active. The deletion flag is source metadata; editing it does not restore
+a deleted source field.
 
 ### Other Pipeline Commands
 

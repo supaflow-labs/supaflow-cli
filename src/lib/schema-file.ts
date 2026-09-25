@@ -39,6 +39,12 @@ function toFieldSelection(fields: unknown): Array<JsonObject> | null {
       cursor_field: source.cursor_field === true,
     };
 
+    // Retain source deletion state for readers of saved selections. Selection
+    // intent can remain true after a field disappears from the active catalog.
+    if (hasOwn(source, 'deleted')) {
+      mapped.deleted = source.deleted;
+    }
+
     if (hasOwn(source, 'activation_target_field')) {
       mapped.activation_target_field = source.activation_target_field;
     }

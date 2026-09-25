@@ -480,7 +480,8 @@ export function registerDatasourcesCommands(program: Command): void {
             if (!outputOptions.json) {
               process.stderr.write(`Encrypting ${key} in ${filePath}...\n`);
             }
-            const envelope = await encryptValue(supabase, val, workspaceId);
+            // Use the resolved schema value so FILE content stays Base64 before encryption.
+            const envelope = await encryptValue(supabase, String(merged[key]), workspaceId);
             const encoded = encodeEnvelope(envelope);
             newLines.push(`${key}=${encoded}`);
             rawConfigs[key] = encoded; // Update in-memory too
@@ -1425,7 +1426,8 @@ export function registerDatasourcesCommands(program: Command): void {
               if (!outputOptions.json) {
                 process.stderr.write(`Encrypting ${key} in ${filePath}...\n`);
               }
-              const envelope = await encryptValue(supabase, val, workspaceId);
+              // Use the resolved schema value so FILE content stays Base64 before encryption.
+              const envelope = await encryptValue(supabase, String(merged[key]), workspaceId);
               const encoded = encodeEnvelope(envelope);
               newLines.push(`${key}=${encoded}`);
               rawConfigs[key] = encoded;

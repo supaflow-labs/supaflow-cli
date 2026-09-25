@@ -171,7 +171,7 @@ describe('schemaMappingFromRpcRow', () => {
     });
   });
 
-  it('exports field selections with only save-rpc-owned field flags', () => {
+  it('exports selection flags without copying unrelated catalog attributes', () => {
     const result = schemaMappingFromRpcRow({
       mapping_id: 'mapping-1',
       fully_qualified_source_object_name: 'public.accounts',
@@ -236,6 +236,30 @@ describe('schemaMappingFromRpcRow', () => {
       fields: [{ name: 'id', selected: false, primary_key: false, cursor_field: false }],
     });
   });
+
+  it.each(['selected_source_metadata', 'merged_metadata'])(
+    'preserves field deletion state from %s without changing selection intent',
+    (metadataKey) => {
+      const result = schemaMappingFromRpcRow({
+        mapping_id: 'mapping-1',
+        source_fully_qualified_name: 'devices',
+        [metadataKey]: {
+          selected: true,
+          fields: [
+            { name: 'lastActivity', selected: true, deleted: false },
+            { name: 'lastActivity__v_text', selected: true, deleted: true },
+            { name: 'id', selected: true, primary_key: true },
+          ],
+        },
+      }, { withFields: true });
+
+      expect(result.fields).toEqual([
+        { name: 'lastActivity', selected: true, deleted: false, primary_key: false, cursor_field: false },
+        { name: 'lastActivity__v_text', selected: true, deleted: true, primary_key: false, cursor_field: false },
+        { name: 'id', selected: true, primary_key: true, cursor_field: false },
+      ]);
+    },
+  );
 });
 
 describe('assertMappingSaveSuccess', () => {

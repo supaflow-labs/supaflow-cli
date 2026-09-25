@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { PropertyGroup } from './envfile.js';
 import { CliError, ErrorCode } from './errors.js';
+import { normalizeFileValue } from './file-value.js';
 
 export interface ConnectorInfo {
   id: string;
@@ -116,6 +117,9 @@ function coerceValue(value: string, property: ConnectorProperty): unknown {
   // They are base64-encoded encryption envelopes prefixed with "enc:".
   // The decodeEncryptedValue() function in encryption.ts handles decoding.
   if (value.startsWith('enc:')) return value;
+  if (property.inputType === 'FILE' || property.type === 'FILE') {
+    return normalizeFileValue(value, property);
+  }
   switch (property.type) {
     case 'INTEGER':
     case 'NUMERIC': {
@@ -152,7 +156,9 @@ export function mergeEnvWithSchema(
     if (prop.name in envValues) {
       merged[prop.name] = coerceValue(envValues[prop.name], prop);
     } else if (prop.defaultValue != null) {
-      merged[prop.name] = prop.defaultValue;
+      merged[prop.name] = typeof prop.defaultValue === 'string'
+        ? normalizeFileValue(prop.defaultValue, prop)
+        : prop.defaultValue;
     } else if (prop.required) {
       errors.push(
         `Connector updated since init. Missing required property: "${prop.name}". ` +
