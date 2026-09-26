@@ -2,6 +2,7 @@ export const PIPELINE_DEFAULTS: Record<string, unknown> = {
   pipeline_type: 'REPLICATION',
   ingestion_mode: 'HISTORICAL_PLUS_INCREMENTAL',
   error_handling: 'MODERATE',
+  upload_error_files_to_control_plane: false,
   load_mode: 'MERGE',
   namespace_rules: 'MIRROR_SOURCE',
   destination_table_handling: 'MERGE',
@@ -152,6 +153,7 @@ const USER_FACING_KEYS = [
   'load_mode',
   'schema_evolution_mode',
   'error_handling',
+  'upload_error_files_to_control_plane',
   'namespace_rules',
   'destination_table_handling',
   'perform_hard_deletes',
@@ -209,6 +211,9 @@ export function generateConfigReference(
     if (ownership) parts.push(`  controlled by: ${ownership}`);
     if (supportedValues) parts.push(`  valid options: ${supportedValues.join(', ')}`);
     if (key === 'pipeline_prefix') parts.push('  WARNING: cannot be changed after pipeline creation');
+    if (key === 'upload_error_files_to_control_plane') {
+      parts.push('  Saves rejected-row files to Supaflow; files may contain customer data. Off keeps files on the agent.');
+    }
 
     lines.push(`# ${parts.join('\n#   ')}`);
   }
@@ -228,7 +233,12 @@ export function createPipelineConfig(
     );
   }
 
-  const config = { ...PIPELINE_DEFAULTS, ...overrides };
+  const config: Record<string, unknown> = {
+    ...PIPELINE_DEFAULTS,
+    ...overrides,
+    // Match the app and uploader: only a JSON boolean true permits uploads.
+    upload_error_files_to_control_plane: overrides.upload_error_files_to_control_plane === true,
+  };
 
   // ACTIVATION pipelines MUST use BLOCK_ALL schema evolution to prevent
   // schema drift from writing bad payloads into external APIs.

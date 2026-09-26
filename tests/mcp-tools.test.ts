@@ -9,6 +9,7 @@ import {
   buildPipelineCreateFromPlanArgv,
   normalizeObjectPreviewLimit,
   applyConfigPatch,
+  configSummary,
   applyObjectSelection,
   validatePlanBinding,
   validatePlanWorkspace,
@@ -24,8 +25,28 @@ import { registerPipelinesCommands } from '../src/commands/pipelines.js';
 import { registerProjectsCommands } from '../src/commands/projects.js';
 import { registerSchedulesCommands } from '../src/commands/schedules.js';
 import { registerWorkspacesCommands } from '../src/commands/workspaces.js';
+import { createPipelineConfig, generateConfigJson, generateCapabilityAwareConfig } from '../src/lib/pipeline-config.js';
 
 const defByName = new Map(listToolDefinitions().map((d) => [d.name, d]));
+
+describe('MCP error file storage configuration', () => {
+  it('carries the prepared default and explicit plan patches through CLI validation and review', () => {
+    const prepared = JSON.parse(generateConfigJson(generateCapabilityAwareConfig(null, null, 'MYSQL')));
+    expect(configSummary(prepared).upload_error_files_to_control_plane).toBe(false);
+    for (const enabled of [true, false]) {
+      const patched = applyConfigPatch(prepared, { upload_error_files_to_control_plane: enabled });
+      const persisted = createPipelineConfig(patched);
+      expect(persisted.upload_error_files_to_control_plane).toBe(enabled);
+      expect(configSummary(persisted).upload_error_files_to_control_plane).toBe(enabled);
+    }
+  });
+
+  it('shows legacy and malformed configurations as off in the review summary', () => {
+    expect(configSummary({}).upload_error_files_to_control_plane).toBe(false);
+    expect(configSummary({ upload_error_files_to_control_plane: 'true' })
+      .upload_error_files_to_control_plane).toBe(false);
+  });
+});
 
 function cliLeafCommandNames(): string[] {
   const program = new Command();

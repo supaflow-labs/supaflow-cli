@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   createPipelineConfig,
   generateCapabilityAwareConfig,
+  generateConfigJson,
+  generateConfigReference,
   resolvePipelinePrefix,
   PIPELINE_DEFAULTS,
 } from '../../src/lib/pipeline-config.js';
@@ -58,6 +60,42 @@ describe('createPipelineConfig', () => {
 
   it('accepts valid override keys', () => {
     expect(() => createPipelineConfig({ pipeline_prefix: 'my_prefix', is_custom_prefix: true })).not.toThrow();
+  });
+});
+
+describe('error file storage opt-in', () => {
+  it('defaults to off and accepts explicit choices for either pipeline type', () => {
+    expect(createPipelineConfig().upload_error_files_to_control_plane).toBe(false);
+    for (const pipeline_type of ['REPLICATION', 'ACTIVATION']) {
+      for (const enabled of [false, true]) {
+        const config = createPipelineConfig({
+          pipeline_type,
+          upload_error_files_to_control_plane: enabled,
+        });
+        expect(config.upload_error_files_to_control_plane).toBe(enabled);
+      }
+    }
+  });
+
+  it('does not treat malformed values as opt-in', () => {
+    for (const value of [undefined, null, 'true', 1]) {
+      expect(createPipelineConfig({ upload_error_files_to_control_plane: value })
+        .upload_error_files_to_control_plane).toBe(false);
+    }
+  });
+
+  it('includes the setting in init config and explains its privacy impact', () => {
+    const config = generateCapabilityAwareConfig(null, {
+      error_handling: { supported_values: ['STRICT'], default_value: 'STRICT' },
+      upload_error_files_to_control_plane: { supported: true, default_value: true },
+    }, 'MYSQL');
+    const generated = JSON.parse(generateConfigJson(config));
+    expect(generated.upload_error_files_to_control_plane).toBe(false);
+    generated.upload_error_files_to_control_plane = true;
+    expect(createPipelineConfig(generated).upload_error_files_to_control_plane).toBe(true);
+    const reference = generateConfigReference(config, null, null);
+    expect(reference).toContain('upload_error_files_to_control_plane: false');
+    expect(reference).toContain('files may contain customer data');
   });
 });
 

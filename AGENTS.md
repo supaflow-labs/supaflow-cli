@@ -24,6 +24,12 @@
 - The current script publishes to npm before pushing its release commit and tag. If either Git push fails after npm publication, the package version is already live while the remote commit/tag may be missing. Verify the published version, remote `main`, remote tag, and clean worktree immediately after the run; do not rerun publication to repair a push failure.
 - Feature work reaches `main` through the workspace's merge-commit PR flow. Do not describe version-bump or deployment mechanics in ordinary feature commits or PR prose.
 
+## Pipeline configuration contract
+
+- Follow the pipeline configuration rules in `../supaflow-platform/AGENTS.md` for changes to the shared Java configuration contract.
+- `src/lib/pipeline-config.ts` maintains explicit defaults/accepted keys and user-facing init JSON/reference fields. New backend fields are not discovered automatically. Update both lists, capability ownership when applicable, and stdio MCP `config_summary` for settings the user needs to review before creation.
+- Cover ordinary CLI creation and stdio MCP guided creation, including default values and explicit overrides. Verify hosted MCP separately in `supaflow-app`; it uses the app's shared defaults rather than these CLI lists.
+
 ## Pipeline prefix contract
 
 - `pipelines create` resolves the non-custom default prefix to the lowercased source connector type before persistence.

@@ -149,7 +149,7 @@ function loadPlan(planId: string) {
   return { paths, plan: parseJson(fs.readFileSync(paths.planFile, 'utf8'), 'pipeline plan') };
 }
 
-function configSummary(config: Json) {
+export function configSummary(config: Json) {
   return {
     pipeline_prefix: config?.pipeline_prefix,
     ingestion_mode: config?.ingestion_mode,
@@ -158,6 +158,7 @@ function configSummary(config: Json) {
     perform_hard_deletes: config?.perform_hard_deletes,
     full_sync_frequency: config?.full_sync_frequency ?? null,
     error_handling: config?.error_handling ?? null,
+    upload_error_files_to_control_plane: config?.upload_error_files_to_control_plane === true,
   };
 }
 
