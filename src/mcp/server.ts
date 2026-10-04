@@ -35,6 +35,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { VERSION } from '../version.js';
+import { isSchemaObjectUnavailable } from '../lib/schema-availability.js';
 
 const execFileP = promisify(execFile);
 const SERVER_VERSION = VERSION;
@@ -302,10 +303,16 @@ export function applyConfigPatch(baseConfig: Json, patch: Json = {}) {
 
 export function applyObjectSelection(objects: Json[], selection: Json) {
   if (!selection || selection.mode === 'all') {
+    const selected = objects
+      .filter((object) => !isSchemaObjectUnavailable(object))
+      .map((object) => object.fully_qualified_name);
     return {
       mode: 'all',
-      objects: objects.map((o) => ({ ...o, selected: true })),
-      selected: objects.map((o) => o.fully_qualified_name),
+      objects: objects.map((object) => ({
+        ...object,
+        selected: !isSchemaObjectUnavailable(object),
+      })),
+      selected,
       missing: [],
     };
   }
@@ -314,15 +321,23 @@ export function applyObjectSelection(objects: Json[], selection: Json) {
     throw new Error('object_selection.mode must be "all" or "subset".');
   }
 
-  const include = Array.isArray(selection.include) ? selection.include : [];
+  const include = Array.isArray(selection.include) ? [...new Set(selection.include)] : [];
   if (include.length === 0) {
     throw new Error('object_selection.include is required when mode is "subset".');
   }
 
-  const available = new Set(objects.map((o) => o.fully_qualified_name));
-  const missing = include.filter((name) => !available.has(name));
+  const objectsByName = new Map(objects.map((object) => [object.fully_qualified_name, object]));
+  const missing = include.filter((name) => !objectsByName.has(name));
   if (missing.length > 0) {
     throw new Error(`Unknown object(s) in selection: ${missing.join(', ')}`);
+  }
+
+  const unavailable = include.filter((name) => {
+    const object = objectsByName.get(name);
+    return object ? isSchemaObjectUnavailable(object) : false;
+  });
+  if (unavailable.length > 0) {
+    throw new Error(`Unavailable object(s) in selection: ${unavailable.join(', ')}`);
   }
 
   const includeSet = new Set(include);
@@ -1172,7 +1187,8 @@ export const TOOLS: ToolSpec[] = [
         config_file: { type: 'string', description: 'JSON file with pipeline config overrides.' },
         objects_file: {
           type: 'string',
-          description: 'JSON file with object selections (default: select all discovered).',
+          description:
+            'JSON file with object selections (default: select all available discovered objects).',
         },
         description: { type: 'string', description: 'Pipeline description.' },
       },
@@ -1537,11 +1553,18 @@ async function preparePipelineCreate(args: ToolArgs) {
   }
 
   const names = objectNames(objects);
+  const defaultSelection = applyObjectSelection(objects, { mode: 'all' });
   const previewLimit = normalizeObjectPreviewLimit(args.object_preview_limit);
   const warnings: string[] = [];
   if (names.length === 0) {
     warnings.push(
       'No discovered source objects were found. Refresh the datasource catalog before creating a pipeline.',
+    );
+  }
+  const unavailableCount = objects.length - defaultSelection.selected.length;
+  if (unavailableCount > 0) {
+    warnings.push(
+      `${unavailableCount} permanently unavailable source object(s) will remain deselected when object_selection.mode is "all".`,
     );
   }
 
@@ -1698,7 +1721,7 @@ async function createPipelineFromPlan(args: ToolArgs) {
     config_summary: configSummary(finalConfig),
     object_selection: {
       mode: selection.mode,
-      selected_count: selection.mode === 'all' ? objects.length : selection.selected.length,
+      selected_count: selection.selected.length,
       total_count: objects.length,
       selected_preview: selection.selected.slice(0, DEFAULT_OBJECT_PREVIEW_LIMIT),
       objects_file: paths.selectedObjectsFile,

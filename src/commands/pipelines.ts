@@ -28,8 +28,12 @@ import {
   resolvePipelinePrefix,
 } from '../lib/pipeline-config.js';
 import { generateApiName } from '../lib/connector.js';
-import { fetchAllMetadataMappings } from '../lib/metadata-mappings.js';
+import {
+  fetchAllMetadataMappings,
+  savePipelineMetadataMappings,
+} from '../lib/metadata-mappings.js';
 import { fetchAllRowsByKey } from '../lib/supabase-pagination.js';
+import { schemaMappingFromCatalogRow } from '../lib/schema-availability.js';
 
 interface PipelineRow {
   pipeline_id: string;
@@ -105,11 +109,7 @@ export async function fetchDefaultPipelineObjectMappings(
     deletedObjectMode: 'EXCLUDE',
   });
 
-  return catalog.map((row) => ({
-    fully_qualified_name: String(row.fully_qualified_source_object_name),
-    selected: true,
-    fields: null,
-  }));
+  return catalog.map(schemaMappingFromCatalogRow);
 }
 
 interface SelectedSchemaRow extends Record<string, unknown> {
@@ -570,7 +570,10 @@ export function registerPipelinesCommands(program: Command): void {
       'Project (ID or api_name; destination comes from project)',
     )
     .option('--config <file>', 'JSON file with pipeline config overrides')
-    .option('--objects <file>', 'JSON file with object selections (default: select all discovered)')
+    .option(
+      '--objects <file>',
+      'JSON file with object selections (default: select all available discovered objects)',
+    )
     .option('--description <desc>', 'Pipeline description')
     .action(
       withAuth(
@@ -681,6 +684,7 @@ export function registerPipelinesCommands(program: Command): void {
             selected: boolean;
             fields: unknown;
           }>;
+          let selectedObjectCount = 0;
           try {
             // 8. Fetch object selections and save schema mappings
             if (!outputOptions.json) {
@@ -691,7 +695,8 @@ export function registerPipelinesCommands(program: Command): void {
               // User-provided object selection (strict validation)
               objectMappings = readSchemaMappingFile(opts.objects);
             } else {
-              // Default: select all discovered objects (fields: null means snapshot all fields from catalog)
+              // Match the UI's select-all behavior: permanently unavailable
+              // objects remain deselected, while fixable reasons remain selectable.
               try {
                 objectMappings = await fetchDefaultPipelineObjectMappings(supabase, src.id);
               } catch (error) {
@@ -710,24 +715,23 @@ export function registerPipelinesCommands(program: Command): void {
               }
             }
 
-            const { data: mappingResult, error: mappingError } = await supabase.rpc(
-              'save_pipeline_metadata_mappings',
-              {
-                p_pipeline_id: pipeline.id,
-                p_datasource_id: src.id,
-                p_mappings: objectMappings,
-              },
-            );
-
-            if (mappingError) {
+            selectedObjectCount = objectMappings.filter((mapping) => mapping.selected).length;
+            if (selectedObjectCount === 0) {
               throw new CliError(
-                `Failed to save object selections: ${mappingError.message}`,
-                ErrorCode.API_ERROR,
+                'No selectable objects were selected. Review the source catalog or provide --objects with at least one available object.',
+                ErrorCode.INVALID_INPUT,
               );
             }
 
+            const mappingResult = await savePipelineMetadataMappings(
+              supabase,
+              pipeline.id,
+              src.id,
+              objectMappings,
+            );
+
             // Block activation if any objects failed to save
-            assertMappingSaveSuccess(mappingResult);
+            assertMappingSaveSuccess([mappingResult]);
 
             // 10. Activate pipeline (draft -> active)
             const { data: activatedPipeline, error: activateError } = await supabase
@@ -769,15 +773,13 @@ export function registerPipelinesCommands(program: Command): void {
                 destination: dest.name,
                 project: proj.name,
                 pipeline_prefix: pipelineConfig.pipeline_prefix,
-                objects_selected: objectMappings.filter(
-                  (o: Record<string, unknown>) => o.selected !== false,
-                ).length,
+                objects_selected: selectedObjectCount,
                 state: 'active',
               }),
             );
           } else {
             console.log(`Pipeline "${opts.name}" created. ID: ${pipeline.id}`);
-            console.log(`Objects selected: ${objectMappings.length}`);
+            console.log(`Objects selected: ${selectedObjectCount}`);
             console.log(`Trigger sync: supaflow pipelines sync ${apiName}`);
           }
         },
@@ -1058,23 +1060,14 @@ export function registerPipelinesCommands(program: Command): void {
           source_datasource_id: string;
         };
 
-        const { data: result, error: saveError } = await supabase.rpc(
-          'save_pipeline_metadata_mappings',
-          {
-            p_pipeline_id: pipelineRow.pipeline_id,
-            p_datasource_id: pipelineRow.source_datasource_id,
-            p_mappings: objectMappings,
-          },
+        const result = await savePipelineMetadataMappings(
+          supabase,
+          pipelineRow.pipeline_id,
+          pipelineRow.source_datasource_id,
+          objectMappings,
         );
 
-        if (saveError) {
-          throw new CliError(
-            `Failed to save selections: ${saveError.message}`,
-            ErrorCode.API_ERROR,
-          );
-        }
-
-        const saveResult = assertMappingSaveSuccess(result);
+        const saveResult = assertMappingSaveSuccess([result]);
 
         if (outputOptions.json) {
           printOutput(formatGetJson(saveResult));
@@ -1113,20 +1106,14 @@ export function registerPipelinesCommands(program: Command): void {
 
         const mapping = [{ fully_qualified_name: objectName, selected: true, fields: null }];
 
-        const { data: result, error: saveError } = await supabase.rpc(
-          'save_pipeline_metadata_mappings',
-          {
-            p_pipeline_id: pipelineRow.pipeline_id,
-            p_datasource_id: pipelineRow.source_datasource_id,
-            p_mappings: mapping,
-          },
+        const result = await savePipelineMetadataMappings(
+          supabase,
+          pipelineRow.pipeline_id,
+          pipelineRow.source_datasource_id,
+          mapping,
         );
 
-        if (saveError) {
-          throw new CliError(`Failed to add object: ${saveError.message}`, ErrorCode.API_ERROR);
-        }
-
-        const saveResult = assertMappingSaveSuccess(result);
+        const saveResult = assertMappingSaveSuccess([result]);
 
         if (outputOptions.json) {
           printOutput(formatGetJson({ object: objectName, ...saveResult }));

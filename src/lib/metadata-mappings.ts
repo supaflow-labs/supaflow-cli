@@ -1,5 +1,105 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { CliError, ErrorCode } from './errors.js';
+import type { MappingSaveResult, SchemaMapping } from './schema-file.js';
 import { fetchAllRowsByKey } from './supabase-pagination.js';
+
+export const MAX_MAPPING_SAVE_CHUNK_BYTES = 900 * 1024;
+export const MAX_MAPPING_SAVE_CHUNK_OBJECTS = 250;
+
+export interface SavePipelineMetadataMappingsOptions {
+  maxChunkBytes?: number;
+  maxChunkObjects?: number;
+}
+
+export function chunkPipelineMetadataMappings(
+  mappings: SchemaMapping[],
+  options: SavePipelineMetadataMappingsOptions = {},
+): SchemaMapping[][] {
+  const maxChunkBytes = options.maxChunkBytes ?? MAX_MAPPING_SAVE_CHUNK_BYTES;
+  const maxChunkObjects = options.maxChunkObjects ?? MAX_MAPPING_SAVE_CHUNK_OBJECTS;
+  if (maxChunkBytes < 1 || maxChunkObjects < 1) {
+    throw new Error('Mapping chunk limits must be positive');
+  }
+
+  const chunks: SchemaMapping[][] = [];
+  let chunk: SchemaMapping[] = [];
+  let chunkSize = 0;
+
+  for (const mapping of mappings) {
+    const mappingSize = JSON.stringify(mapping).length;
+    if (
+      chunk.length > 0 &&
+      (chunk.length >= maxChunkObjects || chunkSize + mappingSize > maxChunkBytes)
+    ) {
+      chunks.push(chunk);
+      chunk = [];
+      chunkSize = 0;
+    }
+    chunk.push(mapping);
+    chunkSize += mappingSize;
+  }
+
+  if (chunk.length > 0) chunks.push(chunk);
+  return chunks;
+}
+
+export async function savePipelineMetadataMappings(
+  supabase: Pick<SupabaseClient, 'rpc'>,
+  pipelineId: string,
+  datasourceId: string,
+  mappings: SchemaMapping[],
+  options: SavePipelineMetadataMappingsOptions = {},
+): Promise<MappingSaveResult> {
+  const totals: MappingSaveResult = {
+    processed_count: 0,
+    inserted_count: 0,
+    updated_count: 0,
+    snapshotted_count: 0,
+    error_count: 0,
+    error_messages: [],
+  };
+
+  const batches = chunkPipelineMetadataMappings(mappings, options);
+  if (batches.length === 0) batches.push([]);
+
+  for (const batch of batches) {
+    const { data, error } = await supabase.rpc('save_pipeline_metadata_mappings', {
+      p_pipeline_id: pipelineId,
+      p_datasource_id: datasourceId,
+      p_mappings: batch,
+    });
+    if (error) {
+      throw new CliError(`Failed to save object selections: ${error.message}`, ErrorCode.API_ERROR);
+    }
+
+    const result = Array.isArray(data) ? (data[0] as MappingSaveResult | undefined) : undefined;
+    if (!result) {
+      throw new CliError(
+        'No result returned from save_pipeline_metadata_mappings.',
+        ErrorCode.API_ERROR,
+      );
+    }
+    totals.processed_count += result.processed_count;
+    totals.inserted_count += result.inserted_count;
+    totals.updated_count += result.updated_count;
+    totals.snapshotted_count += result.snapshotted_count;
+    totals.error_count += result.error_count;
+    for (const message of result.error_messages ?? []) {
+      if ((totals.error_messages?.length ?? 0) >= 10) break;
+      if (
+        !(totals.error_messages ?? []).some(
+          (existing) =>
+            existing.fully_qualified_name === message.fully_qualified_name &&
+            existing.message === message.message,
+        )
+      ) {
+        totals.error_messages?.push(message);
+      }
+    }
+  }
+
+  return totals;
+}
 
 export interface FetchAllMetadataMappingsOptions {
   pipelineId: string | null;

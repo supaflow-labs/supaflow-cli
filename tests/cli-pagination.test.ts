@@ -5,9 +5,10 @@ import {
   fetchSelectedPipelineMappings,
 } from '../src/commands/pipelines.js';
 import { fetchAllJobObjectDetails } from '../src/commands/jobs.js';
+import { selectionFileObjectFromCatalogRow } from '../src/lib/schema-availability.js';
 
-function metadataRow(name: string) {
-  return { fully_qualified_source_object_name: name };
+function metadataRow(name: string, sourceMetadata: Record<string, unknown> = {}) {
+  return { fully_qualified_source_object_name: name, source_metadata: sourceMetadata };
 }
 
 function keysetClient(rowsByTable: Record<string, Array<Record<string, unknown>>>, cap = 2) {
@@ -72,6 +73,64 @@ describe('CLI complete-read consumers', () => {
       { fully_qualified_name: 'catalog.schema.b', selected: true, fields: null },
       { fully_qualified_name: 'catalog.schema.c', selected: true, fields: null },
     ]);
+  });
+
+  it('matches the UI availability rules when selecting default pipeline objects', async () => {
+    const rpc = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: [
+          metadataRow('catalog.schema.available'),
+          metadataRow('catalog.schema.unsupported', { skipped_reason: 'UNSUPPORTED_TYPE' }),
+          metadataRow('catalog.schema.deleted-reason', {
+            skipped_reason: 'DELETED_FROM_SOURCE',
+          }),
+          metadataRow('catalog.schema.change-tracking', {
+            skipped_reason: 'CHANGE_TRACKING_NOT_ENABLED',
+          }),
+          metadataRow('catalog.schema.fixable', { skipped_reason: 'MISSING_CURSOR' }),
+          metadataRow('catalog.schema.deleted-flag', { deleted: true }),
+        ],
+        error: null,
+      })
+      .mockResolvedValueOnce({ data: [], error: null });
+
+    const mappings = await fetchDefaultPipelineObjectMappings(
+      { rpc } as unknown as Pick<SupabaseClient, 'rpc'>,
+      'datasource-1',
+    );
+
+    expect(
+      mappings.map(({ fully_qualified_name, selected }) => ({
+        fully_qualified_name,
+        selected,
+      })),
+    ).toEqual([
+      { fully_qualified_name: 'catalog.schema.available', selected: true },
+      { fully_qualified_name: 'catalog.schema.unsupported', selected: false },
+      { fully_qualified_name: 'catalog.schema.deleted-reason', selected: false },
+      { fully_qualified_name: 'catalog.schema.change-tracking', selected: false },
+      { fully_qualified_name: 'catalog.schema.fixable', selected: true },
+      { fully_qualified_name: 'catalog.schema.deleted-flag', selected: false },
+    ]);
+  });
+
+  it('preserves availability markers in generated catalog selection objects', () => {
+    expect(
+      selectionFileObjectFromCatalogRow(
+        metadataRow('catalog.schema.unsupported', {
+          skipped_reason: 'UNSUPPORTED_TYPE',
+          skipped_reason_detail: 'Connector cannot read this object',
+        }),
+      ),
+    ).toEqual({
+      fully_qualified_name: 'catalog.schema.unsupported',
+      selected: false,
+      fields: null,
+      deleted: false,
+      skipped_reason: 'UNSUPPORTED_TYPE',
+      skipped_reason_detail: 'Connector cannot read this object',
+    });
   });
 
   it('pages saved schema selections before filtering deselected objects', async () => {

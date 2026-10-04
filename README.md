@@ -306,7 +306,7 @@ Pipelines move data from a source datasource to a destination (defined by the pr
 ### Creating a Pipeline
 
 ```bash
-# Minimal: create with all discovered objects selected
+# Minimal: create with all available discovered objects selected
 supaflow pipelines create \
   --name "Postgres to Snowflake" \
   --source my_postgres \
@@ -336,7 +336,7 @@ The `--source` and `--project` flags accept UUID or api_name. The destination is
 3. Merges config defaults with any overrides from `--config`
 4. Inserts the pipeline in draft state
 5. Triggers schema discovery on the source
-6. Saves object selections (all objects if `--objects` not provided)
+6. Saves object selections (all available objects if `--objects` not provided)
 7. Activates the pipeline
 
 ### Object Selection File

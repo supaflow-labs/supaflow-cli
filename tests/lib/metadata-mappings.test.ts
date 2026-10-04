@@ -1,6 +1,11 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { describe, expect, it, vi } from 'vitest';
-import { fetchAllMetadataMappings } from '../../src/lib/metadata-mappings.js';
+import {
+  chunkPipelineMetadataMappings,
+  fetchAllMetadataMappings,
+  savePipelineMetadataMappings,
+} from '../../src/lib/metadata-mappings.js';
+import { assertMappingSaveSuccess, type SchemaMapping } from '../../src/lib/schema-file.js';
 
 const row = (name: string) => ({
   fully_qualified_source_object_name: name,
@@ -470,5 +475,120 @@ describe('fetchAllMetadataMappings', () => {
         ([rpcName, args]) => rpcName === 'get_pipeline_metadata_mappings' && args.p_offset === 0,
       ),
     ).toHaveLength(2);
+  });
+});
+
+describe('savePipelineMetadataMappings', () => {
+  const mapping = (name: string, fields: unknown = null): SchemaMapping => ({
+    fully_qualified_name: `catalog.schema.${name}`,
+    selected: true,
+    fields,
+  });
+
+  const successfulResult = (count: number) => [
+    {
+      processed_count: count,
+      inserted_count: count,
+      updated_count: 0,
+      snapshotted_count: count,
+      error_count: 0,
+      error_messages: [],
+    },
+  ];
+
+  it('chunks the 1,233-object incident shape by object count', async () => {
+    const mappings = Array.from({ length: 1_233 }, (_, index) => mapping(String(index)));
+    const rpc = vi.fn(async (_name: string, args: Record<string, unknown>) => {
+      const batch = args.p_mappings as SchemaMapping[];
+      return { data: successfulResult(batch.length), error: null };
+    });
+
+    const result = await savePipelineMetadataMappings(
+      { rpc } as unknown as Pick<SupabaseClient, 'rpc'>,
+      'pipeline-1',
+      'datasource-1',
+      mappings,
+    );
+
+    expect(rpc).toHaveBeenCalledTimes(5);
+    expect(
+      rpc.mock.calls
+        .map(([, args]) => (args as Record<string, unknown>).p_mappings as SchemaMapping[])
+        .map((batch) => batch.length),
+    ).toEqual([250, 250, 250, 250, 233]);
+    expect(result.processed_count).toBe(1_233);
+    expect(result.inserted_count).toBe(1_233);
+  });
+
+  it('matches the UI byte limit for full-field selections', () => {
+    const largeFields = (suffix: string) => [
+      {
+        name: `field_${suffix}`,
+        selected: true,
+        payload: suffix.repeat(500 * 1024),
+      },
+    ];
+    const chunks = chunkPipelineMetadataMappings([
+      mapping('a', largeFields('a')),
+      mapping('b', largeFields('b')),
+    ]);
+
+    expect(chunks).toHaveLength(2);
+    expect(chunks.map((chunk) => chunk.length)).toEqual([1, 1]);
+  });
+
+  it('aggregates chunk failures so activation can be blocked after every response', async () => {
+    const rpc = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: [
+          {
+            processed_count: 1,
+            inserted_count: 0,
+            updated_count: 0,
+            snapshotted_count: 0,
+            error_count: 1,
+            error_messages: [
+              {
+                fully_qualified_name: 'catalog.schema.a',
+                message: 'not selectable',
+              },
+            ],
+          },
+        ],
+        error: null,
+      })
+      .mockResolvedValueOnce({ data: successfulResult(1), error: null });
+
+    const result = await savePipelineMetadataMappings(
+      { rpc } as unknown as Pick<SupabaseClient, 'rpc'>,
+      'pipeline-1',
+      'datasource-1',
+      [mapping('a'), mapping('b')],
+      { maxChunkObjects: 1 },
+    );
+
+    expect(result.processed_count).toBe(2);
+    expect(result.inserted_count).toBe(1);
+    expect(result.error_count).toBe(1);
+    expect(() => assertMappingSaveSuccess([result])).toThrow(/1 of 2 object\(s\) failed/);
+  });
+
+  it('stops after an RPC-level chunk failure', async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: null,
+      error: { message: 'canceling statement due to statement timeout' },
+    });
+
+    await expect(
+      savePipelineMetadataMappings(
+        { rpc } as unknown as Pick<SupabaseClient, 'rpc'>,
+        'pipeline-1',
+        'datasource-1',
+        [mapping('a'), mapping('b')],
+        { maxChunkObjects: 1 },
+      ),
+    ).rejects.toThrow('Failed to save object selections');
+    expect(rpc).toHaveBeenCalledTimes(1);
   });
 });

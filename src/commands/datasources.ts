@@ -31,6 +31,7 @@ import { resolveEncryptedConfigs, encryptValue, encodeEnvelope } from '../lib/en
 import { softDeleteEntity } from '../lib/client.js';
 import { buildDbtTestSnapshot } from '../lib/dbtSnapshot.js';
 import { fetchAllMetadataMappings } from '../lib/metadata-mappings.js';
+import { selectionFileObjectFromCatalogRow } from '../lib/schema-availability.js';
 import {
   catalogResetOutcomeMessage,
   enqueueCatalogReset,
@@ -704,7 +705,9 @@ export function registerDatasourcesCommands(program: Command): void {
 
           // If --output: write a selectable-objects JSON array. Always includes
           // the keys ``pipelines create --objects`` requires (fully_qualified_name,
-          // selected, fields). When --with-fields is set, additional keys
+          // selected, fields) plus the flattened availability flags MCP needs
+          // to enforce the same selection rules. When --with-fields is set,
+          // additional keys
           // (merged_metadata, source_metadata, selected_source_metadata,
           // catalog_version, updated_at) are appended to each entry. The
           // schema-file reader (readSchemaMappingFile) only validates the
@@ -713,9 +716,7 @@ export function registerDatasourcesCommands(program: Command): void {
           if (opts.output) {
             const selectableObjects = allObjects.map((obj) => {
               const base: Record<string, unknown> = {
-                fully_qualified_name: obj.fully_qualified_source_object_name,
-                selected: true,
-                fields: null, // null = snapshot all fields from catalog
+                ...selectionFileObjectFromCatalogRow(obj),
               };
               if (opts.withFields) {
                 base.catalog_version = obj.catalog_version;

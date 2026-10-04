@@ -342,18 +342,68 @@ describe('preview limit + selection + plan binding', () => {
   it('keeps only included objects and rejects unknown ones', () => {
     const sel = applyObjectSelection(
       [{ fully_qualified_name: 'public.accounts' }, { fully_qualified_name: 'public.orders' }],
-      { mode: 'subset', include: ['public.orders'] },
+      { mode: 'subset', include: ['public.orders', 'public.orders'] },
     );
     expect(sel.objects.map((o: any) => `${o.fully_qualified_name}:${o.selected}`)).toEqual([
       'public.accounts:false',
       'public.orders:true',
     ]);
+    expect(sel.selected).toEqual(['public.orders']);
     expect(() =>
       applyObjectSelection([{ fully_qualified_name: 'public.accounts' }], {
         mode: 'subset',
         include: ['public.missing'],
       }),
     ).toThrow();
+  });
+
+  it('selects only frontend-available objects in all mode', () => {
+    const selection = applyObjectSelection(
+      [
+        { fully_qualified_name: 'public.accounts', selected: false },
+        {
+          fully_qualified_name: 'public.unsupported',
+          selected: true,
+          skipped_reason: 'UNSUPPORTED_TYPE',
+        },
+        {
+          fully_qualified_name: 'public.deleted',
+          selected: true,
+          deleted: true,
+        },
+        {
+          fully_qualified_name: 'public.fixable',
+          selected: false,
+          skipped_reason: 'MISSING_CURSOR',
+        },
+      ],
+      { mode: 'all' },
+    );
+
+    expect(selection.selected).toEqual(['public.accounts', 'public.fixable']);
+    expect(
+      selection.objects.map((object: any) => `${object.fully_qualified_name}:${object.selected}`),
+    ).toEqual([
+      'public.accounts:true',
+      'public.unsupported:false',
+      'public.deleted:false',
+      'public.fixable:true',
+    ]);
+  });
+
+  it('rejects permanently unavailable objects in subset mode', () => {
+    expect(() =>
+      applyObjectSelection(
+        [
+          { fully_qualified_name: 'public.accounts' },
+          {
+            fully_qualified_name: 'public.unsupported',
+            skipped_reason: 'UNSUPPORTED_TYPE',
+          },
+        ],
+        { mode: 'subset', include: ['public.unsupported'] },
+      ),
+    ).toThrow('Unavailable object(s) in selection: public.unsupported');
   });
 
   it('enforces workspace/source/project plan binding', () => {
