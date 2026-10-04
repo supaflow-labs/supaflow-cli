@@ -1,8 +1,41 @@
 import { Command } from 'commander';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { withAuthOnly } from '../lib/middleware.js';
 import { readConfig, writeConfig } from '../lib/config.js';
-import { formatTable, formatListJson, formatGetJson, printOutput, truncateUuid } from '../lib/output.js';
+import {
+  formatTable,
+  formatListJson,
+  formatGetJson,
+  printOutput,
+  truncateUuid,
+} from '../lib/output.js';
 import { CliError, ErrorCode } from '../lib/errors.js';
+import { fetchAllRowsByKey } from '../lib/supabase-pagination.js';
+
+interface WorkspaceListRow extends Record<string, unknown> {
+  id: string;
+  name: string | null;
+  api_name: string | null;
+  environment: string | null;
+  user_access_level: string | null;
+}
+
+export async function fetchAccessibleWorkspaces(
+  supabase: Pick<SupabaseClient, 'from'>,
+): Promise<WorkspaceListRow[]> {
+  const rows = await fetchAllRowsByKey<WorkspaceListRow>(() =>
+    supabase
+      .from('workspaces_with_access')
+      .select('id, name, api_name, environment, user_access_level')
+      .neq('state', 'deleted'),
+  );
+
+  return rows.sort(
+    (left, right) =>
+      (left.name ?? left.api_name ?? '').localeCompare(right.name ?? right.api_name ?? '') ||
+      left.id.localeCompare(right.id),
+  );
+}
 
 export function registerWorkspacesCommands(program: Command): void {
   const workspaces = program.command('workspaces').description('Manage workspaces');
@@ -13,13 +46,13 @@ export function registerWorkspacesCommands(program: Command): void {
     .action(
       withAuthOnly(async (ctx) => {
         const { supabase, outputOptions } = ctx;
-        const { data, error } = await supabase
-          .from('workspaces_with_access')
-          .select('id, name, api_name, environment, user_access_level')
-          .neq('state', 'deleted');
-
-        if (error) throw error;
-        const rows = data || [];
+        let rows: WorkspaceListRow[];
+        try {
+          rows = await fetchAccessibleWorkspaces(supabase);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new CliError(message, ErrorCode.API_ERROR);
+        }
 
         if (outputOptions.json) {
           printOutput(formatListJson(rows, rows.length, rows.length, 0));
@@ -50,13 +83,14 @@ export function registerWorkspacesCommands(program: Command): void {
         const { supabase, outputOptions } = ctx;
 
         if (!id) {
-          const { data, error } = await supabase
-            .from('workspaces_with_access')
-            .select('id, name, api_name, environment')
-            .neq('state', 'deleted');
-
-          if (error) throw error;
-          if (!data || data.length === 0) {
+          let data: WorkspaceListRow[];
+          try {
+            data = await fetchAccessibleWorkspaces(supabase);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new CliError(message, ErrorCode.API_ERROR);
+          }
+          if (data.length === 0) {
             throw new CliError('No workspaces available.', ErrorCode.NOT_FOUND);
           }
 
@@ -95,21 +129,36 @@ export function registerWorkspacesCommands(program: Command): void {
         let ws: Record<string, string> | null = null;
 
         if (isUuid) {
-          const { data } = await supabase.from('workspaces_with_access').select('id, name, api_name').eq('id', id).single();
+          const { data } = await supabase
+            .from('workspaces_with_access')
+            .select('id, name, api_name')
+            .eq('id', id)
+            .single();
           ws = data;
         } else {
           // Try api_name first, then name
-          const { data: byApiName } = await supabase.from('workspaces_with_access').select('id, name, api_name').eq('api_name', id).single();
+          const { data: byApiName } = await supabase
+            .from('workspaces_with_access')
+            .select('id, name, api_name')
+            .eq('api_name', id)
+            .single();
           if (byApiName) {
             ws = byApiName;
           } else {
-            const { data: byName } = await supabase.from('workspaces_with_access').select('id, name, api_name').ilike('name', id).single();
+            const { data: byName } = await supabase
+              .from('workspaces_with_access')
+              .select('id, name, api_name')
+              .ilike('name', id)
+              .single();
             ws = byName;
           }
         }
 
         if (!ws) {
-          throw new CliError(`Workspace "${id}" not found. Use UUID, api_name, or name.`, ErrorCode.NOT_FOUND);
+          throw new CliError(
+            `Workspace "${id}" not found. Use UUID, api_name, or name.`,
+            ErrorCode.NOT_FOUND,
+          );
         }
 
         const config = readConfig();
@@ -118,7 +167,9 @@ export function registerWorkspacesCommands(program: Command): void {
         writeConfig(config);
 
         if (outputOptions.json) {
-          printOutput(formatGetJson({ workspace_id: ws.id, workspace_name: ws.name || ws.api_name }));
+          printOutput(
+            formatGetJson({ workspace_id: ws.id, workspace_name: ws.name || ws.api_name }),
+          );
         } else {
           console.log(`Workspace set to: ${ws.name || ws.api_name} (${truncateUuid(ws.id)})`);
         }

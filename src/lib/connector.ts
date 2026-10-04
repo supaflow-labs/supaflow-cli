@@ -2,8 +2,9 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { PropertyGroup } from './envfile.js';
 import { CliError, ErrorCode } from './errors.js';
 import { normalizeFileValue } from './file-value.js';
+import { fetchAllRowsByKey } from './supabase-pagination.js';
 
-export interface ConnectorInfo {
+export interface ConnectorInfo extends Record<string, unknown> {
   id: string;
   name: string;
   type: string;
@@ -37,9 +38,12 @@ export interface ConnectorProperty {
 }
 
 export async function fetchConnectors(supabase: SupabaseClient): Promise<ConnectorInfo[]> {
-  const { data, error } = await supabase.rpc('get_connectors');
-  if (error) throw new CliError(`Failed to fetch connectors: ${error.message}`, ErrorCode.API_ERROR);
-  return (data || []) as ConnectorInfo[];
+  try {
+    return await fetchAllRowsByKey<ConnectorInfo>(() => supabase.rpc('get_connectors'));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CliError(`Failed to fetch connectors: ${message}`, ErrorCode.API_ERROR);
+  }
 }
 
 export async function fetchConnectorProperties(
@@ -50,7 +54,10 @@ export async function fetchConnectorProperties(
     connectorVersionId,
   });
   if (error || !data || data.length === 0) {
-    throw new CliError(`Failed to fetch connector version: ${error?.message || 'not found'}`, ErrorCode.API_ERROR);
+    throw new CliError(
+      `Failed to fetch connector version: ${error?.message || 'not found'}`,
+      ErrorCode.API_ERROR,
+    );
   }
   return (data[0].properties || []) as ConnectorProperty[];
 }
@@ -156,13 +163,14 @@ export function mergeEnvWithSchema(
     if (prop.name in envValues) {
       merged[prop.name] = coerceValue(envValues[prop.name], prop);
     } else if (prop.defaultValue != null) {
-      merged[prop.name] = typeof prop.defaultValue === 'string'
-        ? normalizeFileValue(prop.defaultValue, prop)
-        : prop.defaultValue;
+      merged[prop.name] =
+        typeof prop.defaultValue === 'string'
+          ? normalizeFileValue(prop.defaultValue, prop)
+          : prop.defaultValue;
     } else if (prop.required) {
       errors.push(
         `Connector updated since init. Missing required property: "${prop.name}". ` +
-        `Re-run "supaflow datasources init" to update your env file.`,
+          `Re-run "supaflow datasources init" to update your env file.`,
       );
     }
     // Optional without default and not in env: skip (will be omitted from configs)
@@ -183,6 +191,6 @@ export function generateApiName(name: string): string {
   // Must match the app's exact logic in supaflow-app/src/utils/apiName/apiNameUtils.ts
   return name
     .toLowerCase()
-    .replace(/\s+/g, '_')           // Replace spaces with underscores
-    .replace(/[^a-z0-9_]/g, '');    // Remove any invalid characters
+    .replace(/\s+/g, '_') // Replace spaces with underscores
+    .replace(/[^a-z0-9_]/g, ''); // Remove any invalid characters
 }

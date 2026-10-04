@@ -25,13 +25,19 @@ import { registerPipelinesCommands } from '../src/commands/pipelines.js';
 import { registerProjectsCommands } from '../src/commands/projects.js';
 import { registerSchedulesCommands } from '../src/commands/schedules.js';
 import { registerWorkspacesCommands } from '../src/commands/workspaces.js';
-import { createPipelineConfig, generateConfigJson, generateCapabilityAwareConfig } from '../src/lib/pipeline-config.js';
+import {
+  createPipelineConfig,
+  generateConfigJson,
+  generateCapabilityAwareConfig,
+} from '../src/lib/pipeline-config.js';
 
 const defByName = new Map(listToolDefinitions().map((d) => [d.name, d]));
 
 describe('MCP error file storage configuration', () => {
   it('carries the prepared default and explicit plan patches through CLI validation and review', () => {
-    const prepared = JSON.parse(generateConfigJson(generateCapabilityAwareConfig(null, null, 'MYSQL')));
+    const prepared = JSON.parse(
+      generateConfigJson(generateCapabilityAwareConfig(null, null, 'MYSQL')),
+    );
     expect(configSummary(prepared).upload_error_files_to_control_plane).toBe(false);
     for (const enabled of [true, false]) {
       const patched = applyConfigPatch(prepared, { upload_error_files_to_control_plane: enabled });
@@ -43,8 +49,10 @@ describe('MCP error file storage configuration', () => {
 
   it('shows legacy and malformed configurations as off in the review summary', () => {
     expect(configSummary({}).upload_error_files_to_control_plane).toBe(false);
-    expect(configSummary({ upload_error_files_to_control_plane: 'true' })
-      .upload_error_files_to_control_plane).toBe(false);
+    expect(
+      configSummary({ upload_error_files_to_control_plane: 'true' })
+        .upload_error_files_to_control_plane,
+    ).toBe(false);
   });
 });
 
@@ -97,6 +105,27 @@ describe('MCP tool surface', () => {
         (t) => t.inputSchema && (t.inputSchema as any).additionalProperties === false,
       ),
     ).toBe(true);
+  });
+
+  it('documents live offsets and exposes immutable ordering for complete scans', () => {
+    const datasources = TOOLS.find((tool) => tool.name === 'datasources_list')!;
+    const pipelines = TOOLS.find((tool) => tool.name === 'pipelines_list')!;
+    const jobs = TOOLS.find((tool) => tool.name === 'jobs_list')!;
+
+    expect(datasources.description).toMatch(/fresh live view/i);
+    expect(pipelines.description).toMatch(/fresh live view/i);
+    expect(jobs.description).toMatch(/fresh live view/i);
+    expect((datasources.inputSchema as any).properties.sort).toMatchObject({
+      enum: ['updated_at', 'id'],
+      default: 'updated_at',
+    });
+    expect((datasources.inputSchema as any).properties.after_id.description).toMatch(
+      /immutable.*cursor/i,
+    );
+    expect((pipelines.inputSchema as any).properties.after_id.description).toMatch(
+      /immutable.*cursor/i,
+    );
+    expect((pipelines.inputSchema as any).properties.sort.description).toMatch(/id.*cursor/i);
   });
 });
 

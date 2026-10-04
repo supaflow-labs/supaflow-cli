@@ -84,18 +84,37 @@ beforeEach(() => {
     error: null,
   });
   mocks.query.maybeSingle.mockResolvedValue({ data: { id: 'datasource-1' }, error: null });
-  mocks.supabase.rpc.mockImplementation(async (name: string) => {
-    if (name === 'get_connectors')
-      return {
-        data: [
-          {
-            type: 'BIGQUERY',
-            name: 'BigQuery',
-            latest_version_id: 'version-1',
-          },
-        ],
+  mocks.supabase.rpc.mockImplementation((name: string) => {
+    if (name === 'get_connectors') {
+      let cursor: string | null = null;
+      const result = () => ({
+        data:
+          cursor === null
+            ? [
+                {
+                  id: 'connector-1',
+                  type: 'BIGQUERY',
+                  name: 'BigQuery',
+                  latest_version_id: 'version-1',
+                },
+              ]
+            : [],
         error: null,
+      });
+      const query = {
+        gt: vi.fn((_column: string, value: string) => {
+          cursor = value;
+          return query;
+        }),
+        order: vi.fn(() => query),
+        limit: vi.fn(async () => result()),
+        then: (
+          resolve: (value: ReturnType<typeof result>) => unknown,
+          reject: (reason: unknown) => unknown,
+        ) => Promise.resolve(result()).then(resolve, reject),
       };
+      return query;
+    }
     if (name === 'get_connector_version')
       return { data: [{ properties: [FILE_PROPERTY] }], error: null };
     if (name === 'encrypt_with_fingerprint') return { data: ENVELOPE, error: null };

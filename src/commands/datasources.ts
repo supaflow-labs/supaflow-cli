@@ -66,7 +66,17 @@ export function registerDatasourcesCommands(program: Command): void {
     .command('list')
     .description('List datasources in workspace')
     .option('--limit <n>', 'Max results', '25')
-    .option('--offset <n>', 'Pagination offset', '0')
+    .option(
+      '--offset <n>',
+      'Pagination offset into a fresh live result; concurrent updates can move rows between calls',
+      '0',
+    )
+    .option(
+      '--sort <field>',
+      'Sort field: updated_at, id (use id with --after-id for cursor pagination)',
+      'updated_at',
+    )
+    .option('--after-id <uuid>', 'Immutable ID cursor; forces ascending ID order')
     .option(
       '--filter <field=value>',
       'Filter by field',
@@ -78,20 +88,39 @@ export function registerDatasourcesCommands(program: Command): void {
         const { supabase, workspaceId, outputOptions } = ctx;
         const limit = parseInt(opts.limit as string, 10);
         const offset = parseInt(opts.offset as string, 10);
+        const afterId = typeof opts.afterId === 'string' ? opts.afterId : undefined;
+        const immutableOrder = opts.sort === 'id' || afterId !== undefined;
+        if (afterId && !isUuid(afterId)) {
+          throw new CliError('After ID must be a UUID.', ErrorCode.INVALID_INPUT);
+        }
+        if (immutableOrder && offset !== 0) {
+          throw new CliError(
+            'Use --after-id instead of --offset when sorting by ID.',
+            ErrorCode.INVALID_INPUT,
+          );
+        }
 
         let query = supabase
           .from('datasources_with_access')
           .select(DATASOURCE_LIST_SELECT, { count: 'exact' })
           .eq('workspace_id', workspaceId)
-          .neq('state', 'deleted')
-          .range(offset, offset + limit - 1)
-          .order('updated_at', { ascending: false });
+          .neq('state', 'deleted');
 
         const filters = opts.filter as string[];
         for (const f of filters) {
           const [key, value] = f.split('=');
           if (key === 'type') query = query.eq('connector_type', value.toUpperCase());
           if (key === 'state' || key === 'status') query = query.eq('state', value);
+        }
+
+        if (immutableOrder) {
+          if (afterId) query = query.gt('id', afterId);
+          query = query.order('id', { ascending: true }).limit(limit);
+        } else {
+          query = query
+            .order('updated_at', { ascending: false })
+            .order('id', { ascending: true })
+            .range(offset, offset + limit - 1);
         }
 
         const { data, error, count } = await query;
@@ -655,9 +684,7 @@ export function registerDatasourcesCommands(program: Command): void {
               datasourceId: ds.id,
               includeFields: opts.withFields === true,
               deletedObjectMode: 'EXCLUDE',
-              // Preserve the existing full-field page size. Object-only requests
-              // use the keyset helper's 500-row default.
-              fullFieldsPageSize: 100,
+              fullFieldsPageSize: 50,
             });
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);

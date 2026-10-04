@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { Command } from 'commander';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { withAuth, type AuthContext } from '../lib/middleware.js';
 import {
   formatTable,
@@ -13,6 +14,7 @@ import {
   readSchemaMappingFile,
   assertMappingSaveSuccess,
   schemaMappingFromRpcRow,
+  type SchemaMapping,
 } from '../lib/schema-file.js';
 import { resolveIdentifier, isUuid } from '../lib/resolve.js';
 import { softDeleteEntity } from '../lib/client.js';
@@ -27,6 +29,7 @@ import {
 } from '../lib/pipeline-config.js';
 import { generateApiName } from '../lib/connector.js';
 import { fetchAllMetadataMappings } from '../lib/metadata-mappings.js';
+import { fetchAllRowsByKey } from '../lib/supabase-pagination.js';
 
 interface PipelineRow {
   pipeline_id: string;
@@ -50,6 +53,7 @@ interface PipelineRow {
 }
 
 const SORT_MAP: Record<string, string> = {
+  id: 'pipeline_id',
   name: 'pipeline_name',
   state: 'pipeline_state',
   created_at: 'pipeline_created_at',
@@ -88,6 +92,56 @@ function normalizePipelineFull(row: PipelineRow) {
     ...normalizePipeline(row),
     configs: row.pipeline_configs,
   };
+}
+
+export async function fetchDefaultPipelineObjectMappings(
+  supabase: Pick<SupabaseClient, 'rpc' | 'from'>,
+  datasourceId: string,
+): Promise<SchemaMapping[]> {
+  const catalog = await fetchAllMetadataMappings(supabase, {
+    pipelineId: null,
+    datasourceId,
+    includeFields: false,
+    deletedObjectMode: 'EXCLUDE',
+  });
+
+  return catalog.map((row) => ({
+    fully_qualified_name: String(row.fully_qualified_source_object_name),
+    selected: true,
+    fields: null,
+  }));
+}
+
+interface SelectedSchemaRow extends Record<string, unknown> {
+  id: string;
+  source_fully_qualified_name: string;
+}
+
+export async function fetchSelectedPipelineMappings(
+  supabase: Pick<SupabaseClient, 'from'>,
+  pipelineId: string,
+  withFields: boolean,
+): Promise<Array<{ row: Record<string, unknown>; mapping: SchemaMapping }>> {
+  const mappings = await fetchAllRowsByKey<SelectedSchemaRow>(
+    () =>
+      supabase
+        .from('pipeline_metadata_mappings')
+        .select('id, source_fully_qualified_name, selected_source_metadata, selection_origin')
+        .eq('pipeline_id', pipelineId),
+    { key: 'id' },
+  );
+
+  return mappings
+    .map((row) => ({
+      row,
+      mapping: schemaMappingFromRpcRow(row, { withFields }),
+    }))
+    .filter((item) => item.mapping.selected)
+    .sort(
+      (left, right) =>
+        left.mapping.fully_qualified_name.localeCompare(right.mapping.fully_qualified_name) ||
+        String(left.row.id).localeCompare(String(right.row.id)),
+    );
 }
 
 // Shared helper: resolve source, project, and destination datasource.
@@ -159,14 +213,19 @@ export function registerPipelinesCommands(program: Command): void {
     .command('list')
     .description('List pipelines in the current workspace')
     .option('-l, --limit <n>', 'Maximum number of results', '25')
-    .option('-o, --offset <n>', 'Offset for pagination', '0')
+    .option(
+      '-o, --offset <n>',
+      'Offset into a fresh live result; concurrent updates can move rows between calls',
+      '0',
+    )
     .option('-s, --state <state>', 'Filter by pipeline state (e.g. active, inactive)')
     .option(
       '--sort <field>',
-      'Sort field: name, state, created_at, updated_at, last_sync_at',
+      'Sort field: id, name, state, created_at, updated_at, last_sync_at (use id with --after-id for cursor pagination)',
       'name',
     )
     .option('--order <dir>', 'Sort direction: asc, desc', 'asc')
+    .option('--after-id <uuid>', 'Immutable pipeline ID cursor; forces ascending ID order')
     .action(
       withAuth(async (ctx: AuthContext, opts: unknown) => {
         const options = opts as {
@@ -175,22 +234,44 @@ export function registerPipelinesCommands(program: Command): void {
           state?: string;
           sort: string;
           order: string;
+          afterId?: string;
         };
 
         const limit = Math.min(parseInt(options.limit, 10) || 25, 200);
         const offset = parseInt(options.offset, 10) || 0;
-        const sortField = SORT_MAP[options.sort] ?? 'pipeline_name';
-        const ascending = options.order !== 'desc';
+        const cursorPagination = options.sort === 'id' || options.afterId !== undefined;
+        if (options.afterId && !isUuid(options.afterId)) {
+          throw new CliError('After ID must be a UUID.', ErrorCode.INVALID_INPUT);
+        }
+        if (cursorPagination && offset !== 0) {
+          throw new CliError(
+            'Use --after-id instead of --offset when sorting by ID.',
+            ErrorCode.INVALID_INPUT,
+          );
+        }
+        if (cursorPagination && options.order === 'desc') {
+          throw new CliError('ID cursor pagination requires --order asc.', ErrorCode.INVALID_INPUT);
+        }
+        const sortField = cursorPagination
+          ? 'pipeline_id'
+          : (SORT_MAP[options.sort] ?? 'pipeline_name');
+        const ascending = cursorPagination || options.order !== 'desc';
 
         let query = ctx.supabase
           .from('pipelines_and_datasources')
           .select('*', { count: 'exact' })
-          .eq('workspace_id', ctx.workspaceId)
-          .order(sortField, { ascending })
-          .range(offset, offset + limit - 1);
+          .eq('workspace_id', ctx.workspaceId);
 
         if (options.state) {
           query = query.eq('pipeline_state', options.state);
+        }
+
+        if (cursorPagination) {
+          if (options.afterId) query = query.gt('pipeline_id', options.afterId);
+          query = query.order('pipeline_id', { ascending: true }).limit(limit);
+        } else {
+          query = query.order(sortField, { ascending }).order('pipeline_id', { ascending: true });
+          query = query.range(offset, offset + limit - 1);
         }
 
         const { data, error, count } = await query;
@@ -611,24 +692,15 @@ export function registerPipelinesCommands(program: Command): void {
               objectMappings = readSchemaMappingFile(opts.objects);
             } else {
               // Default: select all discovered objects (fields: null means snapshot all fields from catalog)
-              const { data: catalog, error: catalogError } = await supabase
-                .from('source_metadata_catalog')
-                .select('fully_qualified_name, source_metadata')
-                .eq('datasource_id', src.id)
-                .eq('deleted', false);
-
-              if (catalogError) {
+              try {
+                objectMappings = await fetchDefaultPipelineObjectMappings(supabase, src.id);
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
                 throw new CliError(
-                  `Failed to fetch source catalog: ${catalogError.message}`,
+                  `Failed to fetch source catalog: ${message}`,
                   ErrorCode.API_ERROR,
                 );
               }
-
-              objectMappings = (catalog || []).map((obj) => ({
-                fully_qualified_name: obj.fully_qualified_name as string,
-                selected: true,
-                fields: null,
-              }));
 
               if (objectMappings.length === 0) {
                 throw new CliError(
@@ -913,26 +985,18 @@ export function registerPipelinesCommands(program: Command): void {
               })),
             );
           } else {
-            const { data: mappings, error: mappingError } = await supabase
-              .from('pipeline_metadata_mappings')
-              .select('id, source_fully_qualified_name, selected_source_metadata, selection_origin')
-              .eq('pipeline_id', pipelineRow.pipeline_id);
-
-            if (mappingError) {
-              throw new CliError(
-                `Failed to fetch schema: ${mappingError.message}`,
-                ErrorCode.API_ERROR,
+            try {
+              rows.push(
+                ...(await fetchSelectedPipelineMappings(
+                  supabase,
+                  pipelineRow.pipeline_id,
+                  opts.withFields === true,
+                )),
               );
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              throw new CliError(`Failed to fetch schema: ${message}`, ErrorCode.API_ERROR);
             }
-
-            rows.push(
-              ...((mappings || []) as Array<Record<string, unknown>>)
-                .map((row) => ({
-                  row,
-                  mapping: schemaMappingFromRpcRow(row, { withFields: opts.withFields === true }),
-                }))
-                .filter((item) => item.mapping.selected),
-            );
           }
 
           if (outputOptions.json) {

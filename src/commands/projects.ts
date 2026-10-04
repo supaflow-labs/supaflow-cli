@@ -12,6 +12,20 @@ import { CliError, ErrorCode } from '../lib/errors.js';
 import { generateApiName } from '../lib/connector.js';
 import { softDeleteEntity } from '../lib/client.js';
 import { confirmDestructiveAction } from '../lib/confirmation.js';
+import { fetchAllRowsByKey } from '../lib/supabase-pagination.js';
+
+interface ProjectListRow extends Record<string, unknown> {
+  id: string;
+  name: string;
+  api_name: string;
+  type: string;
+  state: string;
+  warehouse_datasource_id: string | null;
+  warehouse_name: string | null;
+  warehouse_connector_name: string | null;
+  pipeline_count: number | null;
+  created_at: string;
+}
 
 export function registerProjectsCommands(program: Command): void {
   const projects = program.command('projects').description('Manage projects');
@@ -23,17 +37,25 @@ export function registerProjectsCommands(program: Command): void {
       withAuth(async (ctx: AuthContext) => {
         const { supabase, workspaceId, outputOptions } = ctx;
 
-        const { data, error } = await supabase
-          .from('projects_with_access')
-          .select(
-            'id, name, api_name, type, state, warehouse_datasource_id, warehouse_name, warehouse_connector_name, pipeline_count, created_at',
-          )
-          .eq('workspace_id', workspaceId)
-          .neq('state', 'deleted')
-          .order('created_at', { ascending: false });
-
-        if (error) throw new CliError(error.message, ErrorCode.API_ERROR);
-        const rows = data || [];
+        let rows: ProjectListRow[];
+        try {
+          rows = await fetchAllRowsByKey<ProjectListRow>(() =>
+            supabase
+              .from('projects_with_access')
+              .select(
+                'id, name, api_name, type, state, warehouse_datasource_id, warehouse_name, warehouse_connector_name, pipeline_count, created_at',
+              )
+              .eq('workspace_id', workspaceId)
+              .neq('state', 'deleted'),
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new CliError(message, ErrorCode.API_ERROR);
+        }
+        rows.sort(
+          (left, right) =>
+            right.created_at.localeCompare(left.created_at) || left.id.localeCompare(right.id),
+        );
 
         if (outputOptions.json) {
           printOutput(formatListJson(rows, rows.length, rows.length, 0));

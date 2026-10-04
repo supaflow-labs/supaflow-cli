@@ -486,7 +486,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: 'datasources_list',
     description:
-      'List datasources in the active workspace. Returns { data, total, limit, offset }.',
+      'List datasources in the active workspace. Offset pages are fresh live views. For a shift-resistant full inventory traversal, set sort=id and pass the last returned ID as after_id until an empty page. Returns { data, total, limit, offset }.',
     readOnly: true,
     inputSchema: {
       type: 'object',
@@ -496,7 +496,21 @@ export const TOOLS: ToolSpec[] = [
           description: 'Max results (default 25). Use 200 for broad scans.',
           default: 25,
         },
-        offset: { type: 'number', description: 'Pagination offset.', default: 0 },
+        offset: {
+          type: 'number',
+          description: 'Offset into a fresh live view; concurrent updates can move rows.',
+          default: 0,
+        },
+        sort: {
+          type: 'string',
+          enum: ['updated_at', 'id'],
+          description: 'Use id with after_id for immutable-cursor pagination.',
+          default: 'updated_at',
+        },
+        after_id: {
+          type: 'string',
+          description: 'Immutable ID cursor from the last row of the prior ID-sorted page.',
+        },
         filter: {
           type: 'array',
           items: { type: 'string' },
@@ -509,6 +523,8 @@ export const TOOLS: ToolSpec[] = [
       const v = ['datasources', 'list'];
       opt(v, '--limit', a.limit);
       opt(v, '--offset', a.offset);
+      opt(v, '--sort', a.sort);
+      opt(v, '--after-id', a.after_id);
       multi(v, '--filter', a.filter);
       return v;
     },
@@ -570,20 +586,30 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: 'pipelines_list',
-    description: 'List pipelines in the active workspace. Returns { data, total, limit, offset }.',
+    description:
+      'List pipelines in the active workspace. Offset pages are fresh live views. For a shift-resistant full inventory traversal, set sort=id and order=asc, then pass the last returned ID as after_id until an empty page. Returns { data, total, limit, offset }.',
     readOnly: true,
     inputSchema: {
       type: 'object',
       properties: {
         limit: { type: 'number', default: 25 },
-        offset: { type: 'number', default: 0 },
+        offset: {
+          type: 'number',
+          description: 'Offset into a fresh live view; concurrent updates can move rows.',
+          default: 0,
+        },
         state: { type: 'string', description: 'Filter by state (e.g. active, inactive).' },
         sort: {
           type: 'string',
-          description: 'name | state | created_at | updated_at | last_sync_at',
+          description:
+            'id | name | state | created_at | updated_at | last_sync_at; use id with after_id for cursor pagination',
           default: 'name',
         },
         order: { type: 'string', enum: ['asc', 'desc'], default: 'asc' },
+        after_id: {
+          type: 'string',
+          description: 'Immutable ID cursor from the last row of the prior ID-sorted page.',
+        },
       },
       additionalProperties: false,
     },
@@ -594,6 +620,7 @@ export const TOOLS: ToolSpec[] = [
       opt(v, '--state', a.state);
       opt(v, '--sort', a.sort);
       opt(v, '--order', a.order);
+      opt(v, '--after-id', a.after_id);
       return v;
     },
   },
@@ -637,7 +664,8 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: 'jobs_list',
-    description: 'List jobs in the active workspace.',
+    description:
+      'List jobs in the active workspace. Offset pages are fresh live views; concurrent inserts can move rows between calls.',
     readOnly: true,
     inputSchema: {
       type: 'object',
@@ -648,7 +676,11 @@ export const TOOLS: ToolSpec[] = [
           description: 'status=<v>, type=<v>, pipeline=<uuid> (repeatable).',
         },
         limit: { type: 'number', default: 25 },
-        offset: { type: 'number', default: 0 },
+        offset: {
+          type: 'number',
+          description: 'Offset into a fresh live view; concurrent inserts can move rows.',
+          default: 0,
+        },
       },
       additionalProperties: false,
     },

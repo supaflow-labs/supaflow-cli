@@ -11,6 +11,20 @@ import {
 import { isUuid } from '../lib/resolve.js';
 import { CliError, ErrorCode } from '../lib/errors.js';
 import { confirmDestructiveAction } from '../lib/confirmation.js';
+import { fetchAllRowsByKey } from '../lib/supabase-pagination.js';
+
+interface ScheduleListRow extends Record<string, unknown> {
+  id: string;
+  name: string;
+  description: string | null;
+  cron_schedule: string;
+  timezone: string;
+  state: string;
+  target_type: string;
+  target_id: string;
+  last_run_at: string | null;
+  created_at: string;
+}
 
 /**
  * Resolve a schedule by UUID or name (schedules have unique names per workspace, not api_name).
@@ -85,22 +99,30 @@ export function registerSchedulesCommands(program: Command): void {
       withAuth(async (ctx: AuthContext, opts: { state?: string }) => {
         const { supabase, workspaceId, outputOptions } = ctx;
 
-        let query = supabase
-          .from('schedule_jobs')
-          .select(
-            'id, name, description, cron_schedule, timezone, state, target_type, target_id, last_run_at, created_at',
-          )
-          .eq('workspace_id', workspaceId)
-          .neq('state', 'deleted')
-          .order('created_at', { ascending: false });
+        let rows: ScheduleListRow[];
+        try {
+          rows = await fetchAllRowsByKey<ScheduleListRow>(() => {
+            let query = supabase
+              .from('schedule_jobs')
+              .select(
+                'id, name, description, cron_schedule, timezone, state, target_type, target_id, last_run_at, created_at',
+              )
+              .eq('workspace_id', workspaceId)
+              .neq('state', 'deleted');
 
-        if (opts.state) {
-          query = query.eq('state', opts.state);
+            if (opts.state) {
+              query = query.eq('state', opts.state);
+            }
+            return query;
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new CliError(message, ErrorCode.API_ERROR);
         }
-
-        const { data, error } = await query;
-        if (error) throw new CliError(error.message, ErrorCode.API_ERROR);
-        const rows = data || [];
+        rows.sort(
+          (left, right) =>
+            right.created_at.localeCompare(left.created_at) || left.id.localeCompare(right.id),
+        );
 
         if (outputOptions.json) {
           printOutput(formatListJson(rows, rows.length, rows.length, 0));

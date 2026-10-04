@@ -1,8 +1,16 @@
 import { Command } from 'commander';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { withAuth, withAuthOnly, type AuthContext } from '../lib/middleware.js';
-import { formatTable, formatListJson, formatGetJson, printOutput, truncateUuid, relativeTime } from '../lib/output.js';
+import {
+  formatTable,
+  formatListJson,
+  formatGetJson,
+  printOutput,
+  truncateUuid,
+  relativeTime,
+} from '../lib/output.js';
 import { CliError, ErrorCode } from '../lib/errors.js';
+import { fetchAllRowsByKey } from '../lib/supabase-pagination.js';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -63,6 +71,20 @@ function parseFilters(filters: string[]): { status?: string; type?: string; pipe
   return result;
 }
 
+export async function fetchAllJobObjectDetails(
+  supabase: Pick<SupabaseClient, 'from'>,
+  jobId: string,
+): Promise<Array<Record<string, unknown>>> {
+  return fetchAllRowsByKey<Record<string, unknown>>(() =>
+    supabase
+      .from('job_details_v2')
+      .select(
+        'id, fully_qualified_source_object_name, ingestion_status, staging_status, loading_status, ingestion_metrics, staging_metrics, loading_metrics, job_status, status_message',
+      )
+      .eq('job_id', jobId),
+  );
+}
+
 export function registerJobsCommands(program: Command): void {
   const jobs = program.command('jobs').description('Manage pipeline jobs');
 
@@ -72,60 +94,78 @@ export function registerJobsCommands(program: Command): void {
   jobs
     .command('list')
     .description('List jobs in the current workspace')
-    .option('--filter <filter>', 'Filter: status=<value>, type=<value>, pipeline=<uuid> (repeatable)', (v, acc: string[]) => { acc.push(v); return acc; }, [] as string[])
+    .option(
+      '--filter <filter>',
+      'Filter: status=<value>, type=<value>, pipeline=<uuid> (repeatable)',
+      (v, acc: string[]) => {
+        acc.push(v);
+        return acc;
+      },
+      [] as string[],
+    )
     .option('--limit <n>', 'Maximum number of results', '25')
-    .option('--offset <n>', 'Number of results to skip', '0')
+    .option(
+      '--offset <n>',
+      'Offset into a fresh live result; concurrent inserts can move rows between calls',
+      '0',
+    )
     .action(
-      withAuth(async (ctx: AuthContext, opts: { filter: string[]; limit: string; offset: string }) => {
-        const { supabase, workspaceId, outputOptions } = ctx;
+      withAuth(
+        async (ctx: AuthContext, opts: { filter: string[]; limit: string; offset: string }) => {
+          const { supabase, workspaceId, outputOptions } = ctx;
 
-        const limit = Math.max(1, parseInt(opts.limit, 10) || 25);
-        const offset = Math.max(0, parseInt(opts.offset, 10) || 0);
-        const filters = parseFilters(opts.filter || []);
+          const limit = Math.max(1, parseInt(opts.limit, 10) || 25);
+          const offset = Math.max(0, parseInt(opts.offset, 10) || 0);
+          const filters = parseFilters(opts.filter || []);
 
-        let query = supabase
-          .from('jobs')
-          .select('id, job_type, job_status, reference_id, reference_type, created_at, updated_at', { count: 'exact' })
-          .eq('workspace_id', workspaceId)
-          .order('created_at', { ascending: false })
-          .range(offset, offset + limit - 1);
+          let query = supabase
+            .from('jobs')
+            .select(
+              'id, job_type, job_status, reference_id, reference_type, created_at, updated_at',
+              { count: 'exact' },
+            )
+            .eq('workspace_id', workspaceId)
+            .order('created_at', { ascending: false })
+            .order('id', { ascending: true })
+            .range(offset, offset + limit - 1);
 
-        if (filters.status) {
-          query = query.eq('job_status', filters.status);
-        }
-        if (filters.type) {
-          query = query.eq('job_type', filters.type);
-        }
-        if (filters.pipeline) {
-          query = query.eq('reference_id', filters.pipeline).eq('reference_type', 'pipeline');
-        }
+          if (filters.status) {
+            query = query.eq('job_status', filters.status);
+          }
+          if (filters.type) {
+            query = query.eq('job_type', filters.type);
+          }
+          if (filters.pipeline) {
+            query = query.eq('reference_id', filters.pipeline).eq('reference_type', 'pipeline');
+          }
 
-        const { data, error, count } = await query;
-        if (error) throw error;
+          const { data, error, count } = await query;
+          if (error) throw error;
 
-        const rows = data || [];
-        const total = count ?? rows.length;
+          const rows = data || [];
+          const total = count ?? rows.length;
 
-        if (outputOptions.json) {
-          printOutput(formatListJson(rows, total, limit, offset));
-          return;
-        }
+          if (outputOptions.json) {
+            printOutput(formatListJson(rows, total, limit, offset));
+            return;
+          }
 
-        if (rows.length === 0) {
-          console.log('No jobs found.');
-          return;
-        }
+          if (rows.length === 0) {
+            console.log('No jobs found.');
+            return;
+          }
 
-        const headers = ['ID', 'TYPE', 'STATUS', 'REFERENCE', 'CREATED'];
-        const tableRows = rows.map((j) => [
-          truncateUuid(j.id),
-          j.job_type || '-',
-          j.job_status || '-',
-          j.reference_id ? truncateUuid(j.reference_id) : '-',
-          relativeTime(j.created_at),
-        ]);
-        printOutput(formatTable(headers, tableRows));
-      }),
+          const headers = ['ID', 'TYPE', 'STATUS', 'REFERENCE', 'CREATED'];
+          const tableRows = rows.map((j) => [
+            truncateUuid(j.id),
+            j.job_type || '-',
+            j.job_status || '-',
+            j.reference_id ? truncateUuid(j.reference_id) : '-',
+            relativeTime(j.created_at),
+          ]);
+          printOutput(formatTable(headers, tableRows));
+        },
+      ),
     );
 
   // -----------------------------------------------------------------------
@@ -194,7 +234,9 @@ export function registerJobsCommands(program: Command): void {
         // Lightweight job status -- no job_parameters, no credentials
         const { data: job, error: jobError } = await supabase
           .from('jobs')
-          .select('id, name, job_type, job_status, job_command, status_message, reference_id, reference_type, started_at, ended_at, execution_duration_ms, created_at, updated_at, job_response')
+          .select(
+            'id, name, job_type, job_status, job_command, status_message, reference_id, reference_type, started_at, ended_at, execution_duration_ms, created_at, updated_at, job_response',
+          )
           .eq('id', id)
           .eq('workspace_id', workspaceId)
           .single();
@@ -205,18 +247,24 @@ export function registerJobsCommands(program: Command): void {
 
         // Only fetch per-object details for terminal jobs (completed, failed, etc.)
         // While running, agents only need the job status -- fetching details wastes context
-        const TERMINAL_STATES = new Set(['completed', 'completed_with_warning', 'failed', 'cancelled', 'timed_out', 'skipped']);
+        const TERMINAL_STATES = new Set([
+          'completed',
+          'completed_with_warning',
+          'failed',
+          'cancelled',
+          'timed_out',
+          'skipped',
+        ]);
         const isTerminal = TERMINAL_STATES.has(job.job_status);
         let objectDetails: Array<Record<string, unknown>> = [];
 
         if (isTerminal) {
-          const { data: details, error: detailsError } = await supabase
-            .from('job_details_v2')
-            .select('id, fully_qualified_source_object_name, ingestion_status, staging_status, loading_status, ingestion_metrics, staging_metrics, loading_metrics, job_status, status_message')
-            .eq('job_id', id);
-
-          if (detailsError) throw detailsError;
-          objectDetails = details || [];
+          try {
+            objectDetails = await fetchAllJobObjectDetails(supabase, id);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new CliError(`Failed to fetch job details: ${message}`, ErrorCode.API_ERROR);
+          }
         }
 
         if (outputOptions.json) {
@@ -228,7 +276,9 @@ export function registerJobsCommands(program: Command): void {
         console.log(`Job:      ${job.id}`);
         console.log(`Type:     ${job.job_type || '-'}`);
         console.log(`Status:   ${job.job_status || '-'}`);
-        console.log(`${(job.reference_type === 'pipeline' ? 'Pipeline' : 'Reference')}: ${job.reference_id || '-'}`);
+        console.log(
+          `${job.reference_type === 'pipeline' ? 'Pipeline' : 'Reference'}: ${job.reference_id || '-'}`,
+        );
         console.log(`Created:  ${relativeTime(job.created_at)}`);
         console.log(`Updated:  ${relativeTime(job.updated_at)}`);
 
@@ -300,7 +350,9 @@ export function registerJobsCommands(program: Command): void {
         // Human-readable: print the raw job_response JSON
         if (response === null || response === undefined) {
           console.log(`No response data stored for job ${id}.`);
-          console.log('Note: full execution logs are stored on the agent filesystem, not in the database.');
+          console.log(
+            'Note: full execution logs are stored on the agent filesystem, not in the database.',
+          );
           return;
         }
 
