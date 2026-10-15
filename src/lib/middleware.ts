@@ -3,6 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { OutputOptions } from '../types/index.js';
 import { readConfig, resolveApiKey, resolveWorkspaceId } from './config.js';
 import { createAuthenticatedClient, type AuthenticatedClient } from './client.js';
+import { resolveCredential } from './oauth.js';
 import { CliError, ErrorCode, handleError } from './errors.js';
 
 export interface AuthContext {
@@ -22,7 +23,7 @@ export function withAuth(handler: AuthHandler) {
 
     try {
       const config = readConfig();
-      const apiKey = resolveApiKey(opts.apiKey, process.env.SUPAFLOW_API_KEY, config);
+      const apiKey = await resolveCredential(opts.apiKey, config);
 
       if (!apiKey) {
         throw new CliError(
@@ -31,7 +32,13 @@ export function withAuth(handler: AuthHandler) {
         );
       }
 
-      const authResult = await createAuthenticatedClient(apiKey, opts.supabaseUrl);
+      const authResult = await createAuthenticatedClient(
+        apiKey,
+        opts.supabaseUrl,
+        resolveApiKey(opts.apiKey, process.env.SUPAFLOW_API_KEY || undefined, config)
+          ? 'api_key'
+          : 'oauth',
+      );
 
       const workspaceId = resolveWorkspaceId(
         opts.workspace,
@@ -66,7 +73,10 @@ export function withAuth(handler: AuthHandler) {
         verbose: opts.verbose ?? false,
       };
 
-      await handler({ supabase: authResult.client, conn: authResult.conn, workspaceId, outputOptions }, ...args.slice(0, -1));
+      await handler(
+        { supabase: authResult.client, conn: authResult.conn, workspaceId, outputOptions },
+        ...args.slice(0, -1),
+      );
     } catch (error) {
       handleError(error, json);
     }
@@ -74,7 +84,10 @@ export function withAuth(handler: AuthHandler) {
 }
 
 // Variant that only requires auth, not workspace (for workspaces list/select)
-type AuthOnlyHandler = (ctx: Omit<AuthContext, 'workspaceId'> & { workspaceId?: string }, ...args: unknown[]) => Promise<void>;
+type AuthOnlyHandler = (
+  ctx: Omit<AuthContext, 'workspaceId'> & { workspaceId?: string },
+  ...args: unknown[]
+) => Promise<void>;
 
 export function withAuthOnly(handler: AuthOnlyHandler) {
   return async (...args: unknown[]) => {
@@ -84,7 +97,7 @@ export function withAuthOnly(handler: AuthOnlyHandler) {
 
     try {
       const config = readConfig();
-      const apiKey = resolveApiKey(opts.apiKey, process.env.SUPAFLOW_API_KEY, config);
+      const apiKey = await resolveCredential(opts.apiKey, config);
 
       if (!apiKey) {
         throw new CliError(
@@ -93,7 +106,13 @@ export function withAuthOnly(handler: AuthOnlyHandler) {
         );
       }
 
-      const authResult = await createAuthenticatedClient(apiKey, opts.supabaseUrl);
+      const authResult = await createAuthenticatedClient(
+        apiKey,
+        opts.supabaseUrl,
+        resolveApiKey(opts.apiKey, process.env.SUPAFLOW_API_KEY || undefined, config)
+          ? 'api_key'
+          : 'oauth',
+      );
 
       const workspaceId = resolveWorkspaceId(
         opts.workspace,
@@ -107,7 +126,10 @@ export function withAuthOnly(handler: AuthOnlyHandler) {
         verbose: opts.verbose ?? false,
       };
 
-      await handler({ supabase: authResult.client, conn: authResult.conn, workspaceId, outputOptions }, ...args.slice(0, -1));
+      await handler(
+        { supabase: authResult.client, conn: authResult.conn, workspaceId, outputOptions },
+        ...args.slice(0, -1),
+      );
     } catch (error) {
       handleError(error, json);
     }

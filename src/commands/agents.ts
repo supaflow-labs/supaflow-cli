@@ -428,14 +428,14 @@ export function registerAgentsCommands(program: Command, run: ExecRunner = defau
 
         if (!mode) {
           // Fresh enrollment: mint a single-use registration token
-          // (requires an org:admin API key) and run the same command the
+          // (requires organization-admin access) and run the same command the
           // deployment wizard generates, plus a CLI-owned stable
           // RESOURCE_INSTANCE_ID.
           const { data: enrollment, error: rpcError } = await supabase.rpc('generate_agent_enrollment_token');
           if (rpcError) {
             const msg = /admin/i.test(rpcError.message)
-              ? 'Enrolling an agent requires an API key created by an org admin. ' +
-                'Ask an admin to enroll the agent, or use an admin API key.'
+              ? 'Enrolling an agent requires organization-admin access. ' +
+                'Ask an admin to enroll the agent, or authenticate as an admin in the intended organization using OAuth or an API key.'
               : `Could not generate a registration token: ${rpcError.message}`;
             throw new CliError(msg, ErrorCode.FORBIDDEN);
           }

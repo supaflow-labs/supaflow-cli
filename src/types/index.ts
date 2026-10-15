@@ -1,4 +1,14 @@
+export interface OAuthCredentials {
+  access_token: string;
+  refresh_token: string;
+  expires_at: number;
+  app_origin: string;
+  issuer: string;
+  client_id: string;
+}
+
 export interface CliConfig {
+  oauth?: OAuthCredentials;
   api_key?: string;
   workspace_id?: string;
   workspace_name?: string;

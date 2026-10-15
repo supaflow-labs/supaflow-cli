@@ -1,10 +1,9 @@
 // Supaflow stdio MCP server (runs as `supaflow mcp`).
 //
 // Exposes the Supaflow CLI as mcp__supaflow__* tools by shelling out to the
-// host `supaflow` binary. Runs ON THE HOST (register in claude_desktop_config.json),
-// where the CLI and ~/.supaflow/config.json already live -- so no per-session
-// install and no per-session `auth login`. Tools are bridged into Claude
-// Desktop's cowork VM the same way Playwright is.
+// bundled CLI entrypoint. Runs on the host with the CLI credentials and selected
+// workspace; local plugin packages launch it in Claude Code or local Codex.
+// Hosted chat integrations use the separate hosted MCP endpoint.
 //
 // The TOOLS table mirrors every CLI operation suitable for a local MCP tool.
 // An executable parity test derives the CLI leaf-command surface and verifies
@@ -12,13 +11,14 @@
 // Every data/action tool runs with `--json`; `docs` returns markdown.
 //
 // Deliberately NOT exposed:
-//   - auth login   (its --key would pass your API key through a tool call)
+//   - auth login   (interactive browser consent belongs to the user; keys must not enter tools)
 //   - auth logout  (would clear the host auth this server relies on)
 //   - encrypt      (local env-file utility, not a workspace operation)
 //   - datasources export-dbt-test-snapshot (internal encrypted dbt E2E artifact)
 //   - mcp           (the server cannot recursively expose its own entrypoint)
 // Auth is taken from SUPAFLOW_API_KEY/SUPAFLOW_WORKSPACE_ID (this server's env)
-// or the host ~/.supaflow/config.json.
+// or the host ~/.supaflow/config.json (OAuth or API key). Each child invocation
+// rereads credentials; the CLI refreshes OAuth tokens without exposing them to MCP.
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -482,7 +482,8 @@ export const TOOLS: ToolSpec[] = [
   // ---------- read-only ----------
   {
     name: 'auth_status',
-    description: 'Show current authentication status and the active workspace.',
+    description:
+      'Show configured CLI authentication (OAuth or API key), method/source, and active workspace without credentials. Verify remote access with workspaces_list. If unauthenticated, have the user run supaflow auth login in their own terminal for browser OAuth; API keys remain optional for headless use.',
     readOnly: true,
     build: () => ['auth', 'status'],
   },
@@ -742,7 +743,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: 'agent_start',
     description:
-      'Start (or enroll) a local Docker agent. Preflights docker binary/daemon/disk/image, resumes an existing container or identity volume when present, otherwise enrolls a fresh agent via a registration token (requires an org:admin API key). Pass approve=true to authorize it to run jobs; default leaves it pending on the agents page.',
+      'Start (or enroll) a local Docker agent. Preflights docker binary/daemon/disk/image, resumes an existing container or identity volume when present, otherwise enrolls a fresh agent via a registration token (requires organization-admin access via OAuth or API key). Pass approve=true to authorize it to run jobs; default leaves it pending on the agents page.',
     write: true,
     timeoutMs: 420000,
     inputSchema: {

@@ -26,8 +26,10 @@ export function decodeJwtRegion(token: string): string | undefined {
 
 async function fetchBootstrap(apiKey: string): Promise<BootstrapResponse | null> {
   try {
-    const response = await fetch(`${getBootstrapUrl()}/api/cli/bootstrap`, {
+    const response = await fetch(new URL('/api/cli/bootstrap', getBootstrapUrl()).toString(), {
       method: 'POST',
+      redirect: 'error',
+      signal: AbortSignal.timeout(15_000),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
@@ -58,6 +60,7 @@ export interface AuthenticatedClient {
 export async function createAuthenticatedClient(
   apiKey: string,
   supabaseUrlOverride?: string,
+  authMethod: 'api_key' | 'oauth' = 'api_key',
 ): Promise<AuthenticatedClient> {
   const makeClient = (url: string, anonKey: string, bearerToken: string): AuthenticatedClient => ({
     client: createClient(url, anonKey, {
@@ -70,12 +73,12 @@ export async function createAuthenticatedClient(
   // 1. Explicit env var override (highest priority)
   // When using env vars, the apiKey itself is used as bearer token (assumed to be a JWT)
   const envOverride = getEnvOverride();
-  if (envOverride) {
+  if (envOverride && authMethod === 'api_key') {
     return makeClient(envOverride.url, envOverride.anonKey, apiKey);
   }
 
   // 1b. --supabase-url flag override
-  if (supabaseUrlOverride) {
+  if (supabaseUrlOverride && authMethod === 'api_key') {
     const key = process.env.SUPAFLOW_SUPABASE_ANON_KEY;
     if (!key) {
       throw new Error('--supabase-url requires SUPAFLOW_SUPABASE_ANON_KEY environment variable.');
@@ -84,7 +87,7 @@ export async function createAuthenticatedClient(
   }
 
   // 2. Bootstrap endpoint (required for normal operation)
-  // Exchanges ak_ API key for a self-signed HS256 JWT with Supabase-compatible claims.
+  // Exchanges a Clerk API key or OAuth access token for a Supabase-compatible JWT.
   // The returned token (not the ak_ key) is used as the Supabase bearer token.
   const bootstrap = await fetchBootstrap(apiKey);
   if (bootstrap) {

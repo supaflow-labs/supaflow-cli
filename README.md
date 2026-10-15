@@ -6,7 +6,7 @@ CLI for the [Supaflow](https://www.supa-flow.io) data integration platform. Mana
 
 | Group | Commands | What it does |
 |-------|----------|-------------|
-| `auth` | login, logout, status | Authenticate with API key |
+| `auth` | login, logout, status | Authenticate with browser OAuth or API key |
 | `workspaces` | list, select | Choose active workspace |
 | `connectors` | list | Browse available connector types |
 | `datasources` | list, get, init, create, catalog, test, edit, delete, disable, enable, refresh | Full datasource lifecycle |
@@ -57,28 +57,36 @@ supaflow --version
 
 ## Authentication
 
-### Step 1: Create an API Key
-
-1. Log in to the Supaflow web app at [app.supa-flow.io](https://app.supa-flow.io)
-2. Click the **Settings** gear icon in the top-right corner (next to your profile avatar)
-3. Click **API Keys** in the settings menu
-4. Click **Create key**
-5. Give it a name (e.g., "CLI Access") and click **Create**
-6. Copy the generated key (starts with `ak_`) -- it is only shown once
-
-API keys are scoped to the organization that is active when you create them. To access a different organization's workspaces, create a separate key while that organization is active.
-
-### Step 2: Authenticate the CLI
+### Browser login
 
 ```bash
 supaflow auth login
-# Paste your API key when prompted
-
 supaflow auth status
-# Shows: Authenticated (source: config)
 ```
 
-The API key is stored in `~/.supaflow/config.json` with user-only file permissions (mode 0600) for CLI convenience. This is common for developer CLIs. If you prefer not to store the key on disk, set `SUPAFLOW_API_KEY` in your environment instead.
+Login opens your browser to sign in and review the requested Supaflow permissions.
+The CLI uses Authorization Code with S256 PKCE and a temporary callback bound to
+`127.0.0.1`. After credentials are validated and saved, the browser confirms that
+you can return to your terminal. The CLI refreshes access tokens automatically on
+subsequent commands. No client secret is embedded in the CLI.
+
+### API keys for automation
+
+For CI, remote terminals, or other environments without a browser, create an API
+key in **Settings > API Keys** at [app.supa-flow.io](https://app.supa-flow.io).
+Keys are scoped to the organization active when you create them.
+
+```bash
+supaflow auth login --key <your-api-key>
+# Or supply SUPAFLOW_API_KEY through your secret manager/environment.
+```
+
+Explicit `--api-key` and `SUPAFLOW_API_KEY` values override stored credentials.
+Login with an API key replaces the stored OAuth login; browser login replaces a
+stored API key. Credentials are stored in `~/.supaflow/config.json` with user-only
+permissions (0600). OAuth refresh tokens are sensitive: protect this file like an
+API key. `supaflow auth logout` removes the local credentials; it does not clear
+an API key supplied through your environment or revoke the browser's Clerk session.
 
 After authenticating, select a workspace:
 
@@ -569,7 +577,7 @@ supaflow agent start
 
 `start` checks dependencies first (docker binary, daemon, ~5 GB free disk, image availability), then does the right thing for the current state:
 
-- Nothing exists: enrolls a new agent -- mints a single-use registration token (requires an API key created by an org admin), runs the agent container with a persistent identity volume, waits for registration, and asks whether to approve it for jobs.
+- Nothing exists: enrolls a new agent -- mints a single-use registration token (requires organization-admin access via OAuth or an API key), runs the agent container with a persistent identity volume, waits for registration, and asks whether to approve it for jobs.
 - Container stopped: restarts it. The identity is preserved, so the agent reconnects in seconds without a new token or re-approval.
 - Container gone but the identity volume remains: recreates the container and resumes the same agent.
 

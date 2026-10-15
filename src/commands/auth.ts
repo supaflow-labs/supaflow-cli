@@ -1,9 +1,15 @@
 import { Command } from 'commander';
-import { readConfig, writeConfig, clearConfig } from '../lib/config.js';
+import {
+  readConfig,
+  writeConfig,
+  clearConfig,
+  resolveApiKey,
+  resolveWorkspaceId,
+} from '../lib/config.js';
 import { createAuthenticatedClient } from '../lib/client.js';
 import { handleError, CliError, ErrorCode } from '../lib/errors.js';
 import { printOutput, formatGetJson } from '../lib/output.js';
-import * as readline from 'node:readline/promises';
+import { appOrigin, browserLogin } from '../lib/oauth.js';
 
 export function registerAuthCommands(program: Command): void {
   const auth = program.command('auth').description('Manage authentication');
@@ -15,19 +21,43 @@ export function registerAuthCommands(program: Command): void {
     .action(async (opts, cmd) => {
       const json = cmd.optsWithGlobals().json ?? false;
       try {
-        let apiKey = opts.key || process.env.SUPAFLOW_API_KEY;
-
-        if (!apiKey) {
-          const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
-          apiKey = await rl.question('Enter your Supaflow API key: ');
-          rl.close();
+        let apiKey =
+          opts.key ?? cmd.optsWithGlobals().apiKey ?? (process.env.SUPAFLOW_API_KEY || undefined);
+        if (apiKey === undefined) {
+          if (!process.stdin.isTTY) {
+            throw new CliError(
+              'Browser login requires an interactive terminal. Use --key or SUPAFLOW_API_KEY.',
+              ErrorCode.INVALID_INPUT,
+            );
+          }
+          await browserLogin(async (credentials, signal) => {
+            const { client } = await createAuthenticatedClient(
+              credentials.access_token,
+              undefined,
+              'oauth',
+            );
+            const { error } = await client
+              .from('workspaces_with_access')
+              .select('id')
+              .limit(1)
+              .abortSignal(signal);
+            if (error)
+              throw new CliError(
+                'OAuth login could not access Supaflow workspaces.',
+                ErrorCode.NOT_AUTHENTICATED,
+              );
+            const config = readConfig();
+            signal.throwIfAborted();
+            delete config.api_key;
+            config.oauth = credentials;
+            writeConfig(config);
+          });
+          if (json) printOutput(formatGetJson({ status: 'authenticated', method: 'oauth' }));
+          else console.log('Authenticated successfully with OAuth.');
+          return;
         }
-
-        if (!apiKey || !apiKey.trim()) {
-          throw new CliError('API key is required.', ErrorCode.INVALID_INPUT);
-        }
-
         apiKey = apiKey.trim();
+        if (!apiKey) throw new CliError('API key is required.', ErrorCode.INVALID_INPUT);
 
         // Validate token with a cheap read query
         const { client } = await createAuthenticatedClient(apiKey);
@@ -41,6 +71,7 @@ export function registerAuthCommands(program: Command): void {
 
         const config = readConfig();
         config.api_key = apiKey;
+        delete config.oauth;
         writeConfig(config);
 
         if (json) {
@@ -77,13 +108,42 @@ export function registerAuthCommands(program: Command): void {
       const json = cmd.optsWithGlobals().json ?? false;
       try {
         const config = readConfig();
-        const hasKey = !!config.api_key || !!process.env.SUPAFLOW_API_KEY;
-        const wsId = config.workspace_id || process.env.SUPAFLOW_WORKSPACE_ID || null;
-        const wsName = config.workspace_name || (process.env.SUPAFLOW_WORKSPACE_ID ? '(from env)' : null);
-        const wsSource = config.workspace_id ? 'config' : process.env.SUPAFLOW_WORKSPACE_ID ? 'env' : 'none';
+        const globals = cmd.optsWithGlobals();
+        const hasKey = !!resolveApiKey(
+          globals.apiKey,
+          process.env.SUPAFLOW_API_KEY || undefined,
+          config,
+        );
+        const hasOAuth = !!config.oauth && config.oauth.app_origin === appOrigin();
+        const authenticated = hasKey || hasOAuth;
+        const wsId =
+          resolveWorkspaceId(globals.workspace, process.env.SUPAFLOW_WORKSPACE_ID, config) ?? null;
+        const wsSource =
+          globals.workspace !== undefined
+            ? 'flag'
+            : process.env.SUPAFLOW_WORKSPACE_ID !== undefined
+              ? 'env'
+              : config.workspace_id !== undefined
+                ? 'config'
+                : 'none';
+        const wsName =
+          wsSource === 'config'
+            ? (config.workspace_name ?? null)
+            : wsSource === 'none'
+              ? null
+              : `(from ${wsSource})`;
         const status = {
-          authenticated: hasKey,
-          source: config.api_key ? 'config' : process.env.SUPAFLOW_API_KEY ? 'env' : 'none',
+          authenticated,
+          method: hasKey ? 'api_key' : hasOAuth ? 'oauth' : 'none',
+          source: hasKey
+            ? globals.apiKey !== undefined
+              ? 'flag'
+              : process.env.SUPAFLOW_API_KEY
+                ? 'env'
+                : 'config'
+            : hasOAuth
+              ? 'config'
+              : 'none',
           workspace_id: wsId,
           workspace_name: wsName,
           workspace_source: wsSource,
@@ -92,12 +152,14 @@ export function registerAuthCommands(program: Command): void {
         if (json) {
           printOutput(formatGetJson(status));
         } else {
-          if (hasKey) {
-            console.log(`Authenticated (source: ${status.source})`);
+          if (authenticated) {
+            console.log(`Authenticated (method: ${status.method}, source: ${status.source})`);
             if (wsId) {
               console.log(`Workspace: ${wsName} (${wsId}) [source: ${wsSource}]`);
             } else {
-              console.log('No workspace selected. Run "supaflow workspaces select" or set SUPAFLOW_WORKSPACE_ID.');
+              console.log(
+                'No workspace selected. Run "supaflow workspaces select" or set SUPAFLOW_WORKSPACE_ID.',
+              );
             }
           } else {
             console.log('Not authenticated. Run "supaflow auth login" or set SUPAFLOW_API_KEY.');

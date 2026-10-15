@@ -43,34 +43,45 @@ describe('supaflow mcp stdio', () => {
     expect(lines.map((l) => JSON.parse(l)).find((m) => m.id === 2)?.result?.tools?.length).toBe(53);
   }, 10000);
 
-  it('runs a real tools/call through self-invocation (stub CLI)', async () => {
-    const child = spawn(process.execPath, [DIST, 'mcp'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, SUPAFLOW_CLI_ENTRY: STUB },
-    });
-    const out = collect(child.stdout);
-    child.stdin.write(init);
-    child.stdin.write(initialized);
-    child.stdin.write(
-      rpc({
-        jsonrpc: '2.0',
-        id: 3,
-        method: 'tools/call',
-        params: { name: 'auth_status', arguments: {} },
-      }),
-    );
-    await sleep(1500);
-    child.kill();
+  it.each(['oauth', 'api_key'])(
+    'forwards %s authentication status through CLI self-invocation',
+    async (method) => {
+      const child = spawn(process.execPath, [DIST, 'mcp'], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          SUPAFLOW_CLI_ENTRY: STUB,
+          SUPAFLOW_TEST_AUTH_METHOD: method,
+          SUPAFLOW_API_KEY: '',
+          SUPAFLOW_WORKSPACE_ID: 'ws_test',
+        },
+      });
+      const out = collect(child.stdout);
+      child.stdin.write(init);
+      child.stdin.write(initialized);
+      child.stdin.write(
+        rpc({
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'tools/call',
+          params: { name: 'auth_status', arguments: {} },
+        }),
+      );
+      await sleep(1500);
+      child.kill();
 
-    const resp = out.value
-      .split('\n')
-      .filter((l) => l.trim())
-      .map((l) => JSON.parse(l))
-      .find((m) => m.id === 3);
-    const text = resp?.result?.content?.[0]?.text ?? '';
-    expect(text).toContain('authenticated');
-    expect(text).toContain('ws_test');
-  }, 10000);
+      const resp = out.value
+        .split('\n')
+        .filter((l) => l.trim())
+        .map((l) => JSON.parse(l))
+        .find((m) => m.id === 3);
+      const text = resp?.result?.content?.[0]?.text ?? '';
+      expect(text).toContain('authenticated');
+      expect(text).toContain('ws_test');
+      expect(JSON.parse(text).method).toBe(method);
+    },
+    10000,
+  );
 
   it('raw-text tools return BOTH child streams (agent_logs must not drop stderr)', async () => {
     const child = spawn(process.execPath, [DIST, 'mcp'], {

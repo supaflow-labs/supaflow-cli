@@ -18,6 +18,8 @@ export function readConfig(configPath: string = DEFAULT_CONFIG_PATH): CliConfig 
 export function writeConfig(config: CliConfig, configPath: string = DEFAULT_CONFIG_PATH): void {
   const dir = path.dirname(configPath);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // Enforce permissions on existing files too.
+  if (fs.existsSync(configPath)) fs.chmodSync(configPath, 0o600);
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', {
     encoding: 'utf-8',
     mode: 0o600,
