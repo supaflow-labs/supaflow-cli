@@ -6,6 +6,7 @@ if (args.includes('auth') && args.includes('status')) {
   // Echo the forwarded context so the override-forwarding test can assert it.
   process.stdout.write(JSON.stringify({
     authenticated: true,
+    method: process.env.SUPAFLOW_TEST_AUTH_METHOD ?? 'api_key',
     workspace_id: process.env.SUPAFLOW_WORKSPACE_ID ?? 'ws_test',
     workspace_name: 'Test',
     api_key_seen: process.env.SUPAFLOW_API_KEY ?? null,

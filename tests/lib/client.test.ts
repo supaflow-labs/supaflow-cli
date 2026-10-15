@@ -60,3 +60,55 @@ describe('softDeleteEntity', () => {
     );
   });
 });
+
+describe('OAuth bootstrap with development overrides', () => {
+  it('normalizes an app origin with a trailing slash before bootstrap', async () => {
+    const { createAuthenticatedClient } = await import('../../src/lib/client.js');
+    vi.stubEnv('SUPAFLOW_APP_URL', 'http://localhost:3000/');
+    const request = vi.fn().mockResolvedValue(
+      Response.json({
+        token: 'session',
+        supabase_url: 'https://regional.example.test',
+        supabase_anon_key: 'anon',
+      }),
+    );
+    vi.stubGlobal('fetch', request);
+    try {
+      await createAuthenticatedClient('clerk-access', undefined, 'oauth');
+      expect(request).toHaveBeenCalledWith(
+        'http://localhost:3000/api/cli/bootstrap',
+        expect.anything(),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
+    }
+  });
+  it('exchanges OAuth tokens even when raw Supabase overrides are present', async () => {
+    const { createAuthenticatedClient } = await import('../../src/lib/client.js');
+    vi.stubEnv('SUPAFLOW_SUPABASE_URL', 'https://override.example.test');
+    vi.stubEnv('SUPAFLOW_SUPABASE_ANON_KEY', 'test-anon');
+    const request = vi.fn().mockResolvedValue(
+      Response.json({
+        token: 'supabase-session',
+        supabase_url: 'https://regional.example.test',
+        supabase_anon_key: 'regional-anon',
+      }),
+    );
+    vi.stubGlobal('fetch', request);
+    try {
+      const result = await createAuthenticatedClient('clerk-access', undefined, 'oauth');
+      expect(result.conn.bearerToken).toBe('supabase-session');
+      expect(result.conn.supabaseUrl).toBe('https://regional.example.test');
+      expect(request).toHaveBeenCalledWith(
+        expect.stringContaining('/api/cli/bootstrap'),
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: 'Bearer clerk-access' }),
+        }),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
+    }
+  });
+});
