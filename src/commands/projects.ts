@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { withAuth, type AuthContext } from '../lib/middleware.js';
 import {
   formatTable,
@@ -83,10 +83,10 @@ export function registerProjectsCommands(program: Command): void {
     .description('Create a new project')
     .requiredOption('--name <name>', 'Project name')
     .requiredOption('--destination <identifier>', 'Destination datasource ID or api_name')
-    .option(
-      '--type <type>',
-      'Project type (pipeline|ingestion|transformation|activation)',
-      'pipeline',
+    .addOption(
+      new Option('--type <type>', 'Project type (pipeline|transformation)')
+        .choices(['pipeline', 'transformation'])
+        .default('pipeline'),
     )
     .action(
       withAuth(

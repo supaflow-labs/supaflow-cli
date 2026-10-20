@@ -303,7 +303,7 @@ supaflow projects list
 supaflow projects create --name "My Project" --destination snowflake_prod
 ```
 
-The `--destination` flag accepts a datasource UUID or api_name. Optional: `--type <type>` (values: `pipeline`, `ingestion`, `transformation`, `activation`; default: `pipeline`).
+The `--destination` flag accepts a datasource UUID or api_name. Optional: `--type <type>` (values: `pipeline`, `transformation`; default: `pipeline`).
 
 ---
 

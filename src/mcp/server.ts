@@ -1329,7 +1329,7 @@ export const TOOLS: ToolSpec[] = [
         destination: { type: 'string', description: 'Destination datasource UUID or api_name.' },
         type: {
           type: 'string',
-          enum: ['pipeline', 'ingestion', 'transformation', 'activation'],
+          enum: ['pipeline', 'transformation'],
           default: 'pipeline',
         },
       },
