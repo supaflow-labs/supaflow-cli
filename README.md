@@ -57,6 +57,18 @@ supaflow --version
 
 ## Authentication
 
+### Enable access in Supaflow first
+
+Access is off by default. An organization administrator or personal-account owner must select the intended account at [Settings > API Keys](https://app.supa-flow.io/settings/api-keys), open **Permissions**, and check **Enable API access**. Administrator status alone does not bypass the setting.
+
+- For browser login, select **Supaflow CLI** under **OAuth applications**. API keys are not required.
+- For key-based login, select **Allow API keys**, then create/manage keys in the **Keys** tab. Existing keys require this setting too.
+- Click **Save changes**, review the permissions, then **Save access settings** before logging in.
+
+Local `supaflow mcp` uses the same CLI credentials and permissions; the hosted ChatGPT/Claude selections do not grant local CLI access. A key can be used by the CLI even when CLI OAuth is unchecked. See the [API access guide](https://www.supa-flow.io/docs/settings/api-keys#enable-api-access-first) for the permission matrix and revocation limits.
+
+Existing system agents and OTP enrollment/recovery remain independent. The dashboard agent-deployment path can be used without enabling API access; CLI-managed operations still require permitted CLI authentication.
+
 ### Browser login
 
 ```bash
@@ -662,6 +674,8 @@ supaflow pipelines get production_to_warehouse
 Schedules resolve by **name** or **UUID** (not api_name), since schedule names are unique per workspace. All other resources resolve by `api_name` or UUID.
 
 ## Troubleshooting
+
+**Access denied after sign-in or with an existing key** -- Verify the intended account, administrator role, and saved **Settings > API Keys > Permissions** selections. Both **Enable API access** and the relevant method (**Supaflow CLI** OAuth or **Allow API keys**) must be enabled. A connected browser session or locally configured credential is not proof that remote access is allowed. Disabling blocks new exchanges; previously issued general-purpose tokens may remain valid for up to one hour.
 
 **"Not authenticated"** -- Run `supaflow auth login` or set `SUPAFLOW_API_KEY`. If using an API key, verify it hasn't been revoked in the web app.
 
