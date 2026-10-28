@@ -24,28 +24,85 @@ export function decodeJwtRegion(token: string): string | undefined {
   }
 }
 
-async function fetchBootstrap(apiKey: string): Promise<BootstrapResponse | null> {
-  try {
-    const response = await fetch(new URL('/api/cli/bootstrap', getBootstrapUrl()).toString(), {
-      method: 'POST',
-      redirect: 'error',
-      signal: AbortSignal.timeout(15_000),
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-    });
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      throw new Error(`Bootstrap failed (${response.status}): ${body}`);
-    }
-    return (await response.json()) as BootstrapResponse;
-  } catch (err) {
-    if (err instanceof Error && err.message.startsWith('Bootstrap failed')) {
-      throw err; // Re-throw auth/validation errors from bootstrap
-    }
-    return null; // Network errors -- bootstrap unreachable
+// Bootstrap only mints a session; replaying it does not replay the user's command.
+const BOOTSTRAP_MAX_ATTEMPTS = 3;
+const BOOTSTRAP_BUDGET_MS = 30_000;
+const BOOTSTRAP_ATTEMPT_MS = 15_000;
+
+class BootstrapHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly retryAfterMs: number,
+  ) {
+    // Response bodies may contain upstream diagnostics; never echo them.
+    super(`Bootstrap failed (${status})`);
   }
+}
+
+function bootstrapRetryDelay(header: string | null): number {
+  if (!header) return 0;
+  const seconds = Number(header);
+  const milliseconds = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
+  return Number.isFinite(milliseconds) ? Math.max(0, milliseconds) : 0;
+}
+
+function retryableBootstrapError(error: unknown): boolean {
+  if (error instanceof BootstrapHttpError) {
+    return [408, 425, 429].includes(error.status) || (error.status >= 500 && error.status <= 599);
+  }
+  return (
+    error instanceof TypeError ||
+    (error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name))
+  );
+}
+
+async function fetchBootstrap(apiKey: string): Promise<BootstrapResponse | null> {
+  const url = new URL('/api/cli/bootstrap', getBootstrapUrl()).toString();
+  const deadline = Date.now() + BOOTSTRAP_BUDGET_MS;
+  for (let attempt = 0; attempt < BOOTSTRAP_MAX_ATTEMPTS; attempt++) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return null;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(BOOTSTRAP_ATTEMPT_MS, remaining));
+    let failure: unknown;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        redirect: 'error',
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      if (!response.ok) {
+        const retryAfter = bootstrapRetryDelay(response.headers.get('retry-after'));
+        await response.body?.cancel().catch(() => undefined);
+        throw new BootstrapHttpError(response.status, retryAfter);
+      }
+      try {
+        return (await response.json()) as BootstrapResponse;
+      } catch (error) {
+        if (error instanceof SyntaxError) throw new Error('Bootstrap returned invalid JSON');
+        throw error;
+      }
+    } catch (error) {
+      failure = error;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!retryableBootstrapError(failure)) throw failure;
+    const delay = Math.max(
+      Math.round(250 * 2 ** attempt * (0.75 + Math.random() * 0.5)),
+      failure instanceof BootstrapHttpError ? failure.retryAfterMs : 0,
+    );
+    if (attempt + 1 >= BOOTSTRAP_MAX_ATTEMPTS || Date.now() + delay >= deadline) {
+      if (failure instanceof BootstrapHttpError) throw failure;
+      return null;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, delay));
+  }
+  return null;
 }
 
 export interface AuthenticatedClient {
