@@ -81,6 +81,48 @@ describe('bootstrap retry boundary', () => {
     expect(request).toHaveBeenCalledTimes(3);
   });
 
+  it.each([
+    ['cli_oauth_disabled', 'CLI OAuth access is disabled', 'OAuth applications'],
+    ['api_disabled', 'API access is disabled', 'enable API access'],
+    ['api_keys_disabled', 'API key access is disabled', 'Allow API keys'],
+    [
+      'organization_administrator_required',
+      'CLI access requires',
+      'Sign in with an eligible account',
+    ],
+  ])('explains %s without retrying or exposing diagnostics', async (code, reason, action) => {
+    const request = vi
+      .fn()
+      .mockResolvedValue(
+        Response.json({ error: code, details: 'private upstream detail' }, { status: 403 }),
+      );
+    vi.stubGlobal('fetch', request);
+    const error = await connect().catch((error: Error) => error);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('Bootstrap failed (403)');
+    expect((error as Error).message).toContain(reason);
+    expect((error as Error).message).toContain(action);
+    expect((error as Error).message).not.toContain('private upstream detail');
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    null,
+    [],
+    'private upstream detail',
+    {},
+    { error: 'private upstream detail' },
+    { error: { message: 'private upstream detail' } },
+    { error: 'constructor' },
+    { error: 'cli_oauth_disabled\nprivate upstream detail' },
+  ])('keeps unknown or malformed access errors private: %j', async (body) => {
+    const request = vi.fn().mockResolvedValue(Response.json(body, { status: 403 }));
+    vi.stubGlobal('fetch', request);
+    await expect(connect()).rejects.toThrow(/^Bootstrap failed \(403\)$/);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['seconds', 'date'])('honors Retry-After %s', async (format) => {
     const retryAfter = format === 'seconds' ? '2' : new Date(Date.now() + 2_000).toUTCString();
     const request = vi

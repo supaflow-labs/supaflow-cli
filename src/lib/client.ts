@@ -33,9 +33,35 @@ class BootstrapHttpError extends Error {
   constructor(
     readonly status: number,
     readonly retryAfterMs: number,
+    accessMessage?: string,
   ) {
-    // Response bodies may contain upstream diagnostics; never echo them.
-    super(`Bootstrap failed (${status})`);
+    super(`Bootstrap failed (${status})${accessMessage ? `: ${accessMessage}` : ''}`);
+  }
+}
+
+function bootstrapAccessMessage(body: unknown): string | undefined {
+  if (!body || typeof body !== 'object' || !('error' in body)) return undefined;
+  // Translate only recognized policy codes. Never echo upstream response text.
+  switch (body.error) {
+    case 'cli_oauth_disabled':
+      return (
+        'CLI OAuth access is disabled for the selected account. Ask its owner or an organization ' +
+        'administrator to enable Supaflow CLI under Settings > API Keys > OAuth applications, save, and retry.'
+      );
+    case 'api_disabled':
+      return (
+        'API access is disabled for the selected account. Ask its owner or an organization ' +
+        'administrator to enable API access and the required authentication option under Settings > API Keys, save, and retry.'
+      );
+    case 'api_keys_disabled':
+      return (
+        'API key access is disabled for the selected account. Ask its owner or an organization ' +
+        'administrator to enable Allow API keys under Settings > API Keys, save, and retry.'
+      );
+    case 'organization_administrator_required':
+      return 'CLI access requires the personal account owner or an organization administrator. Sign in with an eligible account and retry.';
+    default:
+      return undefined;
   }
 }
 
@@ -77,8 +103,13 @@ async function fetchBootstrap(apiKey: string): Promise<BootstrapResponse | null>
       });
       if (!response.ok) {
         const retryAfter = bootstrapRetryDelay(response.headers.get('retry-after'));
-        await response.body?.cancel().catch(() => undefined);
-        throw new BootstrapHttpError(response.status, retryAfter);
+        let accessMessage: string | undefined;
+        if (response.status === 403) {
+          accessMessage = bootstrapAccessMessage(await response.json().catch(() => undefined));
+        } else {
+          await response.body?.cancel().catch(() => undefined);
+        }
+        throw new BootstrapHttpError(response.status, retryAfter, accessMessage);
       }
       try {
         return (await response.json()) as BootstrapResponse;

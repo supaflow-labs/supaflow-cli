@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { browserLogin, pkceChallenge, resolveCredential } from '../../src/lib/oauth.js';
 import type { CliConfig, OAuthCredentials } from '../../src/types/index.js';
 import { writeConfig } from '../../src/lib/config.js';
+import { createAuthenticatedClient } from '../../src/lib/client.js';
 
 vi.mock('../../src/lib/config.js', async (original) => ({
   ...(await original<typeof import('../../src/lib/config.js')>()),
@@ -45,6 +46,9 @@ beforeEach(() => {
         tokenRequests.push(new URLSearchParams(init?.body as string));
         return Response.json(tokenResponse);
       }
+      if (String(input) === settings.resource) {
+        return Response.json({ error: 'cli_oauth_disabled' }, { status: 403 });
+      }
       return nativeFetch(input, init);
     }),
   );
@@ -58,6 +62,29 @@ afterEach(() => {
 });
 
 describe('browser PKCE login', () => {
+  it('reports disabled CLI access after consent without saving credentials or displaying success', async () => {
+    const save = vi.fn(async (credentials: OAuthCredentials) => {
+      await createAuthenticatedClient(credentials.access_token, undefined, 'oauth');
+      writeConfig({ oauth: credentials });
+    });
+    await expect(
+      browserLogin(save, async (url) => {
+        const authorization = new URL(url);
+        const callback = new URL(authorization.searchParams.get('redirect_uri')!);
+        callback.searchParams.set('code', 'test-code');
+        callback.searchParams.set('state', authorization.searchParams.get('state')!);
+        const response = await nativeFetch(callback);
+        expect(response.status).toBe(400);
+        const page = await response.text();
+        expect(page).toContain('Return to your terminal for details');
+        expect(page).not.toContain('You’re connected to Supaflow');
+      }),
+    ).rejects.toThrow('CLI OAuth access is disabled for the selected account');
+    expect(save).toHaveBeenCalledOnce();
+    expect(tokenRequests).toHaveLength(1);
+    expect(writeConfig).not.toHaveBeenCalled();
+  });
+
   it('rejects forged callbacks and stores credentials before displaying success', async () => {
     let saved = false;
     await browserLogin(
