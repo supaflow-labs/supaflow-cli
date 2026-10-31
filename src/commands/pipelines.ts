@@ -22,6 +22,8 @@ import { confirmDestructiveAction } from '../lib/confirmation.js';
 import { CliError, ErrorCode } from '../lib/errors.js';
 import {
   createPipelineConfig,
+  parseKeylessObjectHandling,
+  validateKeylessObjectHandling,
   generateCapabilityAwareConfig,
   generateConfigJson,
   generateConfigReference,
@@ -150,7 +152,7 @@ const DS_CAPS_SELECT =
   'id, name, api_name, state, connector_type, connector_version_capabilities_config';
 
 async function resolveSourceProjectDestination(
-  supabase: ReturnType<typeof import('@supabase/supabase-js').createClient>,
+  supabase: AuthContext['supabase'],
   workspaceId: string,
   sourceIdentifier: string,
   projectIdentifier: string,
@@ -626,6 +628,10 @@ export function registerPipelinesCommands(program: Command): void {
             >;
           }
           const pipelineConfig = createPipelineConfig(configOverrides);
+          validateKeylessObjectHandling(
+            pipelineConfig.keyless_object_handling,
+            dest.connector_version_capabilities_config || null,
+          );
 
           // Resolve the destination schema prefix BEFORE persisting. Without this,
           // `create` with no (or a prefix-less) --config would store an empty
@@ -810,7 +816,7 @@ export function registerPipelinesCommands(program: Command): void {
           let query = supabase
             .from('pipelines_and_datasources')
             .select(
-              'pipeline_id, pipeline_name, pipeline_api_name, pipeline_state, pipeline_configs, workspace_id',
+              'pipeline_id, pipeline_name, pipeline_api_name, pipeline_state, pipeline_configs, destination_datasource_id, workspace_id',
             )
             .eq('workspace_id', workspaceId);
 
@@ -825,8 +831,8 @@ export function registerPipelinesCommands(program: Command): void {
             throw new CliError(`Pipeline "${identifier}" not found.`, ErrorCode.NOT_FOUND);
           }
 
-          const pipelineId = (data as PipelineRow).pipeline_id;
-          const currentConfigs = (data as PipelineRow).pipeline_configs as Record<string, unknown>;
+          const pipelineId = data.pipeline_id;
+          const currentConfigs = data.pipeline_configs as Record<string, unknown>;
 
           // Build update payload
           const jwtPayload = JSON.parse(
@@ -859,6 +865,25 @@ export function registerPipelinesCommands(program: Command): void {
             >;
             // Shallow merge: preserve unchanged fields, apply overrides on top
             updateData.configs = { ...currentConfigs, ...configOverrides };
+            if (Object.hasOwn(configOverrides, 'keyless_object_handling')) {
+              const policy = parseKeylessObjectHandling(configOverrides.keyless_object_handling);
+              if (policy === 'ROW_HASH') {
+                const { data: destination, error: destinationError } = await supabase
+                  .from('datasources_with_access')
+                  .select('connector_version_capabilities_config')
+                  .eq('workspace_id', workspaceId)
+                  .eq('id', data.destination_datasource_id)
+                  .single();
+                if (destinationError || !destination) {
+                  throw new CliError(
+                    'Unable to verify destination row-hash merge support.',
+                    ErrorCode.API_ERROR,
+                  );
+                }
+                validateKeylessObjectHandling(policy, destination.connector_version_capabilities_config);
+              }
+              (updateData.configs as Record<string, unknown>).keyless_object_handling = policy;
+            }
           }
 
           if (Object.keys(updateData).length === 1) {
@@ -890,14 +915,14 @@ export function registerPipelinesCommands(program: Command): void {
             );
           }
 
-          const displayName = opts.name || (data as PipelineRow).pipeline_name;
+          const displayName = opts.name || data.pipeline_name;
 
           if (outputOptions.json) {
             printOutput(
               formatGetJson({
                 id: pipelineId,
                 name: displayName,
-                api_name: (data as PipelineRow).pipeline_api_name,
+                api_name: data.pipeline_api_name,
                 updated: Object.keys(updateData).filter((k) => k !== 'updated_by'),
               }),
             );

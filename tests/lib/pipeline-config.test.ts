@@ -6,6 +6,7 @@ import {
   generateConfigReference,
   resolvePipelinePrefix,
   PIPELINE_DEFAULTS,
+  validateKeylessObjectHandling,
 } from '../../src/lib/pipeline-config.js';
 
 describe('createPipelineConfig', () => {
@@ -149,5 +150,33 @@ describe('resolvePipelinePrefix', () => {
   it('lowercases the connector type for the default', () => {
     const config = createPipelineConfig();
     expect(resolvePipelinePrefix(config, 'SQL_SERVER')).toBe('sql_server');
+  });
+});
+
+
+describe('keyless object policy', () => {
+  it('explains duplicate rows and deferred resets in the generated reference', () => {
+    const reference = generateConfigReference(createPipelineConfig(), null, null);
+    expect(reference).toContain('keyless_object_handling: "UUID"');
+    expect(reference).toContain('Every full refresh appends another full copy');
+    expect(reference).toContain('identical source rows collapse into one');
+    expect(reference).toContain('destination reset for affected objects on the next sync');
+    expect(reference).toContain('Save does not start a sync');
+  });
+  it.each([undefined, null])('defaults %s to UUID', value => {
+    expect(createPipelineConfig({keyless_object_handling: value}).keyless_object_handling).toBe('UUID');
+  });
+  it.each(['UUID', 'ROW_HASH'])('preserves %s in init and creation', policy => {
+    const config = createPipelineConfig({keyless_object_handling: policy, load_mode: 'APPEND'});
+    expect(JSON.parse(generateConfigJson(config)).keyless_object_handling).toBe(policy);
+    expect(config.load_mode).toBe('APPEND');
+  });
+  it.each([true, false, 0, {}, [], '', 'APPEND', 'HASH_AND_MERGE'])('rejects %j', value => {
+    expect(() => createPipelineConfig({keyless_object_handling: value})).toThrow('UUID or ROW_HASH');
+  });
+  it('rejects unsupported hash policy without changing supported UUID', () => {
+    expect(() => validateKeylessObjectHandling('ROW_HASH', null)).toThrow('does not support');
+    expect(validateKeylessObjectHandling('UUID', null)).toBe('UUID');
+    expect(validateKeylessObjectHandling('ROW_HASH', {supports_row_hash_merge: {supported: true}})).toBe('ROW_HASH');
   });
 });

@@ -36,6 +36,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { VERSION } from '../version.js';
 import { isSchemaObjectUnavailable } from '../lib/schema-availability.js';
+import { parseKeylessObjectHandling } from '../lib/pipeline-config.js';
 
 const execFileP = promisify(execFile);
 const SERVER_VERSION = VERSION;
@@ -155,6 +156,7 @@ export function configSummary(config: Json) {
     pipeline_prefix: config?.pipeline_prefix,
     ingestion_mode: config?.ingestion_mode,
     load_mode: config?.load_mode,
+    keyless_object_handling: parseKeylessObjectHandling(config?.keyless_object_handling),
     schema_evolution_mode: config?.schema_evolution_mode,
     perform_hard_deletes: config?.perform_hard_deletes,
     full_sync_frequency: config?.full_sync_frequency ?? null,
@@ -298,6 +300,7 @@ export function applyConfigPatch(baseConfig: Json, patch: Json = {}) {
   ) {
     next.is_custom_prefix = true;
   }
+  next.keyless_object_handling = parseKeylessObjectHandling(next.keyless_object_handling);
   return next;
 }
 
