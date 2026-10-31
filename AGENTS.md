@@ -8,8 +8,7 @@
 - Address valid findings with focused fixes and appropriate regression coverage. For a disputed finding, record the requirement and evidence supporting its disposition before resolving it; involve the owner when the requirement is unclear. Do not repeatedly reopen a resolved decision without new evidence, change product behavior merely to quiet a reviewer, or dismiss unresolved defects to pass a gate.
 - Before merging, require successful applicable checks, resolved conversations, and completed review of the current PR head/base. New commits need fresh evidence. Do not bypass GitHub rules, forge a passing status, or substitute a review request/reaction for completed review. After merge, return to clean updated `main`, remove only this task's merged branches/worktrees, and preserve unrelated work.
 
-- Ordinary feature changes use PRs to `main` with the build, tests, lint, and review evidence described below. This repository is outside the devops repositories' installed `PR checks`/Codex gate rollout; inspect live settings rather than claiming those checks are mandatory here.
-- npm publication remains the separately authorized release-script exception in `RELEASING.md`. Before running it, verify current branch rules still permit its direct release commit/push; if they do not, stop and reconcile the release procedure instead of bypassing protection. Feature-merge approval does not authorize npm publication.
+- Ordinary feature and version-preparation changes use PRs to `main`; npm publication remains separately authorized. The publisher never commits or pushes `main`.
 
 ## Scope and structure
 
@@ -28,11 +27,10 @@
 
 - `package.json` and `src/version.ts` are the two version sources and must remain identical.
 - `RELEASING.md` is the authoritative operator runbook for manual npm releases, browser authentication, partial-release recovery, and post-release verification.
-- Do not hand-publish. Use `scripts/publish.sh` only when the user explicitly authorizes the complete release operation: version changes, a direct commit on `main`, tag creation, npm publication, and both Git pushes.
-- Before invoking the script, resolve the requested bump and exact target version. Fetch `origin`; require a clean `main` whose `HEAD` matches `origin/main`; verify `npm whoami` is the authorized `supa-flow` release identity; verify the target version is absent from npm and its `v<version>` tag is absent locally and remotely; review `npm audit` and `npm audit --omit=dev`; then build/test and inspect `npm pack --dry-run`. These are operator preflights: the current script does not perform them all.
-- Run npm login and the release script in an interactive TTY outside restrictive sandboxes. If `npm whoami` fails, run `npm login --auth-type=web`, press Enter when npm offers its one-time URL, and leave credential entry and 2FA to the user in a visible browser. During `npm publish`, handle the same `Authenticate your account at ...` browser prompt in the original TTY so the waiting publish resumes. Never expose or persist credentials, OTPs, recovery codes, or one-time authentication URLs.
-- If the script has already created the exact release commit and tag but npm publication failed and the target version is confirmed absent, do not rerun the bump script. After restoring authentication, resume only `npm publish --access public` in an interactive TTY, verify the registry, and then push the existing `main` commit and tag. This is the only manual-publish recovery exception.
-- The current script publishes to npm before pushing its release commit and tag. If either Git push fails after npm publication, the package version is already live while the remote commit/tag may be missing. Verify the published version, remote `main`, remote tag, and clean worktree immediately after the run; do not rerun publication to repair a push failure.
+- Prepare version changes on a task branch, review the exact diff, and merge its PR through the required checks/review. Keep package.json, package-lock.json and src/version.ts synchronized.
+- Use `scripts/publish.sh <exact-version>` only with explicit npm-publication/tag authorization, from a clean `main` matching remote `main`. The script verifies version sources, npm identity `supa-flow`, registry absence, and tag absence, runs checks, publishes, then pushes only the release tag.
+- Follow `RELEASING.md` for interactive npm browser authentication and partial-publication recovery. Never expose credentials, OTPs, or one-time URLs. A registry/network error is not evidence that a version is absent.
+- If npm publication succeeded but tag creation/push failed, verify the exact registry version and reviewed release commit and push only the missing tag. Never bump, republish, or direct-push main to recover.
 - Feature work reaches `main` through the workspace's merge-commit PR flow. Do not describe version-bump or deployment mechanics in ordinary feature commits or PR prose.
 
 ## Pipeline configuration contract
@@ -46,3 +44,9 @@
 - `pipelines create` resolves the non-custom default prefix to the lowercased source connector type before persistence.
 - The prefix is immutable after creation. Preserve an explicitly custom empty prefix as the valid “use the destination default namespace” choice; never persist an empty non-custom prefix.
 - Keep CLI behavior aligned with platform reservation/execution logic and app defaults when this contract changes.
+
+## Main branch enforcement
+
+- The main-branch protection rollout requires PRs, resolved conversations, merge commits, `PR checks` and `Codex review / main`, with no bypass actors. Verify live rule activation and successful current-head evidence before claiming enforcement.
+- `.github/workflows/pr-checks.yml` defines the offline CI coverage. These checks do not prove live credentials, deployments, or database/data correctness. No live test or publication is authorized by CI.
+- Keep the Codex connector enabled for this repository and request a fresh review when necessary. Missing or incomplete review is not a pass.
