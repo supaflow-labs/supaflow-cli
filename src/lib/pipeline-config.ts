@@ -1,9 +1,12 @@
+import { CliError, ErrorCode } from './errors.js';
+
 export const PIPELINE_DEFAULTS: Record<string, unknown> = {
   pipeline_type: 'REPLICATION',
   ingestion_mode: 'HISTORICAL_PLUS_INCREMENTAL',
   error_handling: 'MODERATE',
   upload_error_files_to_control_plane: false,
   load_mode: 'MERGE',
+  keyless_object_handling: 'UUID',
   namespace_rules: 'MIRROR_SOURCE',
   destination_table_handling: 'MERGE',
   perform_hard_deletes: false,
@@ -151,6 +154,7 @@ const USER_FACING_KEYS = [
   'is_custom_prefix',
   'ingestion_mode',
   'load_mode',
+  'keyless_object_handling',
   'schema_evolution_mode',
   'error_handling',
   'upload_error_files_to_control_plane',
@@ -210,6 +214,12 @@ export function generateConfigReference(
     const parts: string[] = [`${key}: ${JSON.stringify(value)}`];
     if (ownership) parts.push(`  controlled by: ${ownership}`);
     if (supportedValues) parts.push(`  valid options: ${supportedValues.join(', ')}`);
+    if (key === 'keyless_object_handling') {
+      parts.push('  valid options: UUID (default), ROW_HASH');
+      parts.push('  UUID: keyless MERGE becomes APPEND. Every full refresh appends another full copy; incremental re-reads can repeat rows.');
+      parts.push('  ROW_HASH: merge can skip exact repeats. Changed rows are new rows; identical source rows collapse into one. Explicit APPEND still appends. Requires destination hash-merge support.');
+      parts.push('  Changing this setting on a saved pipeline requests a full reload and destination reset for affected objects on the next sync. APPEND tables read with them may also reset. Destination-only history is lost; Save does not start a sync.');
+    }
     if (key === 'pipeline_prefix') parts.push('  WARNING: cannot be changed after pipeline creation');
     if (key === 'upload_error_files_to_control_plane') {
       parts.push('  Saves rejected-row files to Supaflow; files may contain customer data. Off keeps files on the agent.');
@@ -219,6 +229,23 @@ export function generateConfigReference(
   }
 
   return lines.join('\n');
+}
+
+export type KeylessObjectHandling = 'UUID' | 'ROW_HASH';
+
+export function parseKeylessObjectHandling(value: unknown): KeylessObjectHandling {
+  if (value === undefined || value === null) return 'UUID';
+  if (value === 'UUID' || value === 'ROW_HASH') return value;
+  throw new CliError('keyless_object_handling must be UUID or ROW_HASH', ErrorCode.INVALID_INPUT);
+}
+
+export function validateKeylessObjectHandling(value: unknown, capabilities: CapabilitiesConfig | null) {
+  const policy = parseKeylessObjectHandling(value);
+  const support = capabilities?.supports_row_hash_merge as BooleanCapability | undefined;
+  if (policy === 'ROW_HASH' && support?.supported !== true) {
+    throw new CliError('This destination does not support merging row hashes. Choose UUID.', ErrorCode.INVALID_INPUT);
+  }
+  return policy;
 }
 
 export function createPipelineConfig(
@@ -236,6 +263,7 @@ export function createPipelineConfig(
   const config: Record<string, unknown> = {
     ...PIPELINE_DEFAULTS,
     ...overrides,
+    keyless_object_handling: parseKeylessObjectHandling(overrides.keyless_object_handling),
     // Match the app and uploader: only a JSON boolean true permits uploads.
     upload_error_files_to_control_plane: overrides.upload_error_files_to_control_plane === true,
   };

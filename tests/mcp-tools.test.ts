@@ -33,6 +33,24 @@ import {
 
 const defByName = new Map(listToolDefinitions().map((d) => [d.name, d]));
 
+describe('MCP keyless identity policy', () => {
+  it('defaults to UUID and carries explicit policy through prepare, patch, create, and summary', () => {
+    const prepared = JSON.parse(generateConfigJson(generateCapabilityAwareConfig(null, null, 'MYSQL')));
+    expect(configSummary(prepared).keyless_object_handling).toBe('UUID');
+    expect(configSummary({}).keyless_object_handling).toBe('UUID');
+    for (const policy of ['UUID', 'ROW_HASH']) {
+      const patched = applyConfigPatch(prepared, { keyless_object_handling: policy, load_mode: 'APPEND' });
+      const persisted = createPipelineConfig(patched);
+      expect(configSummary(persisted).keyless_object_handling).toBe(policy);
+      expect(persisted.load_mode).toBe('APPEND');
+    }
+  });
+
+  it.each(['APPEND', 'HASH_AND_MERGE', 'uuid', '', true, 1])('rejects malformed policy %p', (value) => {
+    expect(() => applyConfigPatch({}, { keyless_object_handling: value })).toThrow('keyless_object_handling');
+  });
+});
+
 describe('MCP error file storage configuration', () => {
   it('carries the prepared default and explicit plan patches through CLI validation and review', () => {
     const prepared = JSON.parse(
