@@ -83,6 +83,46 @@ describe('supaflow mcp stdio', () => {
     10000,
   );
 
+  it.each(['datasources_list', 'datasources_get'])(
+    'preserves summary count values through %s CLI subprocess output',
+    async (name) => {
+      const child = spawn(process.execPath, [DIST, 'mcp'], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, SUPAFLOW_CLI_ENTRY: STUB },
+      });
+      const out = collect(child.stdout);
+      try {
+        child.stdin.write(init);
+        child.stdin.write(initialized);
+        child.stdin.write(
+          rpc({
+            jsonrpc: '2.0',
+            id: 30,
+            method: 'tools/call',
+            params: { name, arguments: name === 'datasources_get' ? { identifier: 'source' } : {} },
+          }),
+        );
+        await sleep(1500);
+        const response = out.value
+          .split('\n')
+          .filter((line) => line.trim())
+          .map((line) => JSON.parse(line))
+          .find((message) => message.id === 30);
+        const payload = JSON.parse(response.result.content[0].text);
+        const rows = name === 'datasources_list' ? payload.data : [payload];
+        expect(
+          rows.map((row: Record<string, unknown>) => row.supported_source_object_count),
+        ).toEqual(name === 'datasources_list' ? [null, 0, 13] : [null]);
+        expect(rows.map((row: Record<string, unknown>) => row.total_source_object_count)).toEqual(
+          name === 'datasources_list' ? [null, 0, 13] : [null],
+        );
+      } finally {
+        child.kill();
+      }
+    },
+    10000,
+  );
+
   it('raw-text tools return BOTH child streams (agent_logs must not drop stderr)', async () => {
     const child = spawn(process.execPath, [DIST, 'mcp'], {
       stdio: ['pipe', 'pipe', 'pipe'],

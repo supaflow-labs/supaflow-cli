@@ -259,3 +259,129 @@ describe('FILE schema normalization', () => {
     ).toBe(Buffer.from(raw).toString('base64'));
   });
 });
+
+describe('SOURCE role at new datasource creation', () => {
+  function sourceProperties() {
+    const original = mocks.supabase.rpc.getMockImplementation();
+    mocks.supabase.rpc.mockImplementation((name: string, ...args: unknown[]) =>
+      name === 'get_connector_version'
+        ? {
+            data: [
+              {
+                properties: [
+                  FILE_PROPERTY,
+                  {
+                    ...FILE_PROPERTY,
+                    name: 'enableSourceSchemaDiscovery',
+                    type: 'BOOLEAN',
+                    inputType: 'TEXT',
+                    required: false,
+                    encrypted: false,
+                    sensitive: false,
+                    defaultValue: 'false',
+                    defaultValueByRole: { SOURCE: 'true' },
+                  },
+                ],
+              },
+            ],
+            error: null,
+          }
+        : original?.(name, ...args),
+    );
+  }
+  it.each([undefined, 'DESTINATION'])(
+    'warns in JSON when create SOURCE uses a file scaffolded with role %s',
+    async (role) => {
+      sourceProperties();
+      const init = new Command().exitOverride();
+      registerDatasourcesCommands(init);
+      await init.parseAsync([
+        'node',
+        'test',
+        'datasources',
+        'init',
+        '--connector',
+        'bigquery',
+        '--name',
+        'source',
+        '--output',
+        file,
+        ...(role ? ['--role', role] : []),
+      ]);
+      const scaffold = fs.readFileSync(file, 'utf8');
+      expect(scaffold).toContain('enableSourceSchemaDiscovery=false');
+      fs.writeFileSync(
+        file,
+        scaffold.replace('serviceAccountKey=', 'serviceAccountKey=' + encodeEnvelope(ENVELOPE)),
+      );
+      const create = new Command().exitOverride();
+      registerDatasourcesCommands(create);
+      await create.parseAsync([
+        'node',
+        'test',
+        'datasources',
+        'create',
+        '--role',
+        'SOURCE',
+        '--from',
+        file,
+      ]);
+      expect(mocks.query.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          configs: expect.objectContaining({ enableSourceSchemaDiscovery: false }),
+        }),
+      );
+      const result = JSON.parse(vi.mocked(console.log).mock.calls.at(-1)![0]);
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining(
+            '"enableSourceSchemaDiscovery" overrides its SOURCE role default',
+          ),
+        ]),
+      );
+    },
+  );
+  it('records source role and source default in init output', async () => {
+    sourceProperties();
+    const program = new Command().exitOverride();
+    registerDatasourcesCommands(program);
+    await program.parseAsync([
+      'node',
+      'test',
+      'datasources',
+      'init',
+      '--connector',
+      'bigquery',
+      '--name',
+      'source',
+      '--role',
+      'SOURCE',
+      '--output',
+      file,
+    ]);
+    const text = fs.readFileSync(file, 'utf8');
+    expect(text).toContain('# Role: SOURCE');
+    expect(text).toContain('enableSourceSchemaDiscovery=true');
+  });
+  it.each([undefined, 'false'])(
+    'uses role header for omitted values and preserves explicit %s',
+    async (explicit) => {
+      sourceProperties();
+      fs.writeFileSync(
+        file,
+        '# Supaflow Datasource: test\n# Connector: BIGQUERY\n# Role: SOURCE\nserviceAccountKey=' +
+          encodeEnvelope(ENVELOPE) +
+          '\n' +
+          (explicit === undefined ? '' : 'enableSourceSchemaDiscovery=' + explicit + '\n'),
+      );
+      const program = new Command().exitOverride();
+      registerDatasourcesCommands(program);
+      await program.parseAsync(['node', 'test', 'datasources', 'create', '--from', file]);
+      expect(mocks.query.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          configs: expect.objectContaining({ enableSourceSchemaDiscovery: explicit === undefined }),
+        }),
+      );
+    },
+  );
+});

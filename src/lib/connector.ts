@@ -4,6 +4,23 @@ import { CliError, ErrorCode } from './errors.js';
 import { normalizeFileValue } from './file-value.js';
 import { fetchAllRowsByKey } from './supabase-pagination.js';
 
+export type ConnectionRole = 'SOURCE' | 'DESTINATION';
+
+export function parseConnectionRole(value?: string | null): ConnectionRole | undefined {
+  if (!value) return undefined;
+  const role = value.toUpperCase();
+  if (role !== 'SOURCE' && role !== 'DESTINATION') {
+    throw new CliError('Connection role must be SOURCE or DESTINATION', ErrorCode.INVALID_INPUT);
+  }
+  return role;
+}
+
+export function propertyDefault(property: ConnectorProperty, role?: ConnectionRole): unknown {
+  return role && property.defaultValueByRole && Object.hasOwn(property.defaultValueByRole, role)
+    ? property.defaultValueByRole[role]
+    : property.defaultValue;
+}
+
 export interface ConnectorInfo extends Record<string, unknown> {
   id: string;
   name: string;
@@ -28,6 +45,7 @@ export interface ConnectorProperty {
   hidden: boolean;
   readOnly: boolean;
   defaultValue: unknown;
+  defaultValueByRole?: Partial<Record<ConnectionRole, unknown>>;
   enumValues: string[] | null;
   minValue: number | null;
   maxValue: number | null;
@@ -80,7 +98,10 @@ export function isOAuthOnly(properties: ConnectorProperty[]): boolean {
   return !hasIndependentRequired;
 }
 
-export function groupAndSortProperties(properties: ConnectorProperty[]): PropertyGroup[] {
+export function groupAndSortProperties(
+  properties: ConnectorProperty[],
+  role?: ConnectionRole,
+): PropertyGroup[] {
   const groupMap = new Map<string, ConnectorProperty[]>();
   for (const p of properties) {
     const group = p.propertyGroup || 'General';
@@ -97,7 +118,7 @@ export function groupAndSortProperties(properties: ConnectorProperty[]): Propert
         name: p.name,
         label: p.label || p.name,
         required: p.required,
-        defaultValue: p.defaultValue,
+        defaultValue: propertyDefault(p, role),
         enumValues: p.enumValues,
         sensitive: p.sensitive || p.encrypted || p.password,
         hidden: p.hidden,
@@ -151,6 +172,7 @@ function coerceValue(value: string, property: ConnectorProperty): unknown {
 export function mergeEnvWithSchema(
   envValues: Record<string, string>,
   schemaProperties: ConnectorProperty[],
+  role?: ConnectionRole,
 ): MergeResult {
   const nonOAuth = filterNonOAuth(schemaProperties);
   const schemaNames = new Set(nonOAuth.map((p) => p.name));
@@ -162,11 +184,28 @@ export function mergeEnvWithSchema(
   for (const prop of nonOAuth) {
     if (prop.name in envValues) {
       merged[prop.name] = coerceValue(envValues[prop.name], prop);
-    } else if (prop.defaultValue != null) {
+      if (
+        role &&
+        prop.defaultValueByRole &&
+        Object.hasOwn(prop.defaultValueByRole, role) &&
+        merged[prop.name] !== coerceValue(String(propertyDefault(prop, role)), prop)
+      ) {
+        warnings.push(
+          `File value for "${prop.name}" overrides its ${role} role default. ` +
+            '--role only fills omitted properties; edit or remove this entry to use the role default.',
+        );
+      }
+    } else if (propertyDefault(prop, role) != null) {
+      const value = propertyDefault(prop, role);
       merged[prop.name] =
-        typeof prop.defaultValue === 'string'
-          ? normalizeFileValue(prop.defaultValue, prop)
-          : prop.defaultValue;
+        role &&
+        prop.defaultValueByRole &&
+        Object.hasOwn(prop.defaultValueByRole, role) &&
+        typeof value === 'string'
+          ? coerceValue(value, prop)
+          : typeof value === 'string'
+            ? normalizeFileValue(value, prop)
+            : value;
     } else if (prop.required) {
       errors.push(
         `Connector updated since init. Missing required property: "${prop.name}". ` +

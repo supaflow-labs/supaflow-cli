@@ -1,6 +1,10 @@
 // tests/lib/connector.test.ts
 import { describe, it, expect } from 'vitest';
-import { mergeEnvWithSchema, groupAndSortProperties, isOAuthOnly } from '../../src/lib/connector.js';
+import {
+  mergeEnvWithSchema,
+  groupAndSortProperties,
+  isOAuthOnly,
+} from '../../src/lib/connector.js';
 
 function prop(name: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -95,7 +99,10 @@ describe('groupAndSortProperties', () => {
 
 describe('isOAuthOnly', () => {
   it('returns false when non-OAuth required properties exist', () => {
-    const props = [prop('host', { required: true }), prop('oauth', { type: 'OAUTH_CONFIG', hidden: true })];
+    const props = [
+      prop('host', { required: true }),
+      prop('oauth', { type: 'OAUTH_CONFIG', hidden: true }),
+    ];
     expect(isOAuthOnly(props)).toBe(false);
   });
 
@@ -105,5 +112,41 @@ describe('isOAuthOnly', () => {
       prop('accessToken', { required: true, relatedPropertyNameAndValue: ['oauthConfig', 'true'] }),
     ];
     expect(isOAuthOnly(props)).toBe(true);
+  });
+});
+
+describe('new connection role defaults', () => {
+  const schema = [
+    prop('enableSourceSchemaDiscovery', {
+      type: 'BOOLEAN',
+      defaultValue: 'false',
+      defaultValueByRole: { SOURCE: 'true' },
+    }),
+  ];
+  it('applies source defaults to scaffold and omitted creation values', () => {
+    expect(groupAndSortProperties(schema, 'SOURCE')[0].properties[0].defaultValue).toBe('true');
+    expect(mergeEnvWithSchema({}, schema, 'SOURCE').merged.enableSourceSchemaDiscovery).toBe(true);
+  });
+  it('warns for conflicting file values without overwriting them or leaking values', () => {
+    const result = mergeEnvWithSchema({ enableSourceSchemaDiscovery: 'false' }, schema, 'SOURCE');
+    expect(result.merged.enableSourceSchemaDiscovery).toBe(false);
+    expect(result.warnings).toEqual([expect.stringContaining('overrides its SOURCE role default')]);
+    expect(
+      mergeEnvWithSchema({ enableSourceSchemaDiscovery: 'true' }, schema, 'SOURCE').warnings,
+    ).toEqual([]);
+    expect(mergeEnvWithSchema({}, schema, 'SOURCE').warnings).toEqual([]);
+    expect(mergeEnvWithSchema({ enableSourceSchemaDiscovery: 'false' }, schema).warnings).toEqual(
+      [],
+    );
+  });
+  it('preserves explicit choices, destination defaults, and unscoped/edit defaults', () => {
+    expect(
+      mergeEnvWithSchema({ enableSourceSchemaDiscovery: 'false' }, schema, 'SOURCE').merged
+        .enableSourceSchemaDiscovery,
+    ).toBe(false);
+    expect(mergeEnvWithSchema({}, schema, 'DESTINATION').merged.enableSourceSchemaDiscovery).toBe(
+      'false',
+    );
+    expect(mergeEnvWithSchema({}, schema).merged.enableSourceSchemaDiscovery).toBe('false');
   });
 });

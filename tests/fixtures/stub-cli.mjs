@@ -14,6 +14,17 @@ if (args.includes('auth') && args.includes('status')) {
   }));
   process.exit(0);
 }
+if (args.includes('datasources') && (args.includes('list') || args.includes('get'))) {
+  const rows = [null, 0, 13].map((count) => ({
+    id: `source-${count}`,
+    supported_source_object_count: count,
+    total_source_object_count: count,
+  }));
+  process.stdout.write(JSON.stringify(args.includes('list')
+    ? { data: rows, total: 3, limit: 25, offset: 0 }
+    : rows[0]));
+  process.exit(0);
+}
 if (args.includes('agent') && args.includes('logs')) {
   // Raw-text tool: emit on BOTH streams so the stdio test can assert the
   // MCP wrapper does not drop stderr for json:false tools.
