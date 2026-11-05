@@ -5,6 +5,7 @@ export interface EnvHeader {
   connector: string | null;
   api_name: string | null;
   description: string | null;
+  role?: string;
 }
 
 export interface PropertyForEnv {
@@ -37,13 +38,18 @@ export function parseEnvFile(content: string): Record<string, string> {
 }
 
 export function extractHeader(content: string): EnvHeader {
+  let role: string | undefined;
   let name: string | null = null;
   let connector: string | null = null;
   let api_name: string | null = null;
   let description: string | null = null;
+  let inHeader = true;
   for (const line of content.split('\n')) {
+    if (!line.trim().startsWith('#')) inHeader = false;
     const nameMatch = line.match(/^#\s*Supaflow Datasource:\s*(.+)/);
     if (nameMatch) name = nameMatch[1].trim();
+    const roleMatch = line.match(/^#\s*Role:\s*(.+)/);
+    if (inHeader && roleMatch) role = roleMatch[1].trim();
     const connMatch = line.match(/^#\s*Connector:\s*(.+)/);
     if (connMatch) connector = connMatch[1].trim();
     const apiMatch = line.match(/^#\s*API Name:\s*(.+)/);
@@ -51,7 +57,7 @@ export function extractHeader(content: string): EnvHeader {
     const descMatch = line.match(/^#\s*Description:\s*(.+)/);
     if (descMatch) description = descMatch[1].trim();
   }
-  return { name, connector, api_name, description };
+  return { name, connector, api_name, description, ...(role ? { role } : {}) };
 }
 
 export function resolveEnvVars(values: Record<string, string>): Record<string, string> {
@@ -76,7 +82,9 @@ function resolveValue(value: string): string {
     }
     const envVal = process.env[expr];
     if (envVal === undefined) {
-      throw new Error(`Environment variable ${expr} is not set. Set it or use \${${expr}:-default} syntax.`);
+      throw new Error(
+        `Environment variable ${expr} is not set. Set it or use \${${expr}:-default} syntax.`,
+      );
     }
     return envVal;
   });
@@ -90,12 +98,17 @@ export function writeEnvFile(
   connectorType: string,
   connectorDisplayName: string,
   groups: PropertyGroup[],
+  role?: string,
 ): void {
   const lines: string[] = [];
   lines.push(`# Supaflow Datasource: ${dsName}`);
   lines.push(`# Connector: ${connectorType}`);
+  if (role) lines.push(`# Role: ${role}`);
   // Generate default api_name and description; user can edit these
-  const defaultApiName = dsName.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+  const defaultApiName = dsName
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_]/g, '');
   lines.push(`# API Name: ${defaultApiName}`);
   lines.push(`# Description: ${connectorDisplayName} datasource`);
 
@@ -114,7 +127,9 @@ export function writeEnvFile(
       }
       lines.push(`# ${prop.label} (${annotations.join(', ')})`);
       if (prop.sensitive) {
-        lines.push(`# Use \${VAR} to avoid storing secrets in this file, or run: supaflow encrypt --file <this-file>`);
+        lines.push(
+          `# Use \${VAR} to avoid storing secrets in this file, or run: supaflow encrypt --file <this-file>`,
+        );
       }
       const defaultStr = prop.defaultValue != null ? String(prop.defaultValue) : '';
       lines.push(`${prop.name}=${defaultStr}`);

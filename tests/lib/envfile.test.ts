@@ -1,6 +1,11 @@
 // tests/lib/envfile.test.ts
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { parseEnvFile, writeEnvFile, resolveEnvVars, extractHeader } from '../../src/lib/envfile.js';
+import {
+  parseEnvFile,
+  writeEnvFile,
+  resolveEnvVars,
+  extractHeader,
+} from '../../src/lib/envfile.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -40,6 +45,20 @@ describe('parseEnvFile', () => {
 });
 
 describe('extractHeader', () => {
+  it('reads connection role only from the initial header, not property comments', () => {
+    expect(
+      extractHeader(
+        '# Supaflow Datasource: source\n# Role: SOURCE\n\n# Role: ACCOUNTADMIN\nrole=ACCOUNTADMIN',
+      ).role,
+    ).toBe('SOURCE');
+    expect(
+      extractHeader('# Supaflow Datasource: source\nhost=localhost\n# Role: ACCOUNTADMIN').role,
+    ).toBeUndefined();
+    expect(
+      extractHeader('# Supaflow Datasource: source\n\n# Role: ACCOUNTADMIN').role,
+    ).toBeUndefined();
+  });
+
   it('extracts datasource name and connector type', () => {
     const content = '# Supaflow Datasource: my-db\n# Connector: postgres\nhost=localhost';
     const header = extractHeader(content);
@@ -60,7 +79,9 @@ describe('resolveEnvVars', () => {
     vi.stubEnv('TEST_HOST', 'db.example.com');
     vi.stubEnv('TEST_PORT', '5432');
   });
-  afterEach(() => { vi.unstubAllEnvs(); });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
 
   it('resolves ${VAR} references', () => {
     const values = { host: '${TEST_HOST}', port: '${TEST_PORT}' };
@@ -93,8 +114,12 @@ describe('resolveEnvVars', () => {
 });
 
 describe('writeEnvFile', () => {
-  beforeEach(() => { fs.mkdirSync(TEST_DIR, { recursive: true }); });
-  afterEach(() => { fs.rmSync(TEST_DIR, { recursive: true, force: true }); });
+  beforeEach(() => {
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+  });
+  afterEach(() => {
+    fs.rmSync(TEST_DIR, { recursive: true, force: true });
+  });
 
   it('writes header and grouped properties', () => {
     const filePath = path.join(TEST_DIR, 'test.env');
@@ -102,14 +127,38 @@ describe('writeEnvFile', () => {
       {
         name: 'Authentication',
         properties: [
-          { name: 'host', label: 'Database Host', required: true, defaultValue: null, enumValues: null, sensitive: false, hidden: false },
-          { name: 'port', label: 'Database Port', required: true, defaultValue: '5432', enumValues: null, sensitive: false, hidden: false },
+          {
+            name: 'host',
+            label: 'Database Host',
+            required: true,
+            defaultValue: null,
+            enumValues: null,
+            sensitive: false,
+            hidden: false,
+          },
+          {
+            name: 'port',
+            label: 'Database Port',
+            required: true,
+            defaultValue: '5432',
+            enumValues: null,
+            sensitive: false,
+            hidden: false,
+          },
         ],
       },
       {
         name: 'Advanced Settings',
         properties: [
-          { name: 'sslMode', label: 'SSL Mode', required: false, defaultValue: 'prefer', enumValues: ['disable', 'allow', 'prefer', 'require'], sensitive: false, hidden: false },
+          {
+            name: 'sslMode',
+            label: 'SSL Mode',
+            required: false,
+            defaultValue: 'prefer',
+            enumValues: ['disable', 'allow', 'prefer', 'require'],
+            sensitive: false,
+            hidden: false,
+          },
         ],
       },
     ];

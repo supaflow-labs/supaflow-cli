@@ -505,7 +505,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: 'datasources_list',
     description:
-      'List datasources in the active workspace. Offset pages are fresh live views. For a shift-resistant full inventory traversal, set sort=id and pass the last returned ID as after_id until an empty page. Returns { data, total, limit, offset }.',
+      'List datasources in the active workspace. Offset pages are fresh live views. For a shift-resistant full inventory traversal, set sort=id and pass the last returned ID as after_id until an empty page. Returns { data, total, limit, offset }. Rows include supported_source_object_count (available objects) and total_source_object_count; null means not counted yet, zero means empty.',
     readOnly: true,
     inputSchema: {
       type: 'object',
@@ -551,7 +551,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: 'datasources_get',
     description:
-      'Get datasource details by UUID or api_name. Pass output_file to export a host-side env file for datasources_edit. Sensitive values are stored encrypted and export as `enc:` envelopes, never cleartext, so the exported file contains no plaintext secrets.',
+      'Get datasource details by UUID or api_name, including supported_source_object_count (available objects) and total_source_object_count; null means not counted yet, zero means empty. Pass output_file to export a host-side env file for datasources_edit. Sensitive values are stored encrypted and export as `enc:` envelopes, never cleartext, so the exported file contains no plaintext secrets.',
     readOnly: false,
     inputSchema: {
       type: 'object',
@@ -976,6 +976,11 @@ export const TOOLS: ToolSpec[] = [
           description: 'Connector type (e.g. postgres, snowflake, s3).',
         },
         name: { type: 'string', description: 'Datasource name.' },
+        role: {
+          type: 'string',
+          enum: ['SOURCE', 'DESTINATION'],
+          description: 'Role for new-connection defaults.',
+        },
         output_file: { type: 'string', description: 'Output .env path (default <api_name>.env).' },
       },
       required: ['connector', 'name'],
@@ -984,6 +989,7 @@ export const TOOLS: ToolSpec[] = [
     build: (a) => {
       const v = ['datasources', 'init', '--connector', a.connector, '--name', a.name];
       opt(v, '--output', a.output_file);
+      opt(v, '--role', a.role);
       return v;
     },
   },
@@ -994,11 +1000,18 @@ export const TOOLS: ToolSpec[] = [
     timeoutMs: 120000,
     inputSchema: {
       type: 'object',
-      properties: { from_file: { type: 'string', description: 'Path to the env file.' } },
+      properties: {
+        from_file: { type: 'string', description: 'Path to the env file.' },
+        role: { type: 'string', enum: ['SOURCE', 'DESTINATION'] },
+      },
       required: ['from_file'],
       additionalProperties: false,
     },
-    build: (a) => ['datasources', 'create', '--from', a.from_file],
+    build: (a) => {
+      const v = ['datasources', 'create', '--from', a.from_file];
+      opt(v, '--role', a.role);
+      return v;
+    },
   },
   {
     name: 'datasources_edit',

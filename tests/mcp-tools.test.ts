@@ -35,20 +35,30 @@ const defByName = new Map(listToolDefinitions().map((d) => [d.name, d]));
 
 describe('MCP keyless identity policy', () => {
   it('defaults to UUID and carries explicit policy through prepare, patch, create, and summary', () => {
-    const prepared = JSON.parse(generateConfigJson(generateCapabilityAwareConfig(null, null, 'MYSQL')));
+    const prepared = JSON.parse(
+      generateConfigJson(generateCapabilityAwareConfig(null, null, 'MYSQL')),
+    );
     expect(configSummary(prepared).keyless_object_handling).toBe('UUID');
     expect(configSummary({}).keyless_object_handling).toBe('UUID');
     for (const policy of ['UUID', 'ROW_HASH']) {
-      const patched = applyConfigPatch(prepared, { keyless_object_handling: policy, load_mode: 'APPEND' });
+      const patched = applyConfigPatch(prepared, {
+        keyless_object_handling: policy,
+        load_mode: 'APPEND',
+      });
       const persisted = createPipelineConfig(patched);
       expect(configSummary(persisted).keyless_object_handling).toBe(policy);
       expect(persisted.load_mode).toBe('APPEND');
     }
   });
 
-  it.each(['APPEND', 'HASH_AND_MERGE', 'uuid', '', true, 1])('rejects malformed policy %p', (value) => {
-    expect(() => applyConfigPatch({}, { keyless_object_handling: value })).toThrow('keyless_object_handling');
-  });
+  it.each(['APPEND', 'HASH_AND_MERGE', 'uuid', '', true, 1])(
+    'rejects malformed policy %p',
+    (value) => {
+      expect(() => applyConfigPatch({}, { keyless_object_handling: value })).toThrow(
+        'keyless_object_handling',
+      );
+    },
+  );
 });
 
 describe('MCP error file storage configuration', () => {
@@ -443,5 +453,20 @@ describe('preview limit + selection + plan binding', () => {
         { workspace: { id: 'ws_1' }, source: { id: 'src_1' }, project: { id: 'proj_1' } },
       ),
     ).toThrow();
+  });
+});
+
+describe('MCP new-datasource role forwarding', () => {
+  it('passes source role through init and create', () => {
+    expect(
+      buildSupaflowArgv('datasources_init', {
+        connector: 'bigquery',
+        name: 'source',
+        role: 'SOURCE',
+      }),
+    ).toContain('SOURCE');
+    expect(
+      buildSupaflowArgv('datasources_create', { from_file: 'source.env', role: 'SOURCE' }),
+    ).toEqual(['datasources', 'create', '--from', 'source.env', '--role', 'SOURCE', '--json']);
   });
 });

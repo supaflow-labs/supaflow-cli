@@ -11,6 +11,7 @@ import {
 import { isUuid } from '../lib/resolve.js';
 import { CliError, ErrorCode } from '../lib/errors.js';
 import {
+  parseConnectionRole,
   fetchConnectors,
   fetchConnectorProperties,
   filterNonOAuth,
@@ -43,7 +44,8 @@ const DATASOURCE_LIST_SELECT = `
   id, name, api_name, state, description,
   connector_name, connector_type, connector_vendor,
   workspace_id, created_at, updated_at, user_access_level,
-  source_pipeline_count, destination_pipeline_count, total_pipeline_count
+  source_pipeline_count, destination_pipeline_count, total_pipeline_count,
+  supported_source_object_count, total_source_object_count
 `;
 
 // Get includes configs so agents can inspect datasource configuration.
@@ -57,6 +59,7 @@ const DATASOURCE_GET_SELECT = `
   connector_version_capabilities_config,
   workspace_id, created_at, updated_at, user_access_level,
   source_pipeline_count, destination_pipeline_count, total_pipeline_count,
+  supported_source_object_count, total_source_object_count,
   configs
 `;
 
@@ -135,7 +138,7 @@ export function registerDatasourcesCommands(program: Command): void {
             console.log('No datasources found.');
             return;
           }
-          const headers = ['ID', 'NAME', 'TYPE', 'CONNECTOR', 'STATE', 'PIPELINES'];
+          const headers = ['ID', 'NAME', 'TYPE', 'CONNECTOR', 'STATE', 'PIPELINES', 'AVAILABLE', 'TOTAL'];
           const tableRows = rows.map((d) => [
             truncateUuid(d.id),
             d.name || d.api_name || '',
@@ -143,6 +146,8 @@ export function registerDatasourcesCommands(program: Command): void {
             d.connector_name || '',
             d.state || '',
             String(d.total_pipeline_count || 0),
+            String(d.supported_source_object_count ?? 'unknown'),
+            String(d.total_source_object_count ?? 'unknown'),
           ]);
           printOutput(formatTable(headers, tableRows));
         }
@@ -271,6 +276,8 @@ export function registerDatasourcesCommands(program: Command): void {
           console.log(`Connector:  ${data.connector_name} (${data.connector_type})`);
           console.log(`State:      ${data.state}`);
           console.log(`Pipelines:  ${data.total_pipeline_count || 0}`);
+          console.log(`Available source objects: ${data.supported_source_object_count ?? 'unknown'}`);
+          console.log(`Total source objects:     ${data.total_source_object_count ?? 'unknown'}`);
           if (data.configs && typeof data.configs === 'object') {
             console.log(`\nConfiguration:`);
             for (const [key, value] of Object.entries(data.configs as Record<string, unknown>)) {
@@ -292,12 +299,16 @@ export function registerDatasourcesCommands(program: Command): void {
   datasources
     .command('init')
     .description('Scaffold a .env file for a new datasource')
+    .option('--role <role>', 'Connection role: SOURCE or DESTINATION')
     .requiredOption('--connector <type>', 'Connector type (e.g., postgres, snowflake, s3)')
     .requiredOption('--name <name>', 'Datasource name')
     .option('--output <file>', 'Output file path (default: <api_name>.env)')
     .action(
       withAuth(
-        async (ctx: AuthContext, opts: { connector: string; name: string; output?: string }) => {
+        async (
+          ctx: AuthContext,
+          opts: { connector: string; name: string; output?: string; role?: string },
+        ) => {
           const { supabase, outputOptions } = ctx;
           const connectorType = opts.connector.toLowerCase();
           const dsName = opts.name;
@@ -331,10 +342,11 @@ export function registerDatasourcesCommands(program: Command): void {
 
           // 4. Filter and group
           const nonOAuth = filterNonOAuth(properties);
-          const groups = groupAndSortProperties(nonOAuth);
+          const role = parseConnectionRole(opts.role);
+          const groups = groupAndSortProperties(nonOAuth, role);
 
           // 5. Write env file
-          writeEnvFile(filePath, dsName, connector.type, connector.name, groups);
+          writeEnvFile(filePath, dsName, connector.type, connector.name, groups, role);
 
           const requiredCount = nonOAuth.filter((p) => p.required).length;
           const optionalCount = nonOAuth.length - requiredCount;
@@ -370,9 +382,10 @@ export function registerDatasourcesCommands(program: Command): void {
   datasources
     .command('create')
     .description('Create a datasource from an env file (test connection first)')
+    .option('--role <role>', 'Connection role: SOURCE or DESTINATION; defaults to the env header')
     .requiredOption('--from <file>', 'Path to env file')
     .action(
-      withAuth(async (ctx: AuthContext, opts: { from: string }) => {
+      withAuth(async (ctx: AuthContext, opts: { from: string; role?: string }) => {
         const { supabase, workspaceId, outputOptions, conn } = ctx;
         const filePath = opts.from;
 
@@ -421,7 +434,15 @@ export function registerDatasourcesCommands(program: Command): void {
         const nonOAuth = filterNonOAuth(properties);
 
         // Step 3: Merge env values into latest schema
-        const { merged, warnings, errors: mergeErrors } = mergeEnvWithSchema(envValues, properties);
+        const {
+          merged,
+          warnings,
+          errors: mergeErrors,
+        } = mergeEnvWithSchema(
+          envValues,
+          properties,
+          parseConnectionRole(opts.role || header.role),
+        );
 
         if (!outputOptions.json) {
           for (const w of warnings) {
@@ -594,6 +615,7 @@ export function registerDatasourcesCommands(program: Command): void {
               api_name: apiName,
               connector: connector.type,
               state: 'active',
+              ...(warnings.length ? { warnings } : {}),
             }),
           );
         } else {
