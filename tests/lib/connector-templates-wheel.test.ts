@@ -3,10 +3,38 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { expect, it } from 'vitest';
-import { renderCustomSourceTemplate } from '../../src/lib/connector-templates.js';
+import {
+  renderCustomSourceTemplate,
+  renderApiSourceTemplate,
+} from '../../src/lib/connector-templates.js';
 
 const sdkWheel = process.env.SUPAFLOW_TEST_SDK_WHEEL;
 const testkitWheel = process.env.SUPAFLOW_TEST_TESTKIT_WHEEL;
+const runtimeWheel = process.env.SUPAFLOW_TEST_RUNTIME_WHEEL;
+const runtimeWheelhouse = process.env.SUPAFLOW_TEST_RUNTIME_WHEELHOUSE;
+
+function publicWheelMetadata(paths: string[]): Array<{ name: string; version: string }> {
+  return JSON.parse(
+    execFileSync(
+      'python3',
+      [
+        '-I',
+        '-c',
+        `import email.parser,json,sys,zipfile
+values=[]
+for filename in sys.argv[1:]:
+    with zipfile.ZipFile(filename) as archive:
+        path,=[name for name in archive.namelist() if name.endswith('.dist-info/METADATA')]
+        item=email.parser.Parser().parsestr(archive.read(path).decode('utf-8'))
+        values.append({'name':item['Name'],'version':item['Version']})
+print(json.dumps(values))
+`,
+        ...paths,
+      ],
+      { encoding: 'utf8', timeout: 10_000 },
+    ),
+  );
+}
 
 // SDK/testkit publication and packed init are separate gates. This additional
 // offline gate accepts exact locally built public wheels; it never fetches.
@@ -19,27 +47,7 @@ it.skipIf(!sdkWheel && !testkitWheel)(
     ).toBeTruthy();
     const root = mkdtempSync(join(tmpdir(), 'supaflow-template-wheel-'));
     try {
-      const metadata = JSON.parse(
-        execFileSync(
-          'python3',
-          [
-            '-I',
-            '-c',
-            `import email.parser, json, sys, zipfile
-versions = []
-for name in sys.argv[1:]:
-    with zipfile.ZipFile(name) as archive:
-        path, = [value for value in archive.namelist() if value.endswith('.dist-info/METADATA')]
-        item = email.parser.Parser().parsestr(archive.read(path).decode('utf-8'))
-        versions.append({'name': item['Name'], 'version': item['Version']})
-print(json.dumps(versions))
-`,
-            sdkWheel!,
-            testkitWheel!,
-          ],
-          { encoding: 'utf8', timeout: 10_000 },
-        ),
-      );
+      const metadata = publicWheelMetadata([sdkWheel!, testkitWheel!]);
       expect(metadata[0].name).toBe('supaflow-python-sdk');
       expect(metadata[1].name).toBe('supaflow-connector-testkit');
       const template = renderCustomSourceTemplate({
@@ -138,6 +146,112 @@ print(json.dumps({'lifecycle': 'passed', 'type': bound.get_definition().type}))
       expect(JSON.parse(output)).toEqual({
         lifecycle: 'passed',
         type: 'CUSTOM__COM_ACME__ACME_RECORDS',
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  180_000,
+);
+
+// Optional local runtime gate: CI omits these exact wheel inputs, never fetches.
+it.skipIf(!runtimeWheel && !runtimeWheelhouse)(
+  'runs the API template with exact public wheels and offline runtime dependencies',
+  () => {
+    expect(
+      sdkWheel && testkitWheel && runtimeWheel && runtimeWheelhouse,
+      'Provide SDK/testkit/runtime wheels and the runtime dependency wheelhouse',
+    ).toBeTruthy();
+    const root = mkdtempSync(join(tmpdir(), 'supaflow-api-template-wheel-'));
+    try {
+      const metadata = publicWheelMetadata([sdkWheel!, testkitWheel!, runtimeWheel!]);
+      expect(metadata.map((item) => item.name)).toEqual([
+        'supaflow-python-sdk',
+        'supaflow-connector-testkit',
+        'supaflow-connector-runtime',
+      ]);
+      const template = renderApiSourceTemplate({
+        connectorName: 'ACME_API',
+        displayName: 'Acme API',
+        groupId: 'com.acme',
+        version: '1.2.3.dev1',
+        requiresPython: '>=3.11,<3.15',
+        sdkVersion: metadata[0].version,
+        testkitVersion: metadata[1].version,
+        runtimeVersion: metadata[2].version,
+      });
+      const project = join(root, 'project');
+      for (const [name, text] of Object.entries(template.files)) {
+        const path = join(project, name);
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, text);
+      }
+      const environment = join(root, 'environment');
+      execFileSync('python3', ['-m', 'venv', environment], { timeout: 60_000 });
+      const python = join(
+        environment,
+        process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python',
+      );
+      execFileSync(
+        python,
+        [
+          '-I',
+          '-m',
+          'pip',
+          '--isolated',
+          'install',
+          '--no-index',
+          '--find-links',
+          runtimeWheelhouse!,
+          '--no-cache-dir',
+          '--disable-pip-version-check',
+          sdkWheel!,
+          testkitWheel!,
+          runtimeWheel!,
+        ],
+        { cwd: root, timeout: 60_000 },
+      );
+      execFileSync(python, ['-I', '-m', 'pip', '--isolated', 'check'], {
+        cwd: root,
+        timeout: 30_000,
+      });
+      const output = execFileSync(
+        python,
+        [
+          '-I',
+          '-c',
+          `import importlib,importlib.util,json,pathlib,sys,tomllib
+root=pathlib.Path(sys.argv[1]).resolve();project=pathlib.Path(sys.argv[2]).resolve()
+import supaflow_connector,supaflow_python_sdk,supaflow_python_testkit
+for module in (supaflow_connector,supaflow_python_sdk,supaflow_python_testkit):
+    assert pathlib.Path(module.__file__).resolve().is_relative_to(root)
+for name in ('supaflow_python_runtime','supaflow_connector_toolchain','supaflow_connector_cli'):
+    assert importlib.util.find_spec(name) is None,name
+sys.path[:0]=[str(project/'src'),str(project/'tests')]
+from test_connector import test_source_lifecycle
+work=root/'work';work.mkdir();test_source_lifecycle(work)
+from supaflow_connector_acme_api.connector import Connector
+from supaflow_python_sdk import ConnectorPackageMetadata
+bound=Connector.with_package_metadata(ConnectorPackageMetadata('1.2.3.dev1','com.acme','supaflow_connector_acme_api.connector:Connector'))
+assert Connector.DEFINITION.type is None
+assert bound.get_definition().type=='CUSTOM__COM_ACME__ACME_API'
+assert bound.get_definition().use_full_normalize and bound.get_definition().jsonl_certified
+print(json.dumps({'lifecycle':'passed','type':bound.get_definition().type}))
+`,
+          environment,
+          project,
+        ],
+        {
+          cwd: root,
+          timeout: 30_000,
+          encoding: 'utf8',
+          env: { ...process.env, DLT_TELEMETRY: '0', RUNTIME__DLTHUB_TELEMETRY: 'false' },
+        },
+      );
+      const lastLine = output.trim().split('\n').at(-1)!;
+      expect(JSON.parse(lastLine)).toEqual({
+        lifecycle: 'passed',
+        type: 'CUSTOM__COM_ACME__ACME_API',
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
