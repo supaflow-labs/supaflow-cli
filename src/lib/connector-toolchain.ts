@@ -4,8 +4,52 @@ import { TextDecoder } from 'node:util';
 
 const FRAME_LIMIT = 512 * 1024;
 
+export interface AuthoringDiagnostics {
+  schemaVersion: 1;
+  installed: {
+    toolchain: { version: string; requiresPython: string };
+    sdk: { version: string; requiresPython: string };
+    testkit: { version: string; requiresPython: string };
+    runtime: { version: string; requiresPython: string } | null;
+  };
+  selected: {
+    sdkDistributionVersion: string;
+    runtimeDistributionVersion: string | null;
+    connectorApiVersion: number;
+    requiredHostProtocol: number;
+  };
+  python: {
+    version: string;
+    executable: string;
+    environment: string;
+    interpreterTag: string;
+    declaredRanges: {
+      toolchainRequiresPython: string;
+      projectRequiresPython: string;
+      dependencyRequiresPython: string;
+      runtimeDeclaredAgentPython: string;
+    };
+    intersections: { local: string; execution: string; all: string };
+    currentMatches: { local: boolean; execution: boolean; all: boolean };
+  };
+  locks: {
+    runtimeSha256: string;
+    dependenciesSha256: string;
+    dependencyLockVersion: number;
+    projectionRuntimeMatches: boolean;
+  };
+  template: {
+    templateId: string;
+    templateVersion: number;
+    cliVersion: string;
+    toolchainVersion: string;
+    createdAt: string;
+  } | null;
+}
+
 export type ToolchainRequest =
   | { protocolVersion: 1; operation: 'info' }
+  | { protocolVersion: 1; operation: 'doctor'; projectDir: string; options: Record<string, never> }
   | {
       protocolVersion: 1;
       operation: 'check' | 'test';
@@ -65,6 +109,7 @@ export type ToolchainResponse =
         | { artifactDir: string }
         | { dependencyDir: string }
         | { proposalDir: string }
+        | { diagnostics: AuthoringDiagnostics }
         | { manifest: 'connector.yaml' };
     }
   | { protocolVersion: 1; ok: false; error: { code: string; message: string } };
@@ -111,6 +156,120 @@ function stagingDirectory(
   );
 }
 
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function stringFields(value: unknown, fields: string[]): boolean {
+  return (
+    record(value) && keys(value, fields) && fields.every((field) => nonEmptyString(value[field]))
+  );
+}
+
+function positiveInteger(value: unknown): boolean {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+function diagnosticReport(value: unknown): boolean {
+  if (
+    !record(value) ||
+    value.schemaVersion !== 1 ||
+    !keys(value, ['schemaVersion', 'installed', 'selected', 'python', 'locks', 'template'])
+  )
+    return false;
+  const { installed, selected, python, locks, template } = value;
+  if (
+    !record(installed) ||
+    !keys(installed, ['toolchain', 'sdk', 'testkit', 'runtime']) ||
+    !['toolchain', 'sdk', 'testkit'].every((name) =>
+      stringFields(installed[name], ['version', 'requiresPython']),
+    ) ||
+    !(installed.runtime === null || stringFields(installed.runtime, ['version', 'requiresPython']))
+  )
+    return false;
+  if (
+    !record(selected) ||
+    !keys(selected, [
+      'sdkDistributionVersion',
+      'runtimeDistributionVersion',
+      'connectorApiVersion',
+      'requiredHostProtocol',
+    ]) ||
+    !nonEmptyString(selected.sdkDistributionVersion) ||
+    !(
+      selected.runtimeDistributionVersion === null ||
+      nonEmptyString(selected.runtimeDistributionVersion)
+    ) ||
+    !positiveInteger(selected.connectorApiVersion) ||
+    !positiveInteger(selected.requiredHostProtocol)
+  )
+    return false;
+  if (
+    !record(python) ||
+    !keys(python, [
+      'version',
+      'executable',
+      'environment',
+      'interpreterTag',
+      'declaredRanges',
+      'intersections',
+      'currentMatches',
+    ]) ||
+    !['version', 'executable', 'environment', 'interpreterTag'].every((field) =>
+      nonEmptyString(python[field]),
+    ) ||
+    !['executable', 'environment'].every(
+      (field) =>
+        typeof python[field] === 'string' &&
+        isAbsolute(python[field]) &&
+        !python[field].includes('\0'),
+    ) ||
+    !stringFields(python.declaredRanges, [
+      'toolchainRequiresPython',
+      'projectRequiresPython',
+      'dependencyRequiresPython',
+      'runtimeDeclaredAgentPython',
+    ]) ||
+    !stringFields(python.intersections, ['local', 'execution', 'all']) ||
+    !record(python.currentMatches) ||
+    !keys(python.currentMatches, ['local', 'execution', 'all'])
+  )
+    return false;
+  const matches = python.currentMatches;
+  if (!['local', 'execution', 'all'].every((field) => typeof matches[field] === 'boolean'))
+    return false;
+  if (
+    !record(locks) ||
+    !keys(locks, [
+      'runtimeSha256',
+      'dependenciesSha256',
+      'dependencyLockVersion',
+      'projectionRuntimeMatches',
+    ]) ||
+    !['runtimeSha256', 'dependenciesSha256'].every(
+      (field) => typeof locks[field] === 'string' && /^[0-9a-f]{64}$/.test(locks[field]),
+    ) ||
+    !positiveInteger(locks.dependencyLockVersion) ||
+    typeof locks.projectionRuntimeMatches !== 'boolean'
+  )
+    return false;
+  return (
+    template === null ||
+    (record(template) &&
+      keys(template, [
+        'templateId',
+        'templateVersion',
+        'cliVersion',
+        'toolchainVersion',
+        'createdAt',
+      ]) &&
+      positiveInteger(template.templateVersion) &&
+      ['templateId', 'cliVersion', 'toolchainVersion', 'createdAt'].every((field) =>
+        nonEmptyString(template[field]),
+      ))
+  );
+}
+
 function response(
   raw: Buffer,
   status: number | null,
@@ -144,7 +303,9 @@ function response(
                   ? stagingDirectory(result, 'dependencyDir', request.options.outputDir)
                   : request.operation === 'runtime.propose'
                     ? stagingDirectory(result, 'proposalDir', request.options.outputDir)
-                    : keys(result, ['manifest']) && result.manifest === 'connector.yaml';
+                    : request.operation === 'doctor'
+                      ? keys(result, ['diagnostics']) && diagnosticReport(result.diagnostics)
+                      : keys(result, ['manifest']) && result.manifest === 'connector.yaml';
       if (valid) return value as ToolchainResponse;
     }
     if (
