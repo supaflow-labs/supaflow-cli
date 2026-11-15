@@ -36,6 +36,19 @@ export type ToolchainRequest =
     }
   | {
       protocolVersion: 1;
+      operation: 'runtime.propose';
+      projectDir: string;
+      options: {
+        uvExecutable: string;
+        outputDir: string;
+        runtimeWheels: string[];
+        requiredHostProtocol: number;
+        agentExecutionPython: string;
+        offline: boolean;
+      };
+    }
+  | {
+      protocolVersion: 1;
       operation: 'manifest.generate' | 'manifest.check';
       projectDir: string;
       options: { nodeExecutable: string };
@@ -51,6 +64,7 @@ export type ToolchainResponse =
         | { tested: true }
         | { artifactDir: string }
         | { dependencyDir: string }
+        | { proposalDir: string }
         | { manifest: 'connector.yaml' };
     }
   | { protocolVersion: 1; ok: false; error: { code: string; message: string } };
@@ -84,7 +98,7 @@ function keys(value: Record<string, unknown>, expected: string[]): boolean {
 
 function stagingDirectory(
   result: Record<string, unknown>,
-  field: 'artifactDir' | 'dependencyDir',
+  field: 'artifactDir' | 'dependencyDir' | 'proposalDir',
   outputDir: string,
 ): boolean {
   const value = result[field];
@@ -128,7 +142,9 @@ function response(
                 ? stagingDirectory(result, 'artifactDir', request.options.outputDir)
                 : request.operation === 'dependencies.generate'
                   ? stagingDirectory(result, 'dependencyDir', request.options.outputDir)
-                  : keys(result, ['manifest']) && result.manifest === 'connector.yaml';
+                  : request.operation === 'runtime.propose'
+                    ? stagingDirectory(result, 'proposalDir', request.options.outputDir)
+                    : keys(result, ['manifest']) && result.manifest === 'connector.yaml';
       if (valid) return value as ToolchainResponse;
     }
     if (
