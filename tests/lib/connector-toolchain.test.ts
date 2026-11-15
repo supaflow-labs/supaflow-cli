@@ -209,6 +209,63 @@ describe('connector toolchain subprocess', () => {
     });
   });
 
+  it.each([true, false])(
+    'sends dependency staging with offline=%s and preserves lock failures',
+    async (offline) => {
+      const request: ToolchainRequest = {
+        protocolVersion: 1,
+        operation: 'dependencies.generate',
+        projectDir: '/fixture/project with spaces',
+        options: {
+          uvExecutable: '/fixture/uv',
+          runtimeWheelDir: '/fixture/locked wheels',
+          outputDir: '/fixture/deps ; quoted',
+          offline,
+        },
+      };
+      for (const dependencyDir of ['/fixture/deps ; quoted', '/fixture/./deps ; quoted/']) {
+        const generated = { protocolVersion: 1, ok: true, result: { dependencyDir } };
+        configure(JSON.stringify(generated) + '\n');
+        expect(await runConnectorToolchain(python, request)).toEqual(generated);
+        expect(JSON.parse(readFileSync(captured, 'utf8')).request).toEqual(request);
+      }
+      const failure = {
+        protocolVersion: 1,
+        ok: false,
+        error: { code: 'LOCK_FAILED', message: 'Dependency output already exists' },
+      };
+      configure(JSON.stringify(failure) + '\n', 1);
+      expect(await runConnectorToolchain(python, request)).toEqual(failure);
+    },
+  );
+
+  it.each([
+    { dependencyDir: 'relative' },
+    { dependencyDir: '/different/deps' },
+    { dependencyDir: '/fixture/invalid\0path' },
+    { dependencyDir: 1 },
+    { dependencyDir: '/fixture/deps', extra: true },
+    { artifactDir: '/fixture/deps' },
+    { checked: true },
+    { manifest: 'connector.yaml' },
+  ])('rejects invalid dependency staging responses (%#)', async (result) => {
+    configure(JSON.stringify({ protocolVersion: 1, ok: true, result }) + '\n');
+    const request: ToolchainRequest = {
+      protocolVersion: 1,
+      operation: 'dependencies.generate',
+      projectDir: '/fixture/project',
+      options: {
+        uvExecutable: '/fixture/uv',
+        runtimeWheelDir: '/fixture/wheels',
+        outputDir: '/fixture/deps',
+        offline: true,
+      },
+    };
+    await expect(runConnectorToolchain(python, request)).rejects.toMatchObject({
+      code: 'INVALID_RESPONSE',
+    });
+  });
+
   it('keeps inherited stderr progress out of the protocol result', async () => {
     configure(JSON.stringify(success) + '\n', 0, { progress: true });
     expect(await runConnectorToolchain(python, info)).toEqual(success);

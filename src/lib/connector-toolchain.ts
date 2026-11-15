@@ -25,6 +25,17 @@ export type ToolchainRequest =
     }
   | {
       protocolVersion: 1;
+      operation: 'dependencies.generate';
+      projectDir: string;
+      options: {
+        uvExecutable: string;
+        runtimeWheelDir: string;
+        outputDir: string;
+        offline: boolean;
+      };
+    }
+  | {
+      protocolVersion: 1;
       operation: 'manifest.generate' | 'manifest.check';
       projectDir: string;
       options: { nodeExecutable: string };
@@ -39,6 +50,7 @@ export type ToolchainResponse =
         | { checked: true }
         | { tested: true }
         | { artifactDir: string }
+        | { dependencyDir: string }
         | { manifest: 'connector.yaml' };
     }
   | { protocolVersion: 1; ok: false; error: { code: string; message: string } };
@@ -70,6 +82,21 @@ function keys(value: Record<string, unknown>, expected: string[]): boolean {
   );
 }
 
+function stagingDirectory(
+  result: Record<string, unknown>,
+  field: 'artifactDir' | 'dependencyDir',
+  outputDir: string,
+): boolean {
+  const value = result[field];
+  return (
+    keys(result, [field]) &&
+    typeof value === 'string' &&
+    isAbsolute(value) &&
+    !value.includes('\0') &&
+    resolvePath(value) === resolvePath(outputDir)
+  );
+}
+
 function response(
   raw: Buffer,
   status: number | null,
@@ -98,12 +125,10 @@ function response(
             : request.operation === 'test'
               ? keys(result, ['tested']) && result.tested === true
               : request.operation === 'artifact.build'
-                ? keys(result, ['artifactDir']) &&
-                  typeof result.artifactDir === 'string' &&
-                  isAbsolute(result.artifactDir) &&
-                  !result.artifactDir.includes('\0') &&
-                  resolvePath(result.artifactDir) === resolvePath(request.options.outputDir)
-                : keys(result, ['manifest']) && result.manifest === 'connector.yaml';
+                ? stagingDirectory(result, 'artifactDir', request.options.outputDir)
+                : request.operation === 'dependencies.generate'
+                  ? stagingDirectory(result, 'dependencyDir', request.options.outputDir)
+                  : keys(result, ['manifest']) && result.manifest === 'connector.yaml';
       if (valid) return value as ToolchainResponse;
     }
     if (
