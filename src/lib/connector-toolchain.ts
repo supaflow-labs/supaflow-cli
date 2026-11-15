@@ -52,9 +52,20 @@ export type ToolchainRequest =
   | { protocolVersion: 1; operation: 'doctor'; projectDir: string; options: Record<string, never> }
   | {
       protocolVersion: 1;
-      operation: 'check' | 'test';
+      operation: 'check';
       projectDir: string;
       options: { uvExecutable: string; nodeExecutable: string; runtimeWheelDir: string };
+    }
+  | {
+      protocolVersion: 1;
+      operation: 'test';
+      projectDir: string;
+      options: {
+        uvExecutable: string;
+        nodeExecutable: string;
+        runtimeWheelDir: string;
+        live?: boolean;
+      };
     }
   | {
       protocolVersion: 1;
