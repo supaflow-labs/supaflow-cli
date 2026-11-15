@@ -6,6 +6,7 @@ import { expect, it } from 'vitest';
 import {
   renderCustomSourceTemplate,
   renderApiSourceTemplate,
+  renderSqlSourceTemplate,
 } from '../../src/lib/connector-templates.js';
 
 const sdkWheel = process.env.SUPAFLOW_TEST_SDK_WHEEL;
@@ -155,9 +156,12 @@ print(json.dumps({'lifecycle': 'passed', 'type': bound.get_definition().type}))
 );
 
 // Optional local runtime gate: CI omits these exact wheel inputs, never fetches.
-it.skipIf(!runtimeWheel && !runtimeWheelhouse)(
-  'runs the API template with exact public wheels and offline runtime dependencies',
-  () => {
+it.skipIf(!runtimeWheel && !runtimeWheelhouse).each([
+  { id: 'API', name: 'ACME_API', render: renderApiSourceTemplate, sql: false },
+  { id: 'SQL', name: 'ACME_SQL', render: renderSqlSourceTemplate, sql: true },
+])(
+  'runs the $id template with exact public wheels and offline runtime dependencies',
+  (variant) => {
     expect(
       sdkWheel && testkitWheel && runtimeWheel && runtimeWheelhouse,
       'Provide SDK/testkit/runtime wheels and the runtime dependency wheelhouse',
@@ -170,9 +174,9 @@ it.skipIf(!runtimeWheel && !runtimeWheelhouse)(
         'supaflow-connector-testkit',
         'supaflow-connector-runtime',
       ]);
-      const template = renderApiSourceTemplate({
-        connectorName: 'ACME_API',
-        displayName: 'Acme API',
+      const template = variant.render({
+        connectorName: variant.name,
+        displayName: `Acme ${variant.id}`,
         groupId: 'com.acme',
         version: '1.2.3.dev1',
         requiresPython: '>=3.11,<3.15',
@@ -208,6 +212,7 @@ it.skipIf(!runtimeWheel && !runtimeWheelhouse)(
           sdkWheel!,
           testkitWheel!,
           runtimeWheel!,
+          ...(variant.sql ? ['dlt[sql_database]'] : []),
         ],
         { cwd: root, timeout: 60_000 },
       );
@@ -228,18 +233,27 @@ for module in (supaflow_connector,supaflow_python_sdk,supaflow_python_testkit):
 for name in ('supaflow_python_runtime','supaflow_connector_toolchain','supaflow_connector_cli'):
     assert importlib.util.find_spec(name) is None,name
 sys.path[:0]=[str(project/'src'),str(project/'tests')]
-from test_connector import test_source_lifecycle
-work=root/'work';work.mkdir();test_source_lifecycle(work)
-from supaflow_connector_acme_api.connector import Connector
+import test_connector
+for name in json.loads(sys.argv[3]):
+    work=root/name;work.mkdir();getattr(test_connector,name)(work)
+metadata=tomllib.loads((project/'pyproject.toml').read_text())
+entry,=metadata['project']['entry-points']['supaflow.connectors'].values()
+module,symbol=entry.split(':');Connector=getattr(importlib.import_module(module),symbol)
 from supaflow_python_sdk import ConnectorPackageMetadata
-bound=Connector.with_package_metadata(ConnectorPackageMetadata('1.2.3.dev1','com.acme','supaflow_connector_acme_api.connector:Connector'))
+bound=Connector.with_package_metadata(ConnectorPackageMetadata('1.2.3.dev1','com.acme',entry))
 assert Connector.DEFINITION.type is None
-assert bound.get_definition().type=='CUSTOM__COM_ACME__ACME_API'
+assert bound.get_definition().type==sys.argv[4]
 assert bound.get_definition().use_full_normalize and bound.get_definition().jsonl_certified
 print(json.dumps({'lifecycle':'passed','type':bound.get_definition().type}))
 `,
           environment,
           project,
+          JSON.stringify(
+            variant.sql
+              ? ['test_source_lifecycle', 'test_missing_connection_url']
+              : ['test_source_lifecycle'],
+          ),
+          `CUSTOM__COM_ACME__${variant.name}`,
         ],
         {
           cwd: root,
@@ -251,7 +265,7 @@ print(json.dumps({'lifecycle':'passed','type':bound.get_definition().type}))
       const lastLine = output.trim().split('\n').at(-1)!;
       expect(JSON.parse(lastLine)).toEqual({
         lifecycle: 'passed',
-        type: 'CUSTOM__COM_ACME__ACME_API',
+        type: `CUSTOM__COM_ACME__${variant.name}`,
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
