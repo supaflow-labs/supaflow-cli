@@ -3,7 +3,11 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { runConnectorToolchain, type ToolchainRequest } from '../../src/lib/connector-toolchain.js';
+import {
+  runConnectorToolchain,
+  type ToolchainRequest,
+  type AuthoringDiagnostics,
+} from '../../src/lib/connector-toolchain.js';
 
 const info = { protocolVersion: 1, operation: 'info' } as const;
 const success = { protocolVersion: 1, ok: true, result: { operations: ['info'] } };
@@ -11,6 +15,46 @@ let root: string;
 let python: string;
 let scenario: string;
 let captured: string;
+
+function doctorFixture(): AuthoringDiagnostics {
+  const distribution = { version: '0.1.0', requiresPython: '>=3.11,<3.15' };
+  return {
+    schemaVersion: 1,
+    installed: {
+      toolchain: { ...distribution },
+      sdk: { ...distribution, version: '8.0.0' },
+      testkit: { ...distribution },
+      runtime: null,
+    },
+    selected: {
+      sdkDistributionVersion: '1.2.3',
+      runtimeDistributionVersion: null,
+      connectorApiVersion: 1,
+      requiredHostProtocol: 2,
+    },
+    python: {
+      version: '3.14.0+',
+      executable: '/fixture/env/bin/python',
+      environment: '/fixture/env',
+      interpreterTag: 'cp314-cp314-manylinux_2_28_x86_64',
+      declaredRanges: {
+        toolchainRequiresPython: '>=3.11',
+        projectRequiresPython: '>=3.11,<3.15',
+        dependencyRequiresPython: '>=3.12,<3.15',
+        runtimeDeclaredAgentPython: '>=99',
+      },
+      intersections: { local: '>=3.12,<3.15', execution: '>=99,<3.15', all: '>=99,<3.15' },
+      currentMatches: { local: true, execution: false, all: false },
+    },
+    locks: {
+      runtimeSha256: 'a'.repeat(64),
+      dependenciesSha256: 'b'.repeat(64),
+      dependencyLockVersion: 1,
+      projectionRuntimeMatches: false,
+    },
+    template: null,
+  };
+}
 
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'supaflow toolchain ; '));
@@ -324,6 +368,191 @@ describe('connector toolchain subprocess', () => {
     await expect(runConnectorToolchain(python, request)).rejects.toMatchObject({
       code: 'INVALID_RESPONSE',
     });
+  });
+
+  it('forwards empty doctor options without changing reported versions or compatibility', async () => {
+    const request: ToolchainRequest = {
+      protocolVersion: 1,
+      operation: 'doctor',
+      projectDir: '/fixture/project with spaces',
+      options: {},
+    };
+    const diagnostics = doctorFixture();
+    for (const template of [
+      null,
+      {
+        templateId: 'api-source',
+        templateVersion: 1,
+        cliVersion: '0.8.0',
+        toolchainVersion: '0.1.0',
+        createdAt: '2026-11-15T00:00:00.000Z',
+      },
+    ]) {
+      diagnostics.template = template;
+      const result = { protocolVersion: 1, ok: true, result: { diagnostics } };
+      configure(JSON.stringify(result) + '\n');
+      expect(await runConnectorToolchain(python, request)).toEqual(result);
+      expect(JSON.parse(readFileSync(captured, 'utf8')).request).toEqual(request);
+    }
+    diagnostics.selected.runtimeDistributionVersion = '2.0.0';
+    const missingRuntime = { protocolVersion: 1, ok: true, result: { diagnostics } };
+    configure(JSON.stringify(missingRuntime) + '\n');
+    expect(await runConnectorToolchain(python, request)).toEqual(missingRuntime);
+    diagnostics.installed.runtime = { version: '2.0.0', requiresPython: '>=3.11' };
+    const result = { protocolVersion: 1, ok: true, result: { diagnostics } };
+    configure(JSON.stringify(result) + '\n');
+    expect(await runConnectorToolchain(python, request)).toEqual(result);
+    const failure = {
+      protocolVersion: 1,
+      ok: false,
+      error: { code: 'CHECK_FAILED', message: 'Prepare project inputs' },
+    };
+    configure(JSON.stringify(failure) + '\n', 1);
+    expect(await runConnectorToolchain(python, request)).toEqual(failure);
+  });
+
+  it.each([
+    ['schema', (d: AuthoringDiagnostics) => Object.assign(d, { schemaVersion: 2 })],
+    ['extra root', (d: AuthoringDiagnostics) => Object.assign(d, { extra: true })],
+    ['missing selected', (d: AuthoringDiagnostics) => Reflect.deleteProperty(d, 'selected')],
+    [
+      'missing required installed',
+      (d: AuthoringDiagnostics) => Reflect.deleteProperty(d.installed, 'sdk'),
+    ],
+    [
+      'malformed optional installed',
+      (d: AuthoringDiagnostics) => Object.assign(d.installed, { runtime: [] }),
+    ],
+    [
+      'extra distribution field',
+      (d: AuthoringDiagnostics) => Object.assign(d.installed.sdk, { extra: true }),
+    ],
+    [
+      'nonstring installed version',
+      (d: AuthoringDiagnostics) => Object.assign(d.installed.sdk, { version: 1 }),
+    ],
+    [
+      'nonstring selected',
+      (d: AuthoringDiagnostics) => Object.assign(d.selected, { sdkDistributionVersion: true }),
+    ],
+    [
+      'invalid optional selected',
+      (d: AuthoringDiagnostics) => Object.assign(d.selected, { runtimeDistributionVersion: 1 }),
+    ],
+    [
+      'API boolean',
+      (d: AuthoringDiagnostics) => Object.assign(d.selected, { connectorApiVersion: true }),
+    ],
+    [
+      'host negative',
+      (d: AuthoringDiagnostics) => Object.assign(d.selected, { requiredHostProtocol: -1 }),
+    ],
+    [
+      'host unsafe integer',
+      (d: AuthoringDiagnostics) =>
+        Object.assign(d.selected, { requiredHostProtocol: Number.MAX_SAFE_INTEGER + 1 }),
+    ],
+    [
+      'empty interpreter tag',
+      (d: AuthoringDiagnostics) => {
+        d.python.interpreterTag = '';
+      },
+    ],
+    [
+      'relative executable',
+      (d: AuthoringDiagnostics) => {
+        d.python.executable = 'python';
+      },
+    ],
+    [
+      'relative environment',
+      (d: AuthoringDiagnostics) => {
+        d.python.environment = 'env';
+      },
+    ],
+    [
+      'NUL environment',
+      (d: AuthoringDiagnostics) => {
+        d.python.environment = '/bad\0env';
+      },
+    ],
+    [
+      'missing range',
+      (d: AuthoringDiagnostics) =>
+        Reflect.deleteProperty(d.python.declaredRanges, 'runtimeDeclaredAgentPython'),
+    ],
+    [
+      'nonstring intersection',
+      (d: AuthoringDiagnostics) => Object.assign(d.python.intersections, { all: true }),
+    ],
+    [
+      'nonboolean match',
+      (d: AuthoringDiagnostics) => Object.assign(d.python.currentMatches, { all: 'false' }),
+    ],
+    [
+      'extra match',
+      (d: AuthoringDiagnostics) => Object.assign(d.python.currentMatches, { extra: false }),
+    ],
+    [
+      'bad hash',
+      (d: AuthoringDiagnostics) => {
+        d.locks.runtimeSha256 = 'bad';
+      },
+    ],
+    [
+      'uppercase hash',
+      (d: AuthoringDiagnostics) => {
+        d.locks.runtimeSha256 = 'A'.repeat(64);
+      },
+    ],
+    [
+      'nonboolean projection',
+      (d: AuthoringDiagnostics) => Object.assign(d.locks, { projectionRuntimeMatches: 1 }),
+    ],
+    [
+      'noninteger lock version',
+      (d: AuthoringDiagnostics) => {
+        d.locks.dependencyLockVersion = 1.5;
+      },
+    ],
+    ['empty template', (d: AuthoringDiagnostics) => Object.assign(d, { template: {} })],
+    [
+      'nonpositive template version',
+      (d: AuthoringDiagnostics) =>
+        Object.assign(d, {
+          template: {
+            templateId: 'api-source',
+            templateVersion: 0,
+            cliVersion: '0.8.0',
+            toolchainVersion: '0.1.0',
+            createdAt: 'today',
+          },
+        }),
+    ],
+  ] as const)('rejects malformed doctor diagnostics: %s', async (_name, edit) => {
+    const diagnostics = doctorFixture();
+    edit(diagnostics);
+    configure(JSON.stringify({ protocolVersion: 1, ok: true, result: { diagnostics } }) + '\n');
+    await expect(
+      runConnectorToolchain(python, {
+        protocolVersion: 1,
+        operation: 'doctor',
+        projectDir: '/fixture/project',
+        options: {},
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+
+  it('rejects an unrelated successful result for doctor', async () => {
+    configure(JSON.stringify({ protocolVersion: 1, ok: true, result: { checked: true } }) + '\n');
+    await expect(
+      runConnectorToolchain(python, {
+        protocolVersion: 1,
+        operation: 'doctor',
+        projectDir: '/fixture/project',
+        options: {},
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
 
   it('keeps inherited stderr progress out of the protocol result', async () => {
