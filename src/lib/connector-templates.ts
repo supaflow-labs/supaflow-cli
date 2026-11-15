@@ -14,6 +14,60 @@ export interface CustomSourceTemplateInput {
 }
 
 const TEMPLATE_ID = 'custom-source';
+const API_TEMPLATE_ID = 'api-source';
+
+export interface ApiSourceTemplateInput extends CustomSourceTemplateInput {
+  /** Exact canonical version of the selected public runtime wheel. */
+  runtimeVersion: string;
+}
+
+function projectNames(connectorName: string) {
+  const localName = connectorName.toLowerCase();
+  return {
+    localName,
+    moduleName: `supaflow_connector_${localName}`,
+    distribution: `supaflow-connector-${localName.replaceAll('_', '-')}-python`,
+  };
+}
+
+function projectMetadata(
+  input: CustomSourceTemplateInput,
+  templateId: string,
+  runtimeVersion?: string,
+): string {
+  const { localName, moduleName, distribution } = projectNames(input.connectorName);
+  const dependencies = [`supaflow-python-sdk==${input.sdkVersion}`];
+  if (runtimeVersion !== undefined)
+    dependencies.push(`supaflow-connector-runtime==${runtimeVersion}`);
+  return `[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = ${JSON.stringify(distribution)}
+version = ${JSON.stringify(input.version)}
+requires-python = ${JSON.stringify(input.requiresPython)}
+dependencies = ${JSON.stringify(dependencies)}
+
+[project.entry-points."supaflow.connectors"]
+${localName} = ${JSON.stringify(`${moduleName}.connector:Connector`)}
+
+[tool.supaflow.connector]
+template = ${JSON.stringify(templateId)}
+group_id = ${JSON.stringify(input.groupId)}
+
+[dependency-groups]
+dev = ["pytest>=8", ${JSON.stringify(`supaflow-connector-testkit==${input.testkitVersion}`)}]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+`;
+}
 
 /** Pure project data; init owns staging, locks, canonical manifest and provenance. */
 export function renderCustomSourceTemplate(input: CustomSourceTemplateInput): {
@@ -36,9 +90,7 @@ export function renderCustomSourceTemplate(input: CustomSourceTemplateInput): {
   ) {
     throw new Error('Provide a canonical local connector name and nonempty template metadata');
   }
-  const localName = input.connectorName.toLowerCase();
-  const moduleName = `supaflow_connector_${localName}`;
-  const distribution = `supaflow-connector-${localName.replaceAll('_', '-')}-python`;
+  const { moduleName } = projectNames(input.connectorName);
   // Quoting keeps author text inside string syntax. Python owns semantic
   // Unicode/version/range validation before a staged project is published.
   const literal = JSON.stringify;
@@ -64,34 +116,7 @@ After initialization, use supaflow connectors check, test and build. Ordinary
 checks and builds reject stale locks; use the explicit lock command after a
 dependency change. A successful local build is not deployment approval.
 `,
-      'pyproject.toml': `[build-system]
-requires = ["setuptools>=77"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = ${literal(distribution)}
-version = ${literal(input.version)}
-requires-python = ${literal(input.requiresPython)}
-dependencies = [${literal(`supaflow-python-sdk==${input.sdkVersion}`)}]
-
-[project.entry-points."supaflow.connectors"]
-${localName} = ${literal(`${moduleName}.connector:Connector`)}
-
-[tool.supaflow.connector]
-template = ${literal(TEMPLATE_ID)}
-group_id = ${literal(input.groupId)}
-
-[dependency-groups]
-dev = ["pytest>=8", ${literal(`supaflow-connector-testkit==${input.testkitVersion}`)}]
-
-[tool.setuptools.packages.find]
-where = ["src"]
-namespaces = false
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
-`,
+      'pyproject.toml': projectMetadata(input, TEMPLATE_ID),
       [`src/${moduleName}/__init__.py`]: '',
       [`src/${moduleName}/source.py`]: `"""Replace this finite example with your source's record iterator."""
 
@@ -169,6 +194,116 @@ def test_source_lifecycle(tmp_path):
         assert emitted == list(CONNECTOR_FIXTURE.sample_records_by_resource["records"])
     finally:
         harness.close()
+`,
+    },
+  };
+}
+
+/** Runtime-backed source project data; public adapter owns normalization. */
+export function renderApiSourceTemplate(input: ApiSourceTemplateInput): {
+  templateId: typeof API_TEMPLATE_ID;
+  templateVersion: 1;
+  files: Record<string, string>;
+} {
+  if (typeof input.runtimeVersion !== 'string' || !input.runtimeVersion.trim()) {
+    throw new Error('Provide the exact selected runtime version');
+  }
+  const base = renderCustomSourceTemplate(input);
+  const { moduleName } = projectNames(input.connectorName);
+  return {
+    templateId: API_TEMPLATE_ID,
+    templateVersion: 1,
+    files: {
+      ...base.files,
+      'pyproject.toml': projectMetadata(input, API_TEMPLATE_ID, input.runtimeVersion),
+      'README.md': `# API source connector
+
+This template uses the public Supaflow source adapter and one finite example
+resource. Replace source.py records(config) with source access, update schemas.py,
+and update expected rows in tests/connector_fixture.py. Keep default unit tests
+mocked as shown; live source tests must be separate and explicitly enabled.
+Never put credentials in source or committed fixtures.
+
+pyproject.toml owns version, group, entry point and dependency pins. The definition
+declares its local name, resources and normalization flags. Package binding
+derives its full connector type;
+the control plane checks group ownership at deployment.
+
+After initialization, use supaflow connectors check, test and build. Refresh
+dependencies with the explicit lock command; ordinary checks/builds do not repair
+locks or select another runtime. A local build does not grant deployment approval.
+`,
+      [`src/${moduleName}/schemas.py`]: `from supaflow_connector import ConnectorResource
+
+RESOURCES = (
+    ConnectorResource(
+        name="records", mode="full_refresh", primary_key="id",
+        static_fields=(("id", "text"),), schema_strategy="static_only",
+    ),
+)
+`,
+      [`src/${moduleName}/source.py`]: `"""Keep source acquisition here so unit tests can supply finite sample rows."""
+import dlt
+
+
+def records(config):
+    yield {"id": "example-1"}
+
+
+def create_source(resource_name, config):
+    @dlt.source(name="example_source")
+    def source():
+        return dlt.resource(records(config), name=resource_name, primary_key="id")
+    return source()
+`,
+      [`src/${moduleName}/connector.py`]: `from supaflow_connector import ConnectorDefinition, SupaflowConnector
+from .schemas import RESOURCES
+from .source import create_source
+
+
+class Connector(SupaflowConnector):
+    DEFINITION = ConnectorDefinition(
+        ${JSON.stringify(input.displayName)}, connector_name=${JSON.stringify(input.connectorName)},
+        vendor=${JSON.stringify(input.displayName)}, description="An API source connector",
+        icon='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/></svg>',
+        resources=RESOURCES, use_full_normalize=True, jsonl_certified=True,
+    )
+
+    def _create_source(self, resource, **kwargs):
+        return create_source(resource.name, self._config)
+`,
+      'tests/test_connector.py': `from copy import deepcopy
+from pathlib import Path
+import tomllib
+from unittest.mock import patch
+
+from ${moduleName}.connector import Connector
+from ${moduleName} import source
+from supaflow_python_sdk import ConnectorPackageMetadata
+from supaflow_python_testkit import ConnectorHarness
+from connector_fixture import CONNECTOR_FIXTURE
+
+
+def test_source_lifecycle(tmp_path):
+    metadata = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())
+    entry, = metadata["project"]["entry-points"]["supaflow.connectors"].values()
+    bound = Connector.with_package_metadata(ConnectorPackageMetadata(
+        metadata["project"]["version"], metadata["tool"]["supaflow"]["connector"]["group_id"], entry,
+    ))
+    expected = list(CONNECTOR_FIXTURE.sample_records_by_resource["records"])
+    with patch.object(source, "records", side_effect=lambda config: iter(deepcopy(expected))):
+        harness = ConnectorHarness(bound, dict(CONNECTOR_FIXTURE.config), work_dir=str(tmp_path))
+        try:
+            assert harness.run_init().product_name == ${JSON.stringify(input.displayName)}
+            schema = harness.run_schema()
+            assert [obj.name for obj in schema.objects] == ["records"]
+            result, emitted = harness.run_read("records")
+            assert result.status == "COMPLETED"
+            assert result.statistics.records_read == len(expected)
+            actual = [{key: row[key] for key in sample} for row, sample in zip(emitted, expected, strict=True)]
+            assert actual == expected
+        finally:
+            harness.close()
 `,
     },
   };
