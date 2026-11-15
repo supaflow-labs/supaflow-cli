@@ -156,6 +156,59 @@ describe('connector toolchain subprocess', () => {
     },
   );
 
+  it('sends the build staging destination in stdin and accepts its matching absolute result', async () => {
+    const request: ToolchainRequest = {
+      protocolVersion: 1,
+      operation: 'artifact.build',
+      projectDir: '/fixture/project with spaces',
+      options: {
+        uvExecutable: '/fixture/uv',
+        nodeExecutable: process.execPath,
+        runtimeWheelDir: '/fixture/wheels',
+        outputDir: '/fixture/staging ; quoted',
+      },
+    };
+    for (const artifactDir of ['/fixture/staging ; quoted', '/fixture/./staging ; quoted/']) {
+      const built = { protocolVersion: 1, ok: true, result: { artifactDir } };
+      configure(JSON.stringify(built) + '\n');
+      expect(await runConnectorToolchain(python, request)).toEqual(built);
+      expect(JSON.parse(readFileSync(captured, 'utf8')).request).toEqual(request);
+    }
+    const failed = {
+      protocolVersion: 1,
+      ok: false,
+      error: { code: 'BUILD_FAILED', message: 'Staging already exists' },
+    };
+    configure(JSON.stringify(failed) + '\n', 1);
+    expect(await runConnectorToolchain(python, request)).toEqual(failed);
+  });
+
+  it.each([
+    { artifactDir: 'relative' },
+    { artifactDir: '/different/staging' },
+    { artifactDir: '/fixture/invalid\0path' },
+    { artifactDir: 1 },
+    { artifactDir: '/fixture/staging', extra: true },
+    { tested: true },
+    { manifest: 'connector.yaml' },
+  ])('rejects invalid artifact staging responses (%#)', async (result) => {
+    configure(JSON.stringify({ protocolVersion: 1, ok: true, result }) + '\n');
+    const request: ToolchainRequest = {
+      protocolVersion: 1,
+      operation: 'artifact.build',
+      projectDir: '/fixture/project',
+      options: {
+        uvExecutable: '/fixture/uv',
+        nodeExecutable: process.execPath,
+        runtimeWheelDir: '/fixture/wheels',
+        outputDir: '/fixture/staging',
+      },
+    };
+    await expect(runConnectorToolchain(python, request)).rejects.toMatchObject({
+      code: 'INVALID_RESPONSE',
+    });
+  });
+
   it('keeps inherited stderr progress out of the protocol result', async () => {
     configure(JSON.stringify(success) + '\n', 0, { progress: true });
     expect(await runConnectorToolchain(python, info)).toEqual(success);
