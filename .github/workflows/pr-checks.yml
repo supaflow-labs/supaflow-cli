@@ -29,10 +29,11 @@ jobs:
           python-version: '3.12'
       - run: npm ci --ignore-scripts
       - run: npm run lint
-      - name: Check inactive connector transport types
+      - name: Check inactive connector authoring types
         run: >-
           ./node_modules/.bin/tsc --noEmit --target ES2022 --module NodeNext
-          --moduleResolution NodeNext --strict --skipLibCheck src/lib/connector-toolchain.ts
+          --moduleResolution NodeNext --strict --skipLibCheck
+          src/lib/connector-toolchain.ts src/lib/connector-templates.ts
       - run: npm test
       - run: node --test tests/publish-script.node.mjs
       - run: npm audit --omit=dev --audit-level=high
