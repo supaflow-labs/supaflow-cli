@@ -34,6 +34,7 @@ jobs:
           ./node_modules/.bin/tsc --noEmit --target ES2022 --module NodeNext
           --moduleResolution NodeNext --strict --skipLibCheck
           src/lib/connector-toolchain.ts src/lib/connector-templates.ts src/lib/connector-init.ts
+          src/lib/connector-python-process.ts src/lib/connector-python-probe.ts
       - run: npm test
       - run: node --test tests/publish-script.node.mjs
       - run: npm audit --omit=dev --audit-level=high
