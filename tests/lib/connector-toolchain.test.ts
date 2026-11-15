@@ -266,6 +266,66 @@ describe('connector toolchain subprocess', () => {
     });
   });
 
+  it('sends an explicit runtime proposal and preserves its structured failures', async () => {
+    const request: ToolchainRequest = {
+      protocolVersion: 1,
+      operation: 'runtime.propose',
+      projectDir: '/fixture/project with spaces',
+      options: {
+        uvExecutable: '/fixture/uv',
+        outputDir: '/fixture/proposal ; quoted',
+        runtimeWheels: ['/fixture/selected wheels/sdk.whl', '/fixture/selected wheels/runtime.whl'],
+        requiredHostProtocol: 2,
+        agentExecutionPython: '>=3.12,<3.15',
+        offline: true,
+      },
+    };
+    for (const proposalDir of ['/fixture/proposal ; quoted', '/fixture/./proposal ; quoted/']) {
+      const proposed = { protocolVersion: 1, ok: true, result: { proposalDir } };
+      configure(JSON.stringify(proposed) + '\n');
+      expect(await runConnectorToolchain(python, request)).toEqual(proposed);
+      expect(JSON.parse(readFileSync(captured, 'utf8')).request).toEqual(request);
+    }
+    for (const code of ['LOCK_FAILED', 'MISSING_RUNTIME_WHEEL']) {
+      const failure = {
+        protocolVersion: 1,
+        ok: false,
+        error: { code, message: 'Proposal rejected' },
+      };
+      configure(JSON.stringify(failure) + '\n', 1);
+      expect(await runConnectorToolchain(python, request)).toEqual(failure);
+    }
+  });
+
+  it.each([
+    { proposalDir: 'relative' },
+    { proposalDir: '/different/proposal' },
+    { proposalDir: '/fixture/invalid\0path' },
+    { proposalDir: 1 },
+    { proposalDir: '/fixture/proposal', extra: true },
+    { dependencyDir: '/fixture/proposal' },
+    { artifactDir: '/fixture/proposal' },
+    { checked: true },
+  ])('rejects invalid runtime proposal responses (%#)', async (result) => {
+    configure(JSON.stringify({ protocolVersion: 1, ok: true, result }) + '\n');
+    const request: ToolchainRequest = {
+      protocolVersion: 1,
+      operation: 'runtime.propose',
+      projectDir: '/fixture/project',
+      options: {
+        uvExecutable: '/fixture/uv',
+        outputDir: '/fixture/proposal',
+        runtimeWheels: ['/fixture/sdk.whl'],
+        requiredHostProtocol: 2,
+        agentExecutionPython: '>=3.12,<3.15',
+        offline: false,
+      },
+    };
+    await expect(runConnectorToolchain(python, request)).rejects.toMatchObject({
+      code: 'INVALID_RESPONSE',
+    });
+  });
+
   it('keeps inherited stderr progress out of the protocol result', async () => {
     configure(JSON.stringify(success) + '\n', 0, { progress: true });
     expect(await runConnectorToolchain(python, info)).toEqual(success);
