@@ -1,8 +1,9 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { expect, it } from 'vitest';
+import { initializeConnectorProject } from '../../src/lib/connector-init.js';
 import {
   renderCustomSourceTemplate,
   renderApiSourceTemplate,
@@ -41,7 +42,7 @@ print(json.dumps(values))
 // offline gate accepts exact locally built public wheels; it never fetches.
 it.skipIf(!sdkWheel && !testkitWheel)(
   'runs generated lifecycle tests using only installed public SDK/testkit wheels',
-  () => {
+  async () => {
     expect(
       sdkWheel && testkitWheel,
       'Provide both public wheel paths for the offline gate',
@@ -61,11 +62,6 @@ it.skipIf(!sdkWheel && !testkitWheel)(
         testkitVersion: metadata[1].version,
       });
       const project = join(root, 'project');
-      for (const [name, text] of Object.entries(template.files)) {
-        const path = join(project, name);
-        mkdirSync(dirname(path), { recursive: true });
-        writeFileSync(path, text);
-      }
       const environment = join(root, 'environment');
       execFileSync('python3', ['-m', 'venv', environment], { timeout: 60_000 });
       const python = join(
@@ -89,12 +85,15 @@ it.skipIf(!sdkWheel && !testkitWheel)(
         ],
         { cwd: root, timeout: 60_000 },
       );
-      const output = execFileSync(
-        python,
-        [
-          '-I',
-          '-c',
-          `import importlib, importlib.util, json, pathlib, sys, tomllib
+      let output = '';
+      await initializeConnectorProject(project, template, '0.1.0', async (staging) => {
+        expect(existsSync(project)).toBe(false);
+        output = execFileSync(
+          python,
+          [
+            '-I',
+            '-c',
+            `import importlib, importlib.util, json, pathlib, sys, tomllib
 root = pathlib.Path(sys.argv[1]).resolve()
 project = pathlib.Path(sys.argv[2]).resolve()
 import supaflow_python_sdk as sdk
@@ -125,25 +124,26 @@ for case in json.loads(sys.argv[3]):
     assert parse_customer_connector_type(resolved.type) == ('com.acme', case['name'])
 print(json.dumps({'lifecycle': 'passed', 'type': bound.get_definition().type}))
 `,
-          environment,
-          project,
-          JSON.stringify(
-            ['ACME__X', 'ACME_X', 'ACME_', 'ACME', '_LEADING'].map((name) => ({
-              name,
-              pyproject: renderCustomSourceTemplate({
-                connectorName: name,
-                displayName: 'Example',
-                groupId: 'com.acme',
-                version: '1.2.3.dev1',
-                requiresPython: '>=3.11,<3.15',
-                sdkVersion: metadata[0].version,
-                testkitVersion: metadata[1].version,
-              }).files['pyproject.toml'],
-            })),
-          ),
-        ],
-        { cwd: root, timeout: 30_000, encoding: 'utf8' },
-      );
+            environment,
+            staging,
+            JSON.stringify(
+              ['ACME__X', 'ACME_X', 'ACME_', 'ACME', '_LEADING'].map((name) => ({
+                name,
+                pyproject: renderCustomSourceTemplate({
+                  connectorName: name,
+                  displayName: 'Example',
+                  groupId: 'com.acme',
+                  version: '1.2.3.dev1',
+                  requiresPython: '>=3.11,<3.15',
+                  sdkVersion: metadata[0].version,
+                  testkitVersion: metadata[1].version,
+                }).files['pyproject.toml'],
+              })),
+            ),
+          ],
+          { cwd: root, timeout: 30_000, encoding: 'utf8' },
+        );
+      });
       expect(JSON.parse(output)).toEqual({
         lifecycle: 'passed',
         type: 'CUSTOM__COM_ACME__ACME_RECORDS',
@@ -161,7 +161,7 @@ it.skipIf(!runtimeWheel && !runtimeWheelhouse).each([
   { id: 'SQL', name: 'ACME_SQL', render: renderSqlSourceTemplate, sql: true },
 ])(
   'runs the $id template with exact public wheels and offline runtime dependencies',
-  (variant) => {
+  async (variant) => {
     expect(
       sdkWheel && testkitWheel && runtimeWheel && runtimeWheelhouse,
       'Provide SDK/testkit/runtime wheels and the runtime dependency wheelhouse',
@@ -185,11 +185,6 @@ it.skipIf(!runtimeWheel && !runtimeWheelhouse).each([
         runtimeVersion: metadata[2].version,
       });
       const project = join(root, 'project');
-      for (const [name, text] of Object.entries(template.files)) {
-        const path = join(project, name);
-        mkdirSync(dirname(path), { recursive: true });
-        writeFileSync(path, text);
-      }
       const environment = join(root, 'environment');
       execFileSync('python3', ['-m', 'venv', environment], { timeout: 60_000 });
       const python = join(
@@ -220,12 +215,15 @@ it.skipIf(!runtimeWheel && !runtimeWheelhouse).each([
         cwd: root,
         timeout: 30_000,
       });
-      const output = execFileSync(
-        python,
-        [
-          '-I',
-          '-c',
-          `import importlib,importlib.util,json,pathlib,sys,tomllib
+      let output = '';
+      await initializeConnectorProject(project, template, '0.1.0', async (staging) => {
+        expect(existsSync(project)).toBe(false);
+        output = execFileSync(
+          python,
+          [
+            '-I',
+            '-c',
+            `import importlib,importlib.util,json,pathlib,sys,tomllib
 root=pathlib.Path(sys.argv[1]).resolve();project=pathlib.Path(sys.argv[2]).resolve()
 import supaflow_connector,supaflow_python_sdk,supaflow_python_testkit
 for module in (supaflow_connector,supaflow_python_sdk,supaflow_python_testkit):
@@ -246,22 +244,23 @@ assert bound.get_definition().type==sys.argv[4]
 assert bound.get_definition().use_full_normalize and bound.get_definition().jsonl_certified
 print(json.dumps({'lifecycle':'passed','type':bound.get_definition().type}))
 `,
-          environment,
-          project,
-          JSON.stringify(
-            variant.sql
-              ? ['test_source_lifecycle', 'test_missing_connection_url']
-              : ['test_source_lifecycle'],
-          ),
-          `CUSTOM__COM_ACME__${variant.name}`,
-        ],
-        {
-          cwd: root,
-          timeout: 30_000,
-          encoding: 'utf8',
-          env: { ...process.env, DLT_TELEMETRY: '0', RUNTIME__DLTHUB_TELEMETRY: 'false' },
-        },
-      );
+            environment,
+            staging,
+            JSON.stringify(
+              variant.sql
+                ? ['test_source_lifecycle', 'test_missing_connection_url']
+                : ['test_source_lifecycle'],
+            ),
+            `CUSTOM__COM_ACME__${variant.name}`,
+          ],
+          {
+            cwd: root,
+            timeout: 30_000,
+            encoding: 'utf8',
+            env: { ...process.env, DLT_TELEMETRY: '0', RUNTIME__DLTHUB_TELEMETRY: 'false' },
+          },
+        );
+      });
       const lastLine = output.trim().split('\n').at(-1)!;
       expect(JSON.parse(lastLine)).toEqual({
         lifecycle: 'passed',
