@@ -8,7 +8,7 @@ export type ToolchainRequest =
   | { protocolVersion: 1; operation: 'info' }
   | {
       protocolVersion: 1;
-      operation: 'check';
+      operation: 'check' | 'test';
       projectDir: string;
       options: { uvExecutable: string; nodeExecutable: string; runtimeWheelDir: string };
     }
@@ -23,7 +23,11 @@ export type ToolchainResponse =
   | {
       protocolVersion: 1;
       ok: true;
-      result: { operations: string[] } | { checked: true } | { manifest: 'connector.yaml' };
+      result:
+        | { operations: string[] }
+        | { checked: true }
+        | { tested: true }
+        | { manifest: 'connector.yaml' };
     }
   | { protocolVersion: 1; ok: false; error: { code: string; message: string } };
 
@@ -79,7 +83,9 @@ function response(
             result.operations.every((item) => typeof item === 'string')
           : operation === 'check'
             ? keys(result, ['checked']) && result.checked === true
-            : keys(result, ['manifest']) && result.manifest === 'connector.yaml';
+            : operation === 'test'
+              ? keys(result, ['tested']) && result.tested === true
+              : keys(result, ['manifest']) && result.manifest === 'connector.yaml';
       if (valid) return value as ToolchainResponse;
     }
     if (

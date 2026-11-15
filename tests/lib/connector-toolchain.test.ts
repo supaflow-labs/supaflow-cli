@@ -105,6 +105,57 @@ describe('connector toolchain subprocess', () => {
     },
   );
 
+  it('sends the checked test request and returns its exact success shape', async () => {
+    const request: ToolchainRequest = {
+      protocolVersion: 1,
+      operation: 'test',
+      projectDir: '/fixture/project with spaces',
+      options: {
+        uvExecutable: '/fixture/uv',
+        nodeExecutable: process.execPath,
+        runtimeWheelDir: '/fixture/locked wheels',
+      },
+    };
+    const passed = { protocolVersion: 1, ok: true, result: { tested: true } };
+    configure(JSON.stringify(passed) + '\n');
+    expect(await runConnectorToolchain(python, request)).toEqual(passed);
+    expect(JSON.parse(readFileSync(captured, 'utf8')).request).toEqual(request);
+    const failed = {
+      protocolVersion: 1,
+      ok: false,
+      error: { code: 'TESTS_FAILED', message: 'See pytest diagnostics on stderr' },
+    };
+    configure(JSON.stringify(failed) + '\n', 1);
+    expect(await runConnectorToolchain(python, request)).toEqual(failed);
+  });
+
+  it.each([
+    ['test', { checked: true }],
+    ['check', { tested: true }],
+    ['test', { tested: false }],
+    ['test', { tested: true, extra: true }],
+    ['test', { operations: ['test'] }],
+    ['test', { manifest: 'connector.yaml' }],
+  ] as const)(
+    'rejects success for the wrong operation or result shape (%#)',
+    async (operation, result) => {
+      configure(JSON.stringify({ protocolVersion: 1, ok: true, result }) + '\n');
+      const request: ToolchainRequest = {
+        protocolVersion: 1,
+        operation,
+        projectDir: '/fixture/project',
+        options: {
+          uvExecutable: '/fixture/uv',
+          nodeExecutable: process.execPath,
+          runtimeWheelDir: '/fixture/wheels',
+        },
+      };
+      await expect(runConnectorToolchain(python, request)).rejects.toMatchObject({
+        code: 'INVALID_RESPONSE',
+      });
+    },
+  );
+
   it('keeps inherited stderr progress out of the protocol result', async () => {
     configure(JSON.stringify(success) + '\n', 0, { progress: true });
     expect(await runConnectorToolchain(python, info)).toEqual(success);
