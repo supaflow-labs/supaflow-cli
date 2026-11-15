@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   renderCustomSourceTemplate,
   renderApiSourceTemplate,
+  renderSqlSourceTemplate,
   type CustomSourceTemplateInput,
 } from '../../src/lib/connector-templates.js';
 
@@ -48,7 +49,8 @@ if request['allowRuntime']:
     assert any(item.arg == 'resources' and isinstance(item.value, ast.Name) and item.value.id == 'RESOURCES' for item in definition.keywords)
     schemas, = [value for name, value in files.items() if name.endswith('/schemas.py')]
     resource, = [node for node in ast.walk(ast.parse(schemas)) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'ConnectorResource']
-    api = {'imports': imports, 'resource': {item.arg: ast.literal_eval(item.value) for item in resource.keywords}}
+    properties = [{item.arg: ast.literal_eval(item.value) for item in node.keywords} for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'ConnectorProperty']
+    api = {'imports': imports, 'properties': properties, 'resource': {item.arg: ast.literal_eval(item.value) for item in resource.keywords}}
 
 print(json.dumps({'project': project, 'displayName': ast.literal_eval(definition.args[0]), 'connectorName': ast.literal_eval(next(item.value for item in definition.keywords if item.arg == 'connector_name')), 'flags': flags, 'api': api}))
 `,
@@ -157,6 +159,56 @@ describe('API source template data', () => {
     const displayName = 'API "quoted"\nnot executable';
     expect(
       inspect(renderApiSourceTemplate({ ...input, displayName, runtimeVersion: '0.1.0' }), true)
+        .displayName,
+    ).toBe(displayName);
+  });
+});
+
+describe('SQL source template data', () => {
+  it('declares the SQL extra, encrypted URL and existing public source adapter', () => {
+    const template = renderSqlSourceTemplate({ ...input, runtimeVersion: '0.1.0' });
+    expect(template.templateId).toBe('sql-source');
+    const { project, api, flags } = inspect(template, true);
+    expect(project.project.dependencies).toEqual([
+      `supaflow-python-sdk==${input.sdkVersion}`,
+      'supaflow-connector-runtime==0.1.0',
+      'dlt[sql_database]',
+    ]);
+    expect(project.tool.supaflow.connector.template).toBe('sql-source');
+    expect(api.imports.supaflow_connector).toEqual([
+      'ConnectorDefinition',
+      'ConnectorProperty',
+      'SupaflowConnector',
+    ]);
+    expect(api.properties).toEqual([
+      {
+        name: 'connectionUrl',
+        label: 'Connection URL',
+        type: 'STRING',
+        description: 'SQLAlchemy connection URL; provide credentials at runtime',
+        required: true,
+        encrypted: true,
+        sensitive: true,
+      },
+    ]);
+    expect(api.resource.name).toBe('records');
+    expect(flags).toEqual({ use_full_normalize: true, jsonl_certified: true });
+    expect(template.files['src/supaflow_connector_acme_records/source.py']).toContain(
+      'from dlt.sources.sql_database import sql_database',
+    );
+    expect(template.files['src/supaflow_connector_acme_records/source.py']).not.toContain(
+      'example-1',
+    );
+    expect(Object.keys(template.files)).toHaveLength(9);
+  });
+
+  it('retains selected-runtime validation and safe display-name quoting', () => {
+    expect(() => renderSqlSourceTemplate({ ...input, runtimeVersion: '' })).toThrow(
+      'exact selected runtime',
+    );
+    const displayName = 'SQL "quoted"\nnot executable';
+    expect(
+      inspect(renderSqlSourceTemplate({ ...input, displayName, runtimeVersion: '0.1.0' }), true)
         .displayName,
     ).toBe(displayName);
   });
