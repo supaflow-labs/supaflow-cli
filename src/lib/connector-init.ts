@@ -8,6 +8,10 @@ import {
   type ToolchainRequest,
 } from './connector-toolchain.js';
 import { VERSION } from '../version.js';
+import {
+  prepareConnectorProjectEnvironment,
+  type ConnectorProjectEnvironment,
+} from './connector-environment.js';
 
 type ConnectorTemplate = Omit<ReturnType<typeof renderCustomSourceTemplate>, 'templateId'> & {
   templateId: 'custom-source' | 'api-source' | 'sql-source';
@@ -42,6 +46,7 @@ export interface LockedConnectorInitOptions {
   requiredHostProtocol: number;
   agentExecutionPython: string;
   offline: boolean;
+  projectEnvironment?: ConnectorProjectEnvironment;
 }
 
 export async function requireNewConnectorProject(targetDir: string): Promise<void> {
@@ -150,8 +155,9 @@ export async function initializeLockedConnectorProject(
     template,
     tools.toolchainVersion,
     async (staging) => {
+      let pythonExecutable = tools.pythonExecutable;
       const invoke = async (request: ToolchainRequest) => {
-        const response = await runConnectorToolchain(tools.pythonExecutable, request, transport);
+        const response = await runConnectorToolchain(pythonExecutable, request, transport);
         if (!response.ok) {
           throw new ConnectorInitOperationError(response.error.code, response.error.message);
         }
@@ -174,6 +180,15 @@ export async function initializeLockedConnectorProject(
       });
       await rename(join(proposal, 'runtime.lock'), join(staging, 'runtime.lock'));
       await rename(join(proposal, 'deps'), join(staging, 'deps'));
+      if (tools.projectEnvironment)
+        pythonExecutable = await prepareConnectorProjectEnvironment(
+          staging,
+          {
+            ...tools,
+            ...tools.projectEnvironment,
+          },
+          { ...transport, offline: tools.offline },
+        );
       await invoke({
         protocolVersion: 1,
         operation: 'manifest.generate',

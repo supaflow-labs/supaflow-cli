@@ -13,6 +13,7 @@ import {
   initializeLockedConnectorProject,
   ConnectorInitOperationError,
 } from '../src/lib/connector-init.js';
+import { ConnectorProjectPreparationError } from '../src/lib/connector-environment.js';
 import { ToolchainTransportError } from '../src/lib/connector-toolchain.js';
 import {
   registerConnectorInitCommand,
@@ -190,6 +191,7 @@ describe('inactive connector init adapter', () => {
   });
   it.each([
     new ConnectorInitOperationError('LOCK_FAILED', 'Fix the project lock'),
+    new ConnectorProjectPreparationError('LOCK_FAILED', 'No compatible wheel for fixture target'),
     new ToolchainTransportError('TIMEOUT', 'Timed out'),
   ])('preserves actionable typed failures: %j', async (error) => {
     vi.mocked(initializeLockedConnectorProject).mockRejectedValue(error);

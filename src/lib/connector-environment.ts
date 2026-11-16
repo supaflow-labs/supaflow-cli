@@ -1,7 +1,9 @@
 import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { TextDecoder } from 'node:util';
 import { runPythonProcess, ToolchainTransportError } from './connector-python-process.js';
+import { runConnectorToolchain, type ConnectorAgentTarget } from './connector-toolchain.js';
 
 interface BaseTools {
   uvExecutable: string;
@@ -22,6 +24,63 @@ type Source =
       offline: boolean;
     };
 type Options = { signal?: AbortSignal; timeoutMs?: number };
+
+export interface ConnectorProjectEnvironment {
+  bundleRequirementsFile: string;
+  uvCacheDir: string;
+  agentTargets: readonly ConnectorAgentTarget[];
+}
+
+export class ConnectorProjectPreparationError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ConnectorProjectPreparationError';
+  }
+}
+
+/** Compose the existing source-free exporter and native installer; never re-lock. */
+export async function prepareConnectorProjectEnvironment(
+  projectDir: string,
+  tools: BaseTools & ConnectorProjectEnvironment,
+  options: Options & { offline: boolean },
+): Promise<string> {
+  if (!Array.isArray(tools.agentTargets) || tools.agentTargets.length === 0)
+    throw new ToolchainTransportError('INVALID_INPUT', 'Supply the bundled agent target inventory');
+  requireActive(options.signal);
+  const scratch = await mkdtemp(join(tmpdir(), 'supaflow-authoring-'));
+  try {
+    const outputDir = join(scratch, 'inputs');
+    const prepared = await runConnectorToolchain(
+      tools.pythonExecutable,
+      {
+        protocolVersion: 1,
+        operation: 'authoring.prepare',
+        projectDir,
+        options: {
+          uvExecutable: tools.uvExecutable,
+          outputDir,
+          bundleRequirementsFile: tools.bundleRequirementsFile,
+          offline: options.offline,
+          agentTargets: tools.agentTargets,
+        },
+      },
+      options,
+    );
+    if (!prepared.ok)
+      throw new ConnectorProjectPreparationError(prepared.error.code, prepared.error.message);
+    return await prepareLockedProjectEnvironment(
+      join(projectDir, '.venv'),
+      await readFile(join(outputDir, 'pylock.toml')),
+      tools,
+      { ...options, reuseExisting: true },
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
 
 function inside(parent: string, child: string): boolean {
   const path = relative(parent, child);

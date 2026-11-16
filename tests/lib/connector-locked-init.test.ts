@@ -8,6 +8,15 @@ vi.mock('../../src/lib/connector-toolchain.js', async (original) => {
   const module = await original<typeof import('../../src/lib/connector-toolchain.js')>();
   return { ...module, runConnectorToolchain: vi.fn() };
 });
+vi.mock('../../src/lib/connector-environment.js', async (original) => {
+  const module = await original<typeof import('../../src/lib/connector-environment.js')>();
+  return { ...module, prepareConnectorProjectEnvironment: vi.fn() };
+});
+
+import {
+  prepareConnectorProjectEnvironment,
+  ConnectorProjectPreparationError,
+} from '../../src/lib/connector-environment.js';
 
 import { runConnectorToolchain } from '../../src/lib/connector-toolchain.js';
 import { ToolchainTransportError } from '../../src/lib/connector-python-process.js';
@@ -92,6 +101,74 @@ beforeEach(async () => {
 afterEach(async () => rm(root, { recursive: true, force: true }));
 
 describe('locked project initialization composition', () => {
+  const projectEnvironment = {
+    bundleRequirementsFile: '/bundle/requirements.txt',
+    uvCacheDir: '/cache/uv',
+    agentTargets: [{ name: 'fixture', environment: {}, wheelTags: ['py3-none-any'] }],
+  };
+
+  it('prepares the staged venv before importing source and validates with its Python', async () => {
+    const transport = { signal: new AbortController().signal, timeoutMs: 25_000 };
+    let stagedPython: string | undefined;
+    vi.mocked(prepareConnectorProjectEnvironment).mockImplementation(
+      async (project, selected, options) => {
+        expect(existsSync(target)).toBe(false);
+        expect(await readFile(join(project, 'runtime.lock'), 'utf8')).toBe(
+          'selected runtime bytes\n',
+        );
+        expect(
+          vi.mocked(runConnectorToolchain).mock.calls.map((call) => call[1].operation),
+        ).toEqual(['runtime.propose']);
+        expect(selected).toMatchObject({ ...tools, ...projectEnvironment });
+        expect(options).toEqual({ ...transport, offline: true });
+        await mkdir(join(project, '.venv'));
+        await writeFile(join(project, '.venv/prepared'), 'ready');
+        stagedPython = join(project, '.venv/bin/python');
+        return stagedPython;
+      },
+    );
+    await initializeLockedConnectorProject(
+      target,
+      renderCustomSourceTemplate(metadata),
+      { ...tools, projectEnvironment },
+      transport,
+    );
+    expect(prepareConnectorProjectEnvironment).toHaveBeenCalledOnce();
+    expect(
+      vi.mocked(runConnectorToolchain).mock.calls.map((call) => [call[0], call[1].operation]),
+    ).toEqual([
+      [tools.pythonExecutable, 'runtime.propose'],
+      [stagedPython, 'manifest.generate'],
+      [stagedPython, 'check'],
+    ]);
+    expect(await readFile(join(target, '.venv/prepared'), 'utf8')).toBe('ready');
+    expect(await readdir(root)).toEqual(['project']);
+  });
+
+  it.each(['LOCK_FAILED', 'PROCESS_FAILED', 'CANCELLED'])(
+    'preserves %s from preparation without publishing or importing source',
+    async (code) => {
+      const failure =
+        code === 'LOCK_FAILED'
+          ? new ConnectorProjectPreparationError(code, 'Fixture target unavailable')
+          : new ToolchainTransportError(
+              code as 'PROCESS_FAILED' | 'CANCELLED',
+              'Fixture preparation failed',
+            );
+      vi.mocked(prepareConnectorProjectEnvironment).mockRejectedValue(failure);
+      await expect(
+        initializeLockedConnectorProject(target, renderCustomSourceTemplate(metadata), {
+          ...tools,
+          projectEnvironment,
+        }),
+      ).rejects.toBe(failure);
+      expect(vi.mocked(runConnectorToolchain).mock.calls.map((call) => call[1].operation)).toEqual([
+        'runtime.propose',
+      ]);
+      expect(await readdir(root)).toEqual([]);
+    },
+  );
+
   it.each([renderCustomSourceTemplate, renderApiSourceTemplate, renderSqlSourceTemplate])(
     'publishes only after selection, canonical manifest and full check (%#)',
     async (render) => {
