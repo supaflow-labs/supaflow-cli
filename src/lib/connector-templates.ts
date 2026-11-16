@@ -31,6 +31,15 @@ function projectNames(connectorName: string) {
   };
 }
 
+function definitionIdentity(input: CustomSourceTemplateInput): string {
+  // Source spelling only: the SDK validates the group and canonical type.
+  const field =
+    input.groupId === 'io.supaflow' || input.groupId.startsWith('io.supaflow.')
+      ? 'connector_type'
+      : 'connector_name';
+  return `${field}=${JSON.stringify(input.connectorName)}`;
+}
+
 function projectMetadata(
   input: CustomSourceTemplateInput,
   templateId: string,
@@ -150,7 +159,7 @@ from .source import records
 
 class Connector(BaseConnector):
     DEFINITION = ConnectorDefinition(
-        ${literal(input.displayName)}, connector_name=${literal(input.connectorName)},
+        ${literal(input.displayName)}, ${definitionIdentity(input)},
         vendor=${literal(input.displayName)}, description="A custom source connector",
         icon='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/></svg>',
     )
@@ -266,7 +275,7 @@ from .source import create_source
 
 class Connector(SupaflowConnector):
     DEFINITION = ConnectorDefinition(
-        ${JSON.stringify(input.displayName)}, connector_name=${JSON.stringify(input.connectorName)},
+        ${JSON.stringify(input.displayName)}, ${definitionIdentity(input)},
         vendor=${JSON.stringify(input.displayName)}, description="An API source connector",
         icon='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/></svg>',
         resources=RESOURCES, use_full_normalize=True, jsonl_certified=True,
@@ -364,7 +373,7 @@ from .source import create_source
 
 class Connector(SupaflowConnector):
     DEFINITION = ConnectorDefinition(
-        ${JSON.stringify(input.displayName)}, connector_name=${JSON.stringify(input.connectorName)},
+        ${JSON.stringify(input.displayName)}, ${definitionIdentity(input)},
         vendor=${JSON.stringify(input.displayName)}, description="A SQL table source connector",
         icon='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/></svg>',
         properties=(ConnectorProperty(

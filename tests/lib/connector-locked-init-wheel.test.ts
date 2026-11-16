@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -23,6 +31,11 @@ describe.skipIf(!python)('locked initialization with installed public packages',
     expect(python && uv && sdk && runtime && testkit && wheelhouse && buildWheelhouse).toBeTruthy();
     root = mkdtempSync(join(tmpdir(), 'supaflow locked public init ; '));
     writeFileSync(join(root, 'package.json'), '{"type":"module"}\n');
+    // Match an installed CLI prefix without importing its source checkout.
+    mkdirSync(join(root, 'node_modules'));
+    cpSync(join(process.cwd(), 'node_modules/commander'), join(root, 'node_modules/commander'), {
+      recursive: true,
+    });
     mkdirSync(join(root, 'install-wheels'));
     mkdirSync(join(root, 'index-wheels'));
     for (const directory of [wheelhouse!, buildWheelhouse!]) {
@@ -88,6 +101,7 @@ print(json.dumps([*versions,f'>={major}.{minor},<{major}.{minor+1}']))
       'src/lib/connector-templates.ts',
       'src/lib/connector-environment.ts',
       'src/commands/connector-authoring.ts',
+      'src/commands/connector-init.ts',
     ]);
   }, 60_000);
 
@@ -95,10 +109,15 @@ print(json.dumps([*versions,f'>={major}.{minor},<{major}.{minor+1}']))
     if (root) rmSync(root, { recursive: true, force: true });
   });
 
-  it.each(['custom-source', 'api-source', 'sql-source'])(
-    'publishes, checks and prepares the exact %s runtime outside the checkout',
-    (templateId) => {
-      const target = join(root, templateId);
+  it.each([
+    ['custom-source', 'com.acme'],
+    ['api-source', 'com.acme'],
+    ['sql-source', 'com.acme'],
+    ['custom-source', 'io.supaflow'],
+  ])(
+    'initializes and builds %s (%s) outside the checkout',
+    (templateId, groupId) => {
+      const target = join(root, templateId + (groupId === 'io.supaflow' ? '-first-party' : ''));
       const options = {
         toolchainVersion: '0.1.0',
         pythonExecutable: python!,
@@ -113,14 +132,14 @@ print(json.dumps([*versions,f'>={major}.{minor},<{major}.{minor+1}']))
       const metadata = {
         connectorName: 'ACME',
         displayName: 'Acme',
-        groupId: 'com.acme',
+        groupId,
         version: '1.2.3.dev1',
         requiresPython: '>=3.11,<3.15',
         sdkVersion: versions[0],
         runtimeVersion: versions[1],
         testkitVersion: versions[2],
       };
-      const initModule = pathToFileURL(join(root, 'compiled/lib/connector-init.js')).href;
+      const initModule = pathToFileURL(join(root, 'compiled/commands/connector-init.js')).href;
       const templatesModule = pathToFileURL(join(root, 'compiled/lib/connector-templates.js')).href;
       const transportModule = pathToFileURL(join(root, 'compiled/lib/connector-toolchain.js')).href;
       const environmentModule = pathToFileURL(
@@ -129,15 +148,13 @@ print(json.dumps([*versions,f'>={major}.{minor},<{major}.{minor+1}']))
       const commandsModule = pathToFileURL(
         join(root, 'compiled/commands/connector-authoring.js'),
       ).href;
-      const commanderModule = pathToFileURL(
-        join(process.cwd(), 'node_modules/commander/index.js'),
-      ).href;
+      const commanderModule = pathToFileURL(join(root, 'node_modules/commander/index.js')).href;
       const program = `import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {readFileSync,readdirSync,existsSync,mkdirSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {initializeLockedConnectorProject} from ${JSON.stringify(initModule)};
+import {registerConnectorInitCommand} from ${JSON.stringify(initModule)};
 import * as templates from ${JSON.stringify(templatesModule)};
 import {runConnectorToolchain} from ${JSON.stringify(transportModule)};
 import {prepareOfflineConnectorEnvironment} from ${JSON.stringify(environmentModule)};
@@ -146,7 +163,19 @@ import commander from ${JSON.stringify(commanderModule)};
 const tools=${JSON.stringify(options)},target=${JSON.stringify(target)},id=${JSON.stringify(templateId)};
 const render=id==='custom-source'?templates.renderCustomSourceTemplate:id==='api-source'?templates.renderApiSourceTemplate:templates.renderSqlSourceTemplate;
 const template=render(${JSON.stringify(metadata)});
-await initializeLockedConnectorProject(target,template,tools);
+const initProgram = new commander.Command().version('0.0.0').exitOverride().option('--json');
+registerConnectorInitCommand(initProgram.command('connectors'), async(project,options)=>{
+ assert.equal(project,target);assert.equal(options.offline,true);assert(options.signal instanceof AbortSignal);
+ return {...tools,testkitVersion:${JSON.stringify(versions[2])},projectRequiresPython:'>=3.11,<3.15'};
+},{timeoutMs:60_000});
+const initLines=[],initLog=console.log;
+try {
+ console.log=(value)=>initLines.push(value);
+ await initProgram.parseAsync(['--json','connectors','init',target,'--template',id,'--name','ACME','--display-name','Acme','--group',${JSON.stringify(groupId)},'--connector-version','1.2.3.dev1','--offline'],{from:'user'});
+} finally {console.log=initLog;}
+assert.equal(process.exitCode,undefined);assert.deepEqual(initLines.map(value=>JSON.parse(value)),[{projectDir:target}]);
+const manifestType=execFileSync(tools.pythonExecutable,['-I','-c',"import pathlib,sys,yaml; print(yaml.safe_load(pathlib.Path(sys.argv[1]).read_bytes())['connector']['type'])",join(target,'connector.yaml')],{encoding:'utf8'}).trim();
+assert.equal(manifestType,${JSON.stringify(groupId === 'io.supaflow' ? 'ACME' : 'CUSTOM__COM_ACME__ACME')});
 for(const [path,raw] of Object.entries(template.files))assert.equal(readFileSync(join(target,path),'utf8'),raw);
 const before=readFileSync(join(target,'runtime.lock'));
 const inspection=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'runtime.inspect',projectDir:target,options:{}});
@@ -193,7 +222,7 @@ const runtimeProbe=${JSON.stringify(`import importlib.metadata as m,importlib.ut
 sys.path.insert(0,str(pathlib.Path(sys.argv[1])/'src'))
 import supaflow_python_sdk as sdk
 from supaflow_connector_acme.connector import Connector
-assert Connector.get_definition().connector_name == 'ACME'
+assert Connector.get_definition().${groupId === 'io.supaflow' ? 'connector_type' : 'connector_name'} == 'ACME'
 assert pathlib.Path(sdk.__file__).resolve().is_relative_to(pathlib.Path(sys.prefix).resolve())
 absent=['supaflow-connector-toolchain','supaflow-connector-testkit']
 if sys.argv[2]=='custom-source': absent.append('supaflow-connector-runtime')
@@ -216,7 +245,7 @@ for(const [path,raw] of Object.entries(template.files))assert.equal(readFileSync
 const bootstrapCalls=[];
 let buildUv=tools.uvExecutable;
 async function command(args,json=true,expectedExit=undefined) {
- const cli=new commander.Command().exitOverride().option('--json');
+ const cli=new commander.Command().version('0.0.0').exitOverride().option('--json');
  registerConnectorAuthoringCommands(cli.command('connectors'),async(project,options)=>{
   assert.equal(project,target);assert.equal(options.offline,true);
   assert(options.signal instanceof AbortSignal);bootstrapCalls.push(options.operation);
