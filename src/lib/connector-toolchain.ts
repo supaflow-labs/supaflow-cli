@@ -1,4 +1,4 @@
-import { isAbsolute, resolve as resolvePath } from 'node:path';
+import { isAbsolute, relative, sep, resolve as resolvePath } from 'node:path';
 import { TextDecoder } from 'node:util';
 
 import { runPythonProcess, ToolchainTransportError } from './connector-python-process.js';
@@ -104,6 +104,7 @@ export type ToolchainRequest =
         nodeExecutable: string;
         offline: boolean;
         outputDir: string;
+        versionedOutput?: boolean;
       };
     }
   | {
@@ -204,14 +205,25 @@ function stagingDirectory(
   result: Record<string, unknown>,
   field: 'artifactDir' | 'dependencyDir' | 'requirementsDir' | 'proposalDir',
   outputDir: string,
+  versioned = false,
 ): boolean {
   const value = result[field];
+  if (
+    !keys(result, [field]) ||
+    typeof value !== 'string' ||
+    !isAbsolute(value) ||
+    value.includes('\0')
+  )
+    return false;
+  const actual = resolvePath(value),
+    expected = resolvePath(outputDir);
+  if (!versioned) return actual === expected;
+  const child = relative(expected, actual),
+    parts = child.split(sep);
   return (
-    keys(result, [field]) &&
-    typeof value === 'string' &&
-    isAbsolute(value) &&
-    !value.includes('\0') &&
-    resolvePath(value) === resolvePath(outputDir)
+    !isAbsolute(child) &&
+    parts.length === 2 &&
+    parts.every((part) => part !== '' && part !== '.' && part !== '..')
   );
 }
 
@@ -407,7 +419,12 @@ function response(
             : request.operation === 'test'
               ? keys(result, ['tested']) && result.tested === true
               : request.operation === 'artifact.build'
-                ? stagingDirectory(result, 'artifactDir', request.options.outputDir)
+                ? stagingDirectory(
+                    result,
+                    'artifactDir',
+                    request.options.outputDir,
+                    request.options.versionedOutput === true,
+                  )
                 : request.operation === 'dependencies.generate'
                   ? stagingDirectory(result, 'dependencyDir', request.options.outputDir)
                   : request.operation === 'dependencies.export' ||
