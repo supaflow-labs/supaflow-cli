@@ -41,6 +41,7 @@ jobs:
           src/lib/connector-python-process.ts src/lib/connector-python-probe.ts
           src/lib/connector-python-selection.ts
           src/lib/connector-environment.ts
+          src/commands/connector-authoring.ts
       - run: npm test
         env:
           SUPAFLOW_TEST_UV: ${{ github.workspace }}/.venv-bootstrap-ci/bin/uv
