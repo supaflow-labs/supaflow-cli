@@ -1,4 +1,4 @@
-import { lstat, mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { TextDecoder } from 'node:util';
 import { runPythonProcess, ToolchainTransportError } from './connector-python-process.js';
@@ -15,7 +15,7 @@ interface EnvironmentTools extends BaseTools {
 
 type Source =
   | { kind: 'wheels'; directory: string }
-  | { kind: 'pylock'; offline: boolean }
+  | { kind: 'pylock'; offline: boolean; reuseExisting: boolean }
   | {
       kind: 'index';
       configurationDir: string;
@@ -100,19 +100,21 @@ export async function prepareIndexedToolchainEnvironment(
  * an index or reads pip target/prefix configuration. Native uv owns acquisition.
  * offline=false preserves ambient UV_OFFLINE; true always forces offline.
  * Input must be the toolchain's validated wheel-only output, not a source lock.
+ * Explicit reuse syncs an isolated matching venv in place. Native sync failure
+ * can leave partial changes; callers must not launch until preparation passes.
  */
 export async function prepareLockedProjectEnvironment(
   outputDir: string,
   pylock: Uint8Array,
   tools: BaseTools,
-  options: Options & { offline: boolean },
+  options: Options & { offline: boolean; reuseExisting?: boolean },
 ): Promise<string> {
   return (
     await prepareEnvironment(
       outputDir,
       pylock,
       tools,
-      { kind: 'pylock', offline: options.offline },
+      { kind: 'pylock', offline: options.offline, reuseExisting: options.reuseExisting ?? false },
       options,
     )
   ).pythonExecutable;
@@ -135,6 +137,7 @@ async function prepareEnvironment(
     !(requirements instanceof Uint8Array) ||
     requirements.byteLength === 0 ||
     (source.kind !== 'wheels' && typeof source.offline !== 'boolean') ||
+    (source.kind === 'pylock' && typeof source.reuseExisting !== 'boolean') ||
     [
       outputDir,
       tools.uvExecutable,
@@ -158,10 +161,22 @@ async function prepareEnvironment(
     );
   }
   requireActive(options.signal);
-  await requireAbsent(output);
+  let reuse = false;
+  if (source.kind === 'pylock' && source.reuseExisting) {
+    try {
+      if (!(await lstat(output)).isDirectory())
+        throw new ToolchainTransportError(
+          'INVALID_INPUT',
+          'Project environment must be a real directory',
+        );
+      reuse = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  } else await requireAbsent(output);
   await mkdir(dirname(output), { recursive: true });
   const scratch = await mkdtemp(join(dirname(output), '.supaflow-environment-'));
-  const staged = join(scratch, 'environment');
+  const staged = reuse ? output : join(scratch, 'environment');
   const python = join(staged, process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
   // Creation, inspection and offline installs/checks have a neutral UV context.
   // Only the index acquisition phase below consumes registry configuration.
@@ -212,21 +227,77 @@ async function prepareEnvironment(
       { signal: options.signal, timeoutMs: options.timeoutMs, stderr: 'ignore', env },
     );
   try {
+    if (reuse) {
+      try {
+        const configuration = join(output, 'pyvenv.cfg');
+        if (!(await lstat(configuration)).isFile()) throw new Error();
+        const settings = (await readFile(configuration, 'utf8'))
+          .split(/\r?\n/)
+          .filter((line) => /^\s*include-system-site-packages\s*=/i.test(line));
+        if (settings.length !== 1 || !/=\s*false\s*$/i.test(settings[0])) throw new Error();
+        const expectedRoot = await realpath(output);
+        const expectedBase = await realpath(tools.pythonExecutable);
+        await runPythonProcess(
+          python,
+          [
+            '-I',
+            '-S',
+            '-B',
+            '-c',
+            // pyvenv.cfg above establishes isolation. Before Python 3.14, -S
+            // leaves sys.prefix at the base; inspect the standard bin/Scripts
+            // location and base executable without running installed hooks.
+            'import json,os,sys; print(json.dumps([os.path.realpath(os.path.dirname(os.path.dirname(sys.executable))),os.path.realpath(sys._base_executable)]))',
+          ],
+          null,
+          (raw, status) => {
+            const facts: unknown = JSON.parse(
+              new TextDecoder('utf-8', { fatal: true }).decode(raw),
+            );
+            if (
+              status !== 0 ||
+              !Array.isArray(facts) ||
+              facts.length !== 2 ||
+              facts[0] !== expectedRoot ||
+              facts[1] !== expectedBase
+            )
+              throw new Error();
+          },
+          {
+            signal: options.signal,
+            timeoutMs: options.timeoutMs,
+            stderr: 'ignore',
+            env: environment,
+          },
+        );
+      } catch (error) {
+        if (
+          error instanceof ToolchainTransportError &&
+          (error.code === 'CANCELLED' || error.code === 'TIMEOUT')
+        )
+          throw error;
+        throw new ToolchainTransportError(
+          'INVALID_INPUT',
+          'Existing project environment must be an isolated venv using the selected Python; preserve it and choose a fresh environment if it differs',
+        );
+      }
+    }
     const input = join(scratch, source.kind === 'pylock' ? 'pylock.toml' : 'requirements.txt');
     await writeFile(input, snapshot, { flag: 'wx' });
-    await run(
-      [
-        'venv',
-        staged,
-        '--python',
-        tools.pythonExecutable,
-        '--no-project',
-        '--relocatable',
-        ...(source.kind !== 'wheels' ? ['--no-seed'] : []),
-        ...common,
-      ],
-      'create the connector environment',
-    );
+    if (!reuse)
+      await run(
+        [
+          'venv',
+          staged,
+          '--python',
+          tools.pythonExecutable,
+          '--no-project',
+          '--relocatable',
+          ...(source.kind !== 'wheels' ? ['--no-seed'] : []),
+          ...common,
+        ],
+        'create the connector environment',
+      );
     let sitePackages: string | null = null;
     if (source.kind === 'index') {
       const reportedLibrary = await runPythonProcess(
@@ -345,9 +416,11 @@ async function prepareEnvironment(
     // Keep this check config-neutral: it validates the real interpreter,
     // including wheels acquired with foreign platform/Python config overrides.
     await run(['pip', 'check', '--python', python, ...common], 'verify environment dependencies');
-    await requireAbsent(output);
     requireActive(options.signal);
-    await rename(staged, output);
+    if (!reuse) {
+      await requireAbsent(output);
+      await rename(staged, output);
+    }
     return {
       pythonExecutable: join(
         output,

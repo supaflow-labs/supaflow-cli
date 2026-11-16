@@ -49,7 +49,7 @@ describe.skipIf(!uv)('native index toolchain preparation', () => {
     ])
       vi.stubEnv(key, undefined);
     const python = execFileSync(
-      'python3',
+      process.env.SUPAFLOW_TEST_PYTHON ?? 'python3',
       ['-I', '-S', '-c', 'import sys; print(sys.executable)'],
       { encoding: 'utf8' },
     ).trim();
@@ -155,7 +155,7 @@ link-mode = "symlink"
     );
   }
 
-  async function nativePylock(): Promise<Buffer> {
+  async function nativePylock(refresh = false): Promise<Buffer> {
     const input = join(root, 'requirements.in');
     const output = join(root, 'pylock.toml');
     await writeFile(input, requirements);
@@ -183,6 +183,7 @@ link-mode = "symlink"
         '--cache-dir',
         join(root, 'compile-cache'),
         '--quiet',
+        ...(refresh ? ['--refresh'] : []),
       ],
       null,
       (_raw, status) => {
@@ -223,6 +224,120 @@ link-mode = "symlink"
     expect(installed(second).slice(0, 2)).toEqual(['original', '1.0.0']);
     expect(requests).toEqual([]);
     expect((await readdir(root)).some((name) => name.startsWith('forbidden'))).toBe(false);
+  });
+
+  it('syncs a normal project venv in place, reuses it offline and applies a new native solution', async () => {
+    const lock = await nativePylock();
+    const output = join(root, 'project .venv ;');
+    const python = await prepareLockedProjectEnvironment(output, lock, tools, {
+      offline: false,
+      reuseExisting: true,
+    });
+    await writeFile(join(output, 'sentinel'), 'keep environment');
+    requests.length = 0;
+    expect(
+      await prepareLockedProjectEnvironment(output, lock, tools, {
+        offline: true,
+        reuseExisting: true,
+      }),
+    ).toBe(python);
+    expect(requests).toEqual([]);
+    const updated = join(root, 'env_fixture-2.0.0-py3-none-any.whl');
+    execFileSync(tools.pythonExecutable, [
+      '-I',
+      '-S',
+      '-c',
+      `import sys,zipfile
+with zipfile.ZipFile(sys.argv[1]) as source, zipfile.ZipFile(sys.argv[2],'w') as target:
+    for name in source.namelist():
+        raw=source.read(name).replace(b'1.0.0',b'2.0.0').replace(b'"original"',b'"upgraded"')
+        target.writestr(name.replace('1.0.0','2.0.0'),raw)
+`,
+      join(root, filename),
+      updated,
+    ]);
+    wheel = await readFile(updated);
+    filename = 'env_fixture-2.0.0-py3-none-any.whl';
+    requirements = Buffer.from(
+      `env-fixture==2.0.0 --hash=sha256:${createHash('sha256').update(wheel).digest('hex')}\n`,
+    );
+    const next = await nativePylock(true);
+    requests.length = 0;
+    expect(
+      await prepareLockedProjectEnvironment(output, next, tools, {
+        offline: false,
+        reuseExisting: true,
+      }),
+    ).toBe(python);
+    expect(installed(python).slice(0, 2)).toEqual(['upgraded', '2.0.0']);
+    expect(requests.every((path) => path === `/wheels/${filename}`)).toBe(true);
+    expect(await readFile(join(output, 'sentinel'), 'utf8')).toBe('keep environment');
+    expect((await readdir(root)).some((name) => name.startsWith('.supaflow-environment-'))).toBe(
+      false,
+    );
+  });
+
+  it('does not run installed startup hooks during the reuse probe', async () => {
+    const lock = await nativePylock();
+    const output = join(root, 'hook-environment');
+    const python = await prepareLockedProjectEnvironment(output, lock, tools, { offline: false });
+    const library = execFileSync(
+      python,
+      ['-I', '-c', 'import sysconfig; print(sysconfig.get_path("purelib"))'],
+      { encoding: 'utf8' },
+    ).trim();
+    const marker = join(root, 'startup-hook-ran');
+    await writeFile(
+      join(library, 'test-startup-hook.pth'),
+      `import pathlib; pathlib.Path(${JSON.stringify(marker)}).touch(); print("startup hook")\n`,
+    );
+    // Fail the installer deliberately, so this tests only the package-free
+    // pre-install probe. Native uv may execute environment hooks itself.
+    await expect(
+      prepareLockedProjectEnvironment(
+        output,
+        lock,
+        { ...tools, uvExecutable: process.execPath },
+        {
+          offline: true,
+          reuseExisting: true,
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'PROCESS_FAILED' });
+    expect((await readdir(root)).includes('startup-hook-ran')).toBe(false);
+  });
+
+  it('rejects a native system-site venv before syncing and preserves its configuration', async () => {
+    const lock = await nativePylock();
+    const output = join(root, 'system-site');
+    execFileSync(
+      uv!,
+      [
+        'venv',
+        output,
+        '--python',
+        tools.pythonExecutable,
+        '--system-site-packages',
+        '--no-seed',
+        '--offline',
+        '--no-config',
+        '--no-cache',
+        '--no-python-downloads',
+        '--quiet',
+      ],
+      {
+        env: Object.fromEntries(
+          Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('UV_')),
+        ),
+      },
+    );
+    const configuration = await readFile(join(output, 'pyvenv.cfg'));
+    requests.length = 0;
+    await expect(
+      prepareLockedProjectEnvironment(output, lock, tools, { offline: false, reuseExisting: true }),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    expect(requests).toEqual([]);
+    expect(await readFile(join(output, 'pyvenv.cfg'))).toEqual(configuration);
   });
 
   it.each(['offline', 'corrupt', 'hashless'])(
