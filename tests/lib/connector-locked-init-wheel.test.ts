@@ -186,7 +186,7 @@ print(json.dumps([*versions,f'>={major}.{minor},<{major}.{minor+1}']))
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {cpSync,readFileSync,readdirSync,existsSync,mkdirSync,writeFileSync,statSync} from 'node:fs';
-import {join} from 'node:path';
+import {join,relative,sep} from 'node:path';
 import {registerConnectorInitCommand} from ${JSON.stringify(initModule)};
 import {registerConnectorLockCommand} from ${JSON.stringify(lockModule)};
 import {refreshConnectorDependencyLocks,upgradeConnectorRuntimeLocks} from ${JSON.stringify(pathToFileURL(join(root, 'compiled/lib/connector-lock.js')).href)};
@@ -444,6 +444,12 @@ with zipfile.ZipFile(root/lock.connector_wheel.path) as wheel:
     assert roots.isdisjoint({'supaflow_python_sdk','supaflow_python_runtime','supaflow_connector','supaflow_dlt_runtime','supaflow_python_testkit','supaflow_connector_toolchain','supaflow_connector_cli'})
 `)};
 execFileSync(tools.pythonExecutable,['-I','-B','-c',artifactCheck,artifactDir]);
+const versionedRoot=target+'-versioned-artifact';
+const versioned=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'artifact.build',projectDir:target,options:{uvExecutable:tools.uvExecutable,nodeExecutable:tools.nodeExecutable,offline:true,outputDir:versionedRoot,versionedOutput:true}});
+assert.equal(versioned.ok,true);
+const versionedParts=relative(versionedRoot,versioned.result.artifactDir).split(sep);
+assert.equal(versionedParts.length,2);assert.equal(versionedParts[1],'1.2.3.dev1');
+execFileSync(tools.pythonExecutable,['-I','-B','-c',artifactCheck,versioned.result.artifactDir]);
 assert.deepEqual(await command(['build','--output',artifactDir],true,1),{error:{code:'BUILD_FAILED',message:'Artifact output already exists; supply a fresh staging destination'}});
 assert.deepEqual(projectFiles(artifactDir),artifactFiles);
 assert.deepEqual(projectFiles(target),beforeBuild);

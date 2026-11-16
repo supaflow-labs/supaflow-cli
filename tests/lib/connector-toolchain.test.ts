@@ -291,31 +291,65 @@ describe('connector toolchain subprocess', () => {
     ).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
 
-  it('sends the build staging destination in stdin and accepts its matching absolute result', async () => {
-    const request: ToolchainRequest = {
-      protocolVersion: 1,
-      operation: 'artifact.build',
-      projectDir: '/fixture/project with spaces',
-      options: {
-        uvExecutable: '/fixture/uv',
-        nodeExecutable: process.execPath,
-        offline: true,
-        outputDir: '/fixture/staging ; quoted',
-      },
-    };
-    for (const artifactDir of ['/fixture/staging ; quoted', '/fixture/./staging ; quoted/']) {
-      const built = { protocolVersion: 1, ok: true, result: { artifactDir } };
-      configure(JSON.stringify(built) + '\n');
-      expect(await runConnectorToolchain(python, request)).toEqual(built);
-      expect(JSON.parse(readFileSync(captured, 'utf8')).request).toEqual(request);
-    }
-    const failed = {
-      protocolVersion: 1,
-      ok: false,
-      error: { code: 'BUILD_FAILED', message: 'Staging already exists' },
-    };
-    configure(JSON.stringify(failed) + '\n', 1);
-    expect(await runConnectorToolchain(python, request)).toEqual(failed);
+  it.each([undefined, false, true])(
+    'sends build staging and accepts only the requested layout (versioned=%s)',
+    async (versionedOutput) => {
+      const request: ToolchainRequest = {
+        protocolVersion: 1,
+        operation: 'artifact.build',
+        projectDir: '/fixture/project with spaces',
+        options: {
+          uvExecutable: '/fixture/uv',
+          nodeExecutable: process.execPath,
+          offline: true,
+          outputDir: '/fixture/staging ; quoted',
+          ...(versionedOutput === undefined ? {} : { versionedOutput }),
+        },
+      };
+      const leaf = versionedOutput ? '/artifact/1.2.3.dev1' : '';
+      for (const artifactDir of [
+        '/fixture/staging ; quoted' + leaf,
+        '/fixture/./staging ; quoted' + leaf + '/',
+      ]) {
+        const built = { protocolVersion: 1, ok: true, result: { artifactDir } };
+        configure(JSON.stringify(built) + '\n');
+        expect(await runConnectorToolchain(python, request)).toEqual(built);
+        expect(JSON.parse(readFileSync(captured, 'utf8')).request).toEqual(request);
+      }
+      const failed = {
+        protocolVersion: 1,
+        ok: false,
+        error: { code: 'BUILD_FAILED', message: 'Staging already exists' },
+      };
+      configure(JSON.stringify(failed) + '\n', 1);
+      expect(await runConnectorToolchain(python, request)).toEqual(failed);
+    },
+  );
+
+  it.each([
+    '/fixture/staging',
+    '/fixture/staging/artifact',
+    '/fixture/staging/artifact/1.2.3/extra',
+    '/fixture/sibling/artifact/1.2.3',
+    '/fixture/staging/../escape/1.2.3',
+    'relative/artifact/1.2.3',
+    '/fixture/staging/artifact/invalid\0path',
+  ])('rejects an invalid versioned staging leaf %j', async (artifactDir) => {
+    configure(JSON.stringify({ protocolVersion: 1, ok: true, result: { artifactDir } }) + '\n');
+    await expect(
+      runConnectorToolchain(python, {
+        protocolVersion: 1,
+        operation: 'artifact.build',
+        projectDir: '/fixture/project',
+        options: {
+          uvExecutable: '/fixture/uv',
+          nodeExecutable: process.execPath,
+          outputDir: '/fixture/staging',
+          offline: true,
+          versionedOutput: true,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
 
   it.each([
