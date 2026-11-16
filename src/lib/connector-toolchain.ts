@@ -4,6 +4,22 @@ import { TextDecoder } from 'node:util';
 import { runPythonProcess, ToolchainTransportError } from './connector-python-process.js';
 export { ToolchainTransportError } from './connector-python-process.js';
 
+/** Validated project selection, not wheel verification or deployment approval. */
+export interface RuntimeSelection {
+  schemaVersion: 1;
+  connectorApiVersion: number;
+  sdkDistributionVersion: string;
+  requiredHostProtocol: number;
+  agentExecutionPython: string;
+  wheels: {
+    name: 'supaflow-python-sdk' | 'supaflow-connector-runtime';
+    version: string;
+    filename: string;
+    sha256: string;
+    tags: string[];
+  }[];
+}
+
 export interface AuthoringDiagnostics {
   schemaVersion: 1;
   installed: {
@@ -49,7 +65,12 @@ export interface AuthoringDiagnostics {
 
 export type ToolchainRequest =
   | { protocolVersion: 1; operation: 'info' }
-  | { protocolVersion: 1; operation: 'doctor'; projectDir: string; options: Record<string, never> }
+  | {
+      protocolVersion: 1;
+      operation: 'doctor' | 'runtime.inspect';
+      projectDir: string;
+      options: Record<string, never>;
+    }
   | {
       protocolVersion: 1;
       operation: 'check';
@@ -128,6 +149,7 @@ export type ToolchainResponse =
         | { requirementsDir: string }
         | { proposalDir: string }
         | { diagnostics: AuthoringDiagnostics }
+        | { runtime: RuntimeSelection; runtimeSha256: string }
         | { manifest: 'connector.yaml' };
     }
   | { protocolVersion: 1; ok: false; error: { code: string; message: string } };
@@ -170,6 +192,56 @@ function stringFields(value: unknown, fields: string[]): boolean {
 
 function positiveInteger(value: unknown): boolean {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+function runtimeSelection(value: unknown): boolean {
+  if (
+    !record(value) ||
+    !keys(value, [
+      'schemaVersion',
+      'connectorApiVersion',
+      'sdkDistributionVersion',
+      'requiredHostProtocol',
+      'agentExecutionPython',
+      'wheels',
+    ]) ||
+    value.schemaVersion !== 1 ||
+    !positiveInteger(value.connectorApiVersion) ||
+    !positiveInteger(value.requiredHostProtocol) ||
+    !nonEmptyString(value.sdkDistributionVersion) ||
+    !nonEmptyString(value.agentExecutionPython) ||
+    !Array.isArray(value.wheels) ||
+    value.wheels.length < 1 ||
+    value.wheels.length > 2
+  )
+    return false;
+  const names = new Set<string>();
+  const filenames = new Set<string>();
+  for (const wheel of value.wheels) {
+    if (
+      !record(wheel) ||
+      !keys(wheel, ['name', 'version', 'filename', 'sha256', 'tags']) ||
+      (wheel.name !== 'supaflow-python-sdk' && wheel.name !== 'supaflow-connector-runtime') ||
+      names.has(wheel.name) ||
+      !nonEmptyString(wheel.version) ||
+      typeof wheel.filename !== 'string' ||
+      filenames.has(wheel.filename) ||
+      !wheel.filename.endsWith('.whl') ||
+      /[\\/:]/.test(wheel.filename) ||
+      wheel.filename.includes('\0') ||
+      typeof wheel.sha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(wheel.sha256) ||
+      !Array.isArray(wheel.tags) ||
+      wheel.tags.length === 0 ||
+      !wheel.tags.every(nonEmptyString)
+    )
+      return false;
+    names.add(wheel.name);
+    filenames.add(wheel.filename);
+    if (wheel.name === 'supaflow-python-sdk' && wheel.version !== value.sdkDistributionVersion)
+      return false;
+  }
+  return names.has('supaflow-python-sdk');
 }
 
 function diagnosticReport(value: unknown): boolean {
@@ -307,9 +379,14 @@ function response(
                     ? stagingDirectory(result, 'requirementsDir', request.options.outputDir)
                     : request.operation === 'runtime.propose'
                       ? stagingDirectory(result, 'proposalDir', request.options.outputDir)
-                      : request.operation === 'doctor'
-                        ? keys(result, ['diagnostics']) && diagnosticReport(result.diagnostics)
-                        : keys(result, ['manifest']) && result.manifest === 'connector.yaml';
+                      : request.operation === 'runtime.inspect'
+                        ? keys(result, ['runtime', 'runtimeSha256']) &&
+                          runtimeSelection(result.runtime) &&
+                          typeof result.runtimeSha256 === 'string' &&
+                          /^[0-9a-f]{64}$/.test(result.runtimeSha256)
+                        : request.operation === 'doctor'
+                          ? keys(result, ['diagnostics']) && diagnosticReport(result.diagnostics)
+                          : keys(result, ['manifest']) && result.manifest === 'connector.yaml';
       if (valid) return value as ToolchainResponse;
     }
     if (

@@ -7,6 +7,7 @@ import {
   runConnectorToolchain,
   type ToolchainRequest,
   type AuthoringDiagnostics,
+  type RuntimeSelection,
 } from '../../src/lib/connector-toolchain.js';
 
 const info = { protocolVersion: 1, operation: 'info' } as const;
@@ -15,6 +16,34 @@ let root: string;
 let python: string;
 let scenario: string;
 let captured: string;
+
+function runtimeFixture(sdkOnly = false): { runtime: RuntimeSelection; runtimeSha256: string } {
+  const sdk = {
+    name: 'supaflow-python-sdk' as const,
+    version: '1.2.3',
+    filename: 'supaflow_python_sdk-1.2.3-py3-none-any.whl',
+    sha256: 'a'.repeat(64),
+    tags: ['py3-none-any'],
+  };
+  const runtime = {
+    name: 'supaflow-connector-runtime' as const,
+    version: '2.0.0',
+    filename: 'supaflow_connector_runtime-2.0.0-py3-none-any.whl',
+    sha256: 'b'.repeat(64),
+    tags: ['py3-none-any'],
+  };
+  return {
+    runtime: {
+      schemaVersion: 1,
+      connectorApiVersion: 1,
+      sdkDistributionVersion: '1.2.3',
+      requiredHostProtocol: 2,
+      agentExecutionPython: '>=3.12,<3.15',
+      wheels: sdkOnly ? [sdk] : [runtime, sdk],
+    },
+    runtimeSha256: 'c'.repeat(64),
+  };
+}
 
 function doctorFixture(): AuthoringDiagnostics {
   const distribution = { version: '0.1.0', requiresPython: '>=3.11,<3.15' };
@@ -423,6 +452,159 @@ describe('connector toolchain subprocess', () => {
     await expect(runConnectorToolchain(python, request)).rejects.toMatchObject({
       code: 'INVALID_RESPONSE',
     });
+  });
+
+  it.each([true, false])(
+    'forwards source-free runtime inspection without changing project selection (SDK-only %s)',
+    async (sdkOnly) => {
+      const request: ToolchainRequest = {
+        protocolVersion: 1,
+        operation: 'runtime.inspect',
+        projectDir: '/fixture/project with spaces',
+        options: {},
+      };
+      const result = { protocolVersion: 1, ok: true, result: runtimeFixture(sdkOnly) };
+      configure(JSON.stringify(result) + '\n');
+      expect(await runConnectorToolchain(python, request)).toEqual(result);
+      expect(JSON.parse(readFileSync(captured, 'utf8')).request).toEqual(request);
+      for (const code of ['MISSING_RUNTIME_LOCK', 'CHECK_FAILED']) {
+        const failure = {
+          protocolVersion: 1,
+          ok: false,
+          error: { code, message: 'Select a valid project runtime' },
+        };
+        configure(JSON.stringify(failure) + '\n', 1);
+        expect(await runConnectorToolchain(python, request)).toEqual(failure);
+      }
+    },
+  );
+
+  it.each(['connectorApiVersion', 'requiredHostProtocol'] as const)(
+    'preserves the largest exact JSON integer in %s',
+    async (field) => {
+      const result = runtimeFixture();
+      result.runtime[field] = Number.MAX_SAFE_INTEGER;
+      configure(JSON.stringify({ protocolVersion: 1, ok: true, result }) + '\n');
+      expect(
+        await runConnectorToolchain(python, {
+          protocolVersion: 1,
+          operation: 'runtime.inspect',
+          projectDir: '/fixture/project',
+          options: {},
+        }),
+      ).toEqual({ protocolVersion: 1, ok: true, result });
+    },
+  );
+
+  it.each([
+    [
+      'unknown schema',
+      (r: ReturnType<typeof runtimeFixture>) => Object.assign(r.runtime, { schemaVersion: 2 }),
+    ],
+    [
+      'unsafe API integer',
+      (r: ReturnType<typeof runtimeFixture>) =>
+        (r.runtime.connectorApiVersion = Number.MAX_SAFE_INTEGER + 1),
+    ],
+    [
+      'nonpositive protocol',
+      (r: ReturnType<typeof runtimeFixture>) => (r.runtime.requiredHostProtocol = 0),
+    ],
+    [
+      'noninteger API',
+      (r: ReturnType<typeof runtimeFixture>) => (r.runtime.connectorApiVersion = 1.5),
+    ],
+    [
+      'nonwheel suffix',
+      (r: ReturnType<typeof runtimeFixture>) => (r.runtime.wheels[0].filename = 'wheel.tar.gz'),
+    ],
+    [
+      'extra wheel field',
+      (r: ReturnType<typeof runtimeFixture>) =>
+        Object.assign(r.runtime.wheels[0], { source: 'untrusted' }),
+    ],
+    [
+      'uppercase wheel digest',
+      (r: ReturnType<typeof runtimeFixture>) => (r.runtime.wheels[0].sha256 = 'A'.repeat(64)),
+    ],
+    [
+      'short wheel digest',
+      (r: ReturnType<typeof runtimeFixture>) => (r.runtime.wheels[0].sha256 = 'a'.repeat(63)),
+    ],
+    [
+      'unsupported runtime field',
+      (r: ReturnType<typeof runtimeFixture>) => Object.assign(r.runtime, { source: 'untrusted' }),
+    ],
+    [
+      'missing runtime field',
+      (r: ReturnType<typeof runtimeFixture>) =>
+        Reflect.deleteProperty(r.runtime, 'agentExecutionPython'),
+    ],
+    ['no wheels', (r: ReturnType<typeof runtimeFixture>) => (r.runtime.wheels = [])],
+    [
+      'missing SDK',
+      (r: ReturnType<typeof runtimeFixture>) => (r.runtime.wheels = r.runtime.wheels.slice(0, 1)),
+    ],
+    [
+      'duplicate names',
+      (r: ReturnType<typeof runtimeFixture>) =>
+        (r.runtime.wheels = [r.runtime.wheels[1], r.runtime.wheels[1]]),
+    ],
+    [
+      'duplicate filenames',
+      (r: ReturnType<typeof runtimeFixture>) =>
+        (r.runtime.wheels[0].filename = r.runtime.wheels[1].filename),
+    ],
+    [
+      'unselected package',
+      (r: ReturnType<typeof runtimeFixture>) =>
+        Object.assign(r.runtime.wheels[0], { name: 'third-party' }),
+    ],
+    [
+      'mismatched SDK version',
+      (r: ReturnType<typeof runtimeFixture>) => (r.runtime.sdkDistributionVersion = '9.0.0'),
+    ],
+    [
+      'traversal filename',
+      (r: ReturnType<typeof runtimeFixture>) => (r.runtime.wheels[0].filename = '../wheel.whl'),
+    ],
+    [
+      'Windows path',
+      (r: ReturnType<typeof runtimeFixture>) => (r.runtime.wheels[0].filename = 'C:\\wheel.whl'),
+    ],
+    [
+      'NUL filename',
+      (r: ReturnType<typeof runtimeFixture>) => (r.runtime.wheels[0].filename = 'bad\0.whl'),
+    ],
+    [
+      'bad wheel digest',
+      (r: ReturnType<typeof runtimeFixture>) => (r.runtime.wheels[0].sha256 = 'g'.repeat(64)),
+    ],
+    ['empty tags', (r: ReturnType<typeof runtimeFixture>) => (r.runtime.wheels[0].tags = [])],
+    [
+      'bad tag type',
+      (r: ReturnType<typeof runtimeFixture>) => Object.assign(r.runtime.wheels[0], { tags: [1] }),
+    ],
+    [
+      'uppercase lock digest',
+      (r: ReturnType<typeof runtimeFixture>) => (r.runtimeSha256 = 'C'.repeat(64)),
+    ],
+    [
+      'extra result field',
+      (r: ReturnType<typeof runtimeFixture>) => Object.assign(r, { extra: true }),
+    ],
+  ] as const)('rejects malformed runtime inspection data: %s', async (_name, edit) => {
+    const result = runtimeFixture();
+    edit(result);
+    configure(JSON.stringify({ protocolVersion: 1, ok: true, result }) + '\n');
+    await expect(
+      runConnectorToolchain(python, {
+        protocolVersion: 1,
+        operation: 'runtime.inspect',
+        projectDir: '/fixture/project',
+        options: {},
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
 
   it('forwards empty doctor options without changing reported versions or compatibility', async () => {
