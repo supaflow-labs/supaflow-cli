@@ -207,3 +207,15 @@ it('requires an explicit network policy before starting any native operation', a
   ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
   expect(runPythonProcess).not.toHaveBeenCalled();
 });
+
+it.each(['true', 'false'])(
+  'preserves UV_OFFLINE=%s when the explicit flag is absent',
+  async (value) => {
+    vi.stubEnv('UV_OFFLINE', value);
+    await prepareIndexedToolchainEnvironment(output, Buffer.from('checked'), tools, {
+      offline: false,
+    });
+    expect(vi.mocked(runPythonProcess).mock.calls[2][4]?.env?.UV_OFFLINE).toBe(value);
+    expect(vi.mocked(runPythonProcess).mock.calls[2][1]).not.toContain('--offline');
+  },
+);
