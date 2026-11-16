@@ -25,7 +25,12 @@ export function runPythonProcess<T>(
   arguments_: string[],
   request: unknown,
   validate: (raw: Buffer, status: number | null) => T,
-  options: { signal?: AbortSignal; timeoutMs?: number; stderr?: 'inherit' | 'ignore' } = {},
+  options: {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+    stderr?: 'inherit' | 'ignore';
+    env?: NodeJS.ProcessEnv;
+  } = {},
 ): Promise<T> {
   if (
     typeof pythonExecutable !== 'string' ||
@@ -60,6 +65,7 @@ export function runPythonProcess<T>(
   return new Promise((resolve, reject) => {
     const child = spawn(pythonExecutable, arguments_, {
       stdio: ['pipe', 'pipe', options.stderr ?? 'inherit'],
+      ...(options.env === undefined ? {} : { env: options.env }),
     });
     const chunks: Buffer[] = [];
     let size = 0;
