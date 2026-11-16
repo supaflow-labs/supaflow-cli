@@ -189,7 +189,7 @@ import {cpSync,readFileSync,readdirSync,existsSync,mkdirSync,writeFileSync,statS
 import {join} from 'node:path';
 import {registerConnectorInitCommand} from ${JSON.stringify(initModule)};
 import {registerConnectorLockCommand} from ${JSON.stringify(lockModule)};
-import {refreshConnectorDependencyLocks} from ${JSON.stringify(pathToFileURL(join(root, 'compiled/lib/connector-lock.js')).href)};
+import {refreshConnectorDependencyLocks,upgradeConnectorRuntimeLocks} from ${JSON.stringify(pathToFileURL(join(root, 'compiled/lib/connector-lock.js')).href)};
 import * as templates from ${JSON.stringify(templatesModule)};
 import {runConnectorToolchain} from ${JSON.stringify(transportModule)};
 import {prepareOfflineConnectorEnvironment,prepareConnectorProjectEnvironment} from ${JSON.stringify(environmentModule)};
@@ -263,6 +263,17 @@ function projectFiles(directory,prefix='') {
  return result;
 }
 const beforeExport=projectFiles(target);
+const upgradeProject=target+'-runtime-upgrade';cpSync(target,upgradeProject,{recursive:true,filter:path=>path!==join(target,'.venv')});
+const proposal={sdkVersion:${JSON.stringify(versions[0])},runtimeVersion:id==='custom-source'?null:${JSON.stringify(versions[1])},requiredHostProtocol:3,agentExecutionPython:tools.agentExecutionPython};
+// A local proposal can raise its protocol requirement; this is not deployment approval.
+const change=await upgradeConnectorRuntimeLocks(upgradeProject,tools,proposal,{offline:true});
+assert.deepEqual(change.before,before);assert.equal(JSON.parse(change.after).requiredHostProtocol,3);
+assert.deepEqual(readFileSync(join(upgradeProject,'runtime.lock')),change.after);
+assert.equal(existsSync(join(upgradeProject,'.venv')),false);
+assert.deepEqual(await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'dependencies.check',projectDir:upgradeProject,options:{uvExecutable:tools.uvExecutable,offline:true,agentTargets:tools.agentTargets}}),{protocolVersion:1,ok:true,result:{checked:true}});
+const upgradedFiles=projectFiles(upgradeProject);
+await assert.rejects(upgradeConnectorRuntimeLocks(upgradeProject,{...tools,agentTargets:[{...tools.agentTargets[0],name:'fixture-uncovered-agent',wheelTags:['cp399-cp399-linux_x86_64']}]},{...proposal,requiredHostProtocol:4},{offline:true}),error=>error.code==='LOCK_FAILED');
+assert.deepEqual(projectFiles(upgradeProject),upgradedFiles);assert.deepEqual(projectFiles(target),beforeExport);
 const lockProject=target+'-lock-update';cpSync(target,lockProject,{recursive:true,filter:path=>path!==join(target,'.venv')});
 const lockRuntime=readFileSync(join(lockProject,'runtime.lock'));
 const lockRootPath=join(lockProject,'pyproject.toml');

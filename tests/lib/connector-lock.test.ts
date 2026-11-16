@@ -202,6 +202,12 @@ describe('ordinary native dependency lock publication', () => {
     expect(read('runtime.lock')).toBe('exact runtime bytes');
     expect(read('pyproject.toml')).toBe('root');
     expect(read('deps/uv.lock')).toBe('old lock');
+    const retained = readdirSync(join(root, 'deps')).filter((name) =>
+      name.startsWith('.supaflow-lock-'),
+    );
+    expect(retained).toHaveLength(1);
+    expect(readFileSync(join(root, 'deps', retained[0], 'old-0'), 'utf8')).toBe('old project');
+    rmSync(join(root, 'deps', retained[0]), { recursive: true });
   });
   it('finishes publication if a signal arrives during the commit', async () => {
     const controller = new AbortController();
