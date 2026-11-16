@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -18,17 +19,31 @@ const uv = process.env.SUPAFLOW_TEST_UV;
 const sdk = process.env.SUPAFLOW_TEST_SDK_WHEEL;
 const runtime = process.env.SUPAFLOW_TEST_RUNTIME_WHEEL;
 const testkit = process.env.SUPAFLOW_TEST_TESTKIT_WHEEL;
+const toolchain = process.env.SUPAFLOW_TEST_TOOLCHAIN_WHEEL;
+const uvWheel = process.env.SUPAFLOW_TEST_UV_WHEEL;
+const bundleRequirements = process.env.SUPAFLOW_TEST_BOOTSTRAP_REQUIREMENTS;
 const wheelhouse = process.env.SUPAFLOW_TEST_RUNTIME_WHEELHOUSE;
 const buildWheelhouse = process.env.SUPAFLOW_TEST_BUILD_WHEELHOUSE;
 
-// The caller-owned public toolchain includes SQL authoring dependencies. This gate
-// separately installs only the exported production graph in fresh offline envs.
+// The seed handles initial proposals. Each case prepares its own locked authoring
+// graph and separately installs the exported production graph without tools.
 describe.skipIf(!python)('locked initialization with installed public packages', () => {
   let root: string;
   let versions: string[];
 
   beforeAll(() => {
-    expect(python && uv && sdk && runtime && testkit && wheelhouse && buildWheelhouse).toBeTruthy();
+    expect(
+      python &&
+        uv &&
+        sdk &&
+        runtime &&
+        testkit &&
+        toolchain &&
+        uvWheel &&
+        bundleRequirements &&
+        wheelhouse &&
+        buildWheelhouse,
+    ).toBeTruthy();
     root = mkdtempSync(join(tmpdir(), 'supaflow locked public init ; '));
     writeFileSync(join(root, 'package.json'), '{"type":"module"}\n');
     // Match an installed CLI prefix without importing its source checkout.
@@ -44,7 +59,7 @@ describe.skipIf(!python)('locked initialization with installed public packages',
         copyFileSync(join(directory, wheel), join(root, 'index-wheels', wheel));
       }
     }
-    for (const wheel of [sdk!, runtime!]) {
+    for (const wheel of [sdk!, runtime!, testkit!, toolchain!, uvWheel!]) {
       copyFileSync(wheel, join(root, 'install-wheels', basename(wheel)));
       copyFileSync(wheel, join(root, 'index-wheels', basename(wheel)));
     }
@@ -79,10 +94,13 @@ print(json.dumps([*versions,f'>={major}.{minor},<{major}.{minor+1}']))
           sdk!,
           runtime!,
           testkit!,
+          toolchain!,
+          uvWheel!,
         ],
         { encoding: 'utf8', timeout: 30_000 },
       ),
     );
+    writeFileSync(join(root, 'bundle-requirements.txt'), readFileSync(bundleRequirements!));
     execFileSync(process.execPath, [
       join(process.cwd(), 'node_modules/typescript/bin/tsc'),
       '--target',
@@ -120,14 +138,14 @@ print(json.dumps([*versions,f'>={major}.{minor},<{major}.{minor+1}']))
     (templateId, groupId) => {
       const target = join(root, templateId + (groupId === 'io.supaflow' ? '-first-party' : ''));
       const options = {
-        toolchainVersion: '0.1.0',
+        toolchainVersion: versions[3],
         pythonExecutable: python!,
         uvExecutable: uv!,
         nodeExecutable: process.execPath,
         sdkVersion: versions[0],
         runtimeVersion: templateId === 'custom-source' ? null : versions[1],
         requiredHostProtocol: 2,
-        agentExecutionPython: versions[3],
+        agentExecutionPython: versions[5],
         offline: true,
       };
       const metadata = {
@@ -160,7 +178,7 @@ import {registerConnectorInitCommand} from ${JSON.stringify(initModule)};
 import {registerConnectorLockCommand} from ${JSON.stringify(lockModule)};
 import * as templates from ${JSON.stringify(templatesModule)};
 import {runConnectorToolchain} from ${JSON.stringify(transportModule)};
-import {prepareOfflineConnectorEnvironment} from ${JSON.stringify(environmentModule)};
+import {prepareOfflineConnectorEnvironment,prepareLockedProjectEnvironment} from ${JSON.stringify(environmentModule)};
 import {registerConnectorAuthoringCommands} from ${JSON.stringify(commandsModule)};
 import commander from ${JSON.stringify(commanderModule)};
 const tools=${JSON.stringify(options)},target=${JSON.stringify(target)},id=${JSON.stringify(templateId)};
@@ -269,6 +287,26 @@ assert.deepEqual(projectFiles(target),beforeExport);
 assert.equal(existsSync(join(target,'.venv')),false);
 assert.equal(existsSync(join(target,'deps/.venv')),false);
 for(const [path,raw] of Object.entries(template.files))assert.equal(readFileSync(join(target,path),'utf8'),raw);
+const authoringDir=target+'-scratch/deep/authoring-inputs';
+const prepared=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'authoring.prepare',projectDir:target,options:{uvExecutable:tools.uvExecutable,outputDir:authoringDir,bundleRequirementsFile:${JSON.stringify(join(root, 'bundle-requirements.txt'))},offline:true}});
+assert.deepEqual(prepared,{protocolVersion:1,ok:true,result:{requirementsDir:authoringDir}});
+tools.pythonExecutable=await prepareLockedProjectEnvironment(target+'-authoring-environment',readFileSync(join(authoringDir,'pylock.toml')),{
+ uvExecutable:tools.uvExecutable,pythonExecutable:tools.pythonExecutable,uvCacheDir:${JSON.stringify(join(root, 'authoring-cache'))},
+},{offline:true});
+const authoringProbe=${JSON.stringify(`import importlib.metadata as m,importlib.util as u,sys
+assert m.version('supaflow-python-sdk') == sys.argv[1]
+assert m.version('supaflow-connector-toolchain') == sys.argv[4]
+assert m.version('supaflow-connector-testkit') == sys.argv[2]
+assert (None if sys.argv[3]=='custom-source' else m.version('supaflow-connector-runtime')) == (None if sys.argv[3]=='custom-source' else sys.argv[5])
+if sys.argv[3]=='custom-source':
+    try: m.distribution('uv')
+    except m.PackageNotFoundError: pass
+    else: raise AssertionError('the CLI uv runner leaked into the project environment')
+assert (u.find_spec('dlt') is None) == (sys.argv[3]=='custom-source')
+assert u.find_spec('supaflow_python_runtime') is None
+`)};
+execFileSync(tools.pythonExecutable,['-I','-B','-c',authoringProbe,${JSON.stringify(versions[0])},${JSON.stringify(versions[2])},id,${JSON.stringify(versions[3])},${JSON.stringify(versions[1])}]);
+assert.deepEqual(projectFiles(target),beforeExport);
 const bootstrapCalls=[];
 let buildUv=tools.uvExecutable;
 async function command(args,json=true,expectedExit=undefined) {
@@ -283,7 +321,7 @@ async function command(args,json=true,expectedExit=undefined) {
   console.log=(value)=>lines.push(value);
   await cli.parseAsync([...(json?['--json']:[]),'connectors',...args,'--project',target,'--offline'],{from:'user'});
  } finally {console.log=original;}
- assert.equal(process.exitCode,expectedExit);process.exitCode=undefined;assert.equal(lines.length,1);
+ assert.equal(process.exitCode,expectedExit,JSON.stringify(lines));process.exitCode=undefined;assert.equal(lines.length,1);
  return json?JSON.parse(lines[0]):lines[0];
 }
 assert.deepEqual(await command(['check']),{checked:true});
@@ -298,11 +336,12 @@ const beforeBuild=projectFiles(target),artifactDir=target+'-artifact';
 const uvObservations=target+'-uv-offline.jsonl';
 if(id==='custom-source'&&process.platform!=='win32') {
  buildUv=target+'-recording-uv';
- const wrapper=${JSON.stringify(`import json,os,pathlib,sys
+ const wrapper=${JSON.stringify(`import json,os,pathlib,shlex,sys
 target=pathlib.Path(sys.argv[1]);uv=sys.argv[2];log=sys.argv[3]
-target.write_text('#!'+sys.executable+' -I\\nimport json,os,sys\\n'
+program=('import json,os,sys\\n'
     +'with open('+repr(log)+',"a") as output: output.write(json.dumps({"phase":"build" if sys.argv[1:2]==["build"] else "other","offline":os.environ.get("UV_OFFLINE")})+"\\\\n")\\n'
     +'os.execv('+repr(uv)+',['+repr(uv)+',*sys.argv[1:]])\\n')
+target.write_text('#!/bin/sh\\nexec '+shlex.quote(sys.executable)+' -I -c '+shlex.quote(program)+' "$@"\\n')
 target.chmod(0o755)
 `)};
  execFileSync(tools.pythonExecutable,['-I','-B','-c',wrapper,buildUv,tools.uvExecutable,uvObservations]);

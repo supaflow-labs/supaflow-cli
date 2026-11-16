@@ -123,6 +123,17 @@ export type ToolchainRequest =
     }
   | {
       protocolVersion: 1;
+      operation: 'authoring.prepare';
+      projectDir: string;
+      options: {
+        uvExecutable: string;
+        outputDir: string;
+        bundleRequirementsFile: string;
+        offline: boolean;
+      };
+    }
+  | {
+      protocolVersion: 1;
       operation: 'runtime.propose';
       projectDir: string;
       options: {
@@ -381,7 +392,8 @@ function response(
                 ? stagingDirectory(result, 'artifactDir', request.options.outputDir)
                 : request.operation === 'dependencies.generate'
                   ? stagingDirectory(result, 'dependencyDir', request.options.outputDir)
-                  : request.operation === 'dependencies.export'
+                  : request.operation === 'dependencies.export' ||
+                      request.operation === 'authoring.prepare'
                     ? stagingDirectory(result, 'requirementsDir', request.options.outputDir)
                     : request.operation === 'runtime.propose'
                       ? stagingDirectory(result, 'proposalDir', request.options.outputDir)
