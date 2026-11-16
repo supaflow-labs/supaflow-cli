@@ -247,6 +247,50 @@ describe('connector toolchain subprocess', () => {
     },
   );
 
+  it('sends dependency-check fields without Node or output and preserves worker failures', async () => {
+    const request: ToolchainRequest = {
+      protocolVersion: 1,
+      operation: 'dependencies.check',
+      projectDir: '/fixture/project ; quoted',
+      options: { uvExecutable: '/fixture/uv', runtimeWheelDir: '/fixture/wheels' },
+    };
+    const checked = { protocolVersion: 1, ok: true, result: { checked: true } };
+    configure(JSON.stringify(checked) + '\n');
+    expect(await runConnectorToolchain(python, request)).toEqual(checked);
+    expect(JSON.parse(readFileSync(captured, 'utf8')).request).toEqual(request);
+    for (const code of [
+      'LOCK_FAILED',
+      'MISSING_RUNTIME_LOCK',
+      'MISSING_RUNTIME_WHEEL',
+      'UNSUPPORTED_OPERATION',
+    ]) {
+      const failure = {
+        protocolVersion: 1,
+        ok: false,
+        error: { code, message: 'Fixture failure' },
+      };
+      configure(JSON.stringify(failure) + '\n', 1);
+      expect(await runConnectorToolchain(python, request)).toEqual(failure);
+    }
+  });
+
+  it.each([
+    { checked: false },
+    { checked: true, extra: true },
+    { tested: true },
+    { dependencyDir: '/output' },
+  ])('rejects an invalid dependency-check success: %j', async (result) => {
+    configure(JSON.stringify({ protocolVersion: 1, ok: true, result }) + '\n');
+    await expect(
+      runConnectorToolchain(python, {
+        protocolVersion: 1,
+        operation: 'dependencies.check',
+        projectDir: '/fixture/project',
+        options: { uvExecutable: '/fixture/uv', runtimeWheelDir: '/fixture/wheels' },
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+
   it('sends the build staging destination in stdin and accepts its matching absolute result', async () => {
     const request: ToolchainRequest = {
       protocolVersion: 1,
