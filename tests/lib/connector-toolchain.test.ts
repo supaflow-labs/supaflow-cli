@@ -203,7 +203,7 @@ describe('connector toolchain subprocess', () => {
       options: {
         uvExecutable: '/fixture/uv',
         nodeExecutable: process.execPath,
-        runtimeWheelDir: '/fixture/locked wheels',
+        offline: true,
         ...(live === undefined ? {} : { live }),
       },
     };
@@ -238,7 +238,7 @@ describe('connector toolchain subprocess', () => {
         options: {
           uvExecutable: '/fixture/uv',
           nodeExecutable: process.execPath,
-          runtimeWheelDir: '/fixture/wheels',
+          offline: true,
         },
       };
       await expect(runConnectorToolchain(python, request)).rejects.toMatchObject({
@@ -299,7 +299,7 @@ describe('connector toolchain subprocess', () => {
       options: {
         uvExecutable: '/fixture/uv',
         nodeExecutable: process.execPath,
-        runtimeWheelDir: '/fixture/wheels',
+        offline: true,
         outputDir: '/fixture/staging ; quoted',
       },
     };
@@ -335,7 +335,7 @@ describe('connector toolchain subprocess', () => {
       options: {
         uvExecutable: '/fixture/uv',
         nodeExecutable: process.execPath,
-        runtimeWheelDir: '/fixture/wheels',
+        offline: true,
         outputDir: '/fixture/staging',
       },
     };

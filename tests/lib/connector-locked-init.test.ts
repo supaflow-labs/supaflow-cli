@@ -37,7 +37,6 @@ const tools: LockedConnectorInitOptions = {
   pythonExecutable: '/tools/python',
   uvExecutable: '/tools/uv',
   nodeExecutable: process.execPath,
-  runtimeWheelDir: '/tools/wheels',
   runtimeWheels: ['/tools/wheels/sdk.whl'],
   requiredHostProtocol: 2,
   agentExecutionPython: '>=3.12,<3.15',
@@ -138,7 +137,7 @@ describe('locked project initialization composition', () => {
         options: {
           uvExecutable: tools.uvExecutable,
           nodeExecutable: tools.nodeExecutable,
-          runtimeWheelDir: tools.runtimeWheelDir,
+          offline: tools.offline,
         },
       });
       expect(existsSync(join(target, '.venv'))).toBe(false);

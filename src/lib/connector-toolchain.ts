@@ -75,7 +75,7 @@ export type ToolchainRequest =
       protocolVersion: 1;
       operation: 'check';
       projectDir: string;
-      options: { uvExecutable: string; nodeExecutable: string; runtimeWheelDir: string };
+      options: { uvExecutable: string; nodeExecutable: string; offline: boolean };
     }
   | {
       protocolVersion: 1;
@@ -84,7 +84,7 @@ export type ToolchainRequest =
       options: {
         uvExecutable: string;
         nodeExecutable: string;
-        runtimeWheelDir: string;
+        offline: boolean;
         live?: boolean;
       };
     }
@@ -95,7 +95,7 @@ export type ToolchainRequest =
       options: {
         uvExecutable: string;
         nodeExecutable: string;
-        runtimeWheelDir: string;
+        offline: boolean;
         outputDir: string;
       };
     }

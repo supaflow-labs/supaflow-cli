@@ -18,7 +18,6 @@ const tools = {
   pythonExecutable: '/tools/python',
   uvExecutable: '/tools/uv',
   nodeExecutable: '/tools/node',
-  runtimeWheelDir: '/cache/wheels',
 };
 const bootstrap = vi.fn<ConnectorAuthoringBootstrap>();
 let logs: ReturnType<typeof vi.spyOn>;
@@ -78,7 +77,7 @@ describe('inactive unauthenticated authoring adapters', () => {
       options: {
         uvExecutable: tools.uvExecutable,
         nodeExecutable: tools.nodeExecutable,
-        runtimeWheelDir: tools.runtimeWheelDir,
+        offline: true,
         outputDir: resolve('./fixture ; project/dist'),
       },
     },
@@ -89,7 +88,7 @@ describe('inactive unauthenticated authoring adapters', () => {
       options: {
         uvExecutable: tools.uvExecutable,
         nodeExecutable: tools.nodeExecutable,
-        runtimeWheelDir: tools.runtimeWheelDir,
+        offline: true,
       },
     },
     {
@@ -99,7 +98,7 @@ describe('inactive unauthenticated authoring adapters', () => {
       options: {
         uvExecutable: tools.uvExecutable,
         nodeExecutable: tools.nodeExecutable,
-        runtimeWheelDir: tools.runtimeWheelDir,
+        offline: true,
       },
     },
     {
@@ -109,7 +108,7 @@ describe('inactive unauthenticated authoring adapters', () => {
       options: {
         uvExecutable: tools.uvExecutable,
         nodeExecutable: tools.nodeExecutable,
-        runtimeWheelDir: tools.runtimeWheelDir,
+        offline: true,
         live: true,
       },
     },
@@ -184,7 +183,7 @@ describe('inactive unauthenticated authoring adapters', () => {
           options: {
             uvExecutable: tools.uvExecutable,
             nodeExecutable: tools.nodeExecutable,
-            runtimeWheelDir: tools.runtimeWheelDir,
+            offline: false,
             outputDir,
           },
         },
