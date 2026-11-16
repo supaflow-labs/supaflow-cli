@@ -18,7 +18,7 @@ import { formatGetJson, printOutput } from '../lib/output.js';
 
 export type ConnectorInitBootstrap = (
   targetDir: string,
-  options: { offline: boolean; signal: AbortSignal },
+  options: { offline: boolean; signal: AbortSignal; requiresPython?: string },
 ) => Promise<
   LockedConnectorInitOptions & { testkitVersion: string; projectRequiresPython: string }
 >;
@@ -80,6 +80,9 @@ export function registerConnectorInitCommand(
         const selected = await bootstrap(projectDir, {
           offline: options.offline === true,
           signal: controller.signal,
+          ...(options.requiresPython === undefined
+            ? {}
+            : { requiresPython: options.requiresPython }),
         });
         const metadata = {
           connectorName: options.name,

@@ -102,7 +102,7 @@ afterEach(async () => rm(root, { recursive: true, force: true }));
 
 describe('locked project initialization composition', () => {
   const projectEnvironment = {
-    bundleRequirementsFile: '/bundle/requirements.txt',
+    bundleRequirements: Buffer.from('checked bundled requirements'),
     uvCacheDir: '/cache/uv',
     agentTargets: [{ name: 'fixture', environment: {}, wheelTags: ['py3-none-any'] }],
   };
