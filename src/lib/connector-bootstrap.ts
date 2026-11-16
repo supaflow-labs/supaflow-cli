@@ -26,19 +26,12 @@ for name in names:
     except m.PackageNotFoundError: versions[name]=None
 print(json.dumps({'versions':versions,'sitePackages':sysconfig.get_path('purelib')}))`;
 
-/** Lazy composition of existing native preparation; no package acquisition of its own. */
-export async function bootstrapConnectorToolchain(
-  bundle: ConnectorToolchainBundle,
+/** Shared validation for trusted bundle bytes and direct inactive callers. */
+export function validateConnectorToolchainBundle(
+  value: unknown,
   requirements: Uint8Array,
-  options: {
-    cacheDir: string;
-    configurationDir: string;
-    offline: boolean;
-    uvExecutable?: string;
-    signal?: AbortSignal;
-    timeoutMs?: number;
-  },
-): Promise<{ pythonExecutable: string; uvExecutable: string; nodeExecutable: string }> {
+): asserts value is ConnectorToolchainBundle {
+  const bundle = value as ConnectorToolchainBundle | null;
   const versions = [
     bundle?.toolchainVersion,
     bundle?.sdkVersion,
@@ -55,7 +48,34 @@ export async function bootstrapConnectorToolchain(
     typeof bundle.requirementsSha256 !== 'string' ||
     !/^[a-f0-9]{64}$/.test(bundle.requirementsSha256) ||
     !(requirements instanceof Uint8Array) ||
-    requirements.byteLength === 0 ||
+    requirements.byteLength === 0
+  )
+    throw new ToolchainTransportError(
+      'INVALID_INPUT',
+      'Invalid bundled connector toolchain selection',
+    );
+  if (createHash('sha256').update(requirements).digest('hex') !== bundle.requirementsSha256)
+    throw new ToolchainTransportError(
+      'INVALID_INPUT',
+      'Bundled connector requirements checksum differs; reinstall the CLI',
+    );
+}
+
+/** Lazy composition of existing native preparation; no package acquisition of its own. */
+export async function bootstrapConnectorToolchain(
+  bundle: ConnectorToolchainBundle,
+  requirements: Uint8Array,
+  options: {
+    cacheDir: string;
+    configurationDir: string;
+    offline: boolean;
+    uvExecutable?: string;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  },
+): Promise<{ pythonExecutable: string; uvExecutable: string; nodeExecutable: string }> {
+  validateConnectorToolchainBundle(bundle, requirements);
+  if (
     typeof options.offline !== 'boolean' ||
     [options.cacheDir, options.configurationDir].some(
       (value) => typeof value !== 'string' || !isAbsolute(value) || value.includes('\0'),
@@ -66,11 +86,6 @@ export async function bootstrapConnectorToolchain(
       'Invalid bundled connector toolchain selection',
     );
   const snapshot = Buffer.from(requirements);
-  if (createHash('sha256').update(snapshot).digest('hex') !== bundle.requirementsSha256)
-    throw new ToolchainTransportError(
-      'INVALID_INPUT',
-      'Bundled connector requirements checksum differs; reinstall the CLI',
-    );
   const prerequisite = await discoverConnectorAuthoringPrerequisites(
     bundle.requiresPython,
     options,
