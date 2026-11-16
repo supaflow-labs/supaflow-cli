@@ -149,7 +149,7 @@ describe('connector toolchain subprocess', () => {
     },
   );
 
-  it('sends the checked test request and returns its exact success shape', async () => {
+  it.each([undefined, false, true])('forwards explicit live test selection %s', async (live) => {
     const request: ToolchainRequest = {
       protocolVersion: 1,
       operation: 'test',
@@ -158,6 +158,7 @@ describe('connector toolchain subprocess', () => {
         uvExecutable: '/fixture/uv',
         nodeExecutable: process.execPath,
         runtimeWheelDir: '/fixture/locked wheels',
+        ...(live === undefined ? {} : { live }),
       },
     };
     const passed = { protocolVersion: 1, ok: true, result: { tested: true } };
