@@ -37,6 +37,7 @@ import crypto from 'node:crypto';
 import { VERSION } from '../version.js';
 import { isSchemaObjectUnavailable } from '../lib/schema-availability.js';
 import { parseKeylessObjectHandling } from '../lib/pipeline-config.js';
+import { CONNECTOR_AUTHORING_ENABLED } from '../lib/connector-authoring-feature.js';
 
 const execFileP = promisify(execFile);
 const SERVER_VERSION = VERSION;
@@ -481,7 +482,169 @@ const pipelineCreateFromPlanOutputSchema = {
 };
 
 // ---- the tool table: 1:1 with the CLI ----
+const authoringProjectProperties = {
+  project_dir: {
+    type: 'string',
+    minLength: 1,
+    description: 'Local connector project path; omitted uses the MCP process working directory.',
+  },
+  offline: {
+    type: 'boolean',
+    description: 'Use only locally available uv inputs; fail on a cold cache miss.',
+  },
+};
+function authoringArgv(command: string[], args: ToolArgs) {
+  const argv = ['connectors', ...command];
+  opt(argv, '--project', args.project_dir);
+  bool(argv, '--offline', args.offline);
+  return argv;
+}
+const AUTHORING_TOOLS: ToolSpec[] = [
+  {
+    name: 'connectors_init',
+    description:
+      'Create a local connector project using the public SDK/toolchain. Requires Python and uv, without login. Does not deploy or reserve a group.',
+    write: true,
+    timeoutMs: 300000,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string', minLength: 1 },
+        name: {
+          type: 'string',
+          minLength: 1,
+          description: 'Canonical local connector name, for example ACME.',
+        },
+        group: {
+          type: 'string',
+          minLength: 1,
+          description: 'Package group, for example com.acme. Ownership is checked at deployment.',
+        },
+        template: { type: 'string', enum: ['custom-source', 'api-source', 'sql-source'] },
+        display_name: { type: 'string' },
+        connector_version: { type: 'string' },
+        requires_python: { type: 'string' },
+        offline: authoringProjectProperties.offline,
+      },
+      required: ['directory', 'name', 'group'],
+      additionalProperties: false,
+    },
+    build: (args) => {
+      const argv = [
+        'connectors',
+        'init',
+        S(args.directory),
+        '--name',
+        S(args.name),
+        '--group',
+        S(args.group),
+      ];
+      opt(argv, '--template', args.template);
+      opt(argv, '--display-name', args.display_name);
+      opt(argv, '--connector-version', args.connector_version);
+      opt(argv, '--requires-python', args.requires_python);
+      bool(argv, '--offline', args.offline);
+      return argv;
+    },
+  },
+  ...(
+    [
+      [
+        'check',
+        'Check committed source, manifest and locks without repairing them. Preparation may create or sync the local .venv.',
+      ],
+      [
+        'doctor',
+        'Report local authoring and runtime compatibility declarations without creating the project .venv. This is not deployment approval.',
+      ],
+      [
+        'manifest_check',
+        'Check canonical connector.yaml without rewriting it. Preparation may sync the local .venv.',
+      ],
+      [
+        'manifest_generate',
+        'Explicitly regenerate canonical connector.yaml using the single bundled sanitizer.',
+      ],
+    ] as const
+  ).map(([name, description]) => ({
+    name: 'connectors_' + name,
+    description: description + ' No Supaflow login required.',
+    readOnly: name === 'doctor',
+    write: name !== 'doctor',
+    timeoutMs: 300000,
+    inputSchema: {
+      type: 'object',
+      properties: authoringProjectProperties,
+      additionalProperties: false,
+    },
+    build: (args: ToolArgs) => authoringArgv(name.split('_'), args),
+  })),
+  {
+    name: 'connectors_test',
+    description:
+      'Check the local connector and run portable/project tests. Live tests run only when live=true; no Supaflow login required.',
+    write: true,
+    timeoutMs: 300000,
+    inputSchema: {
+      type: 'object',
+      properties: { ...authoringProjectProperties, live: { type: 'boolean' } },
+      additionalProperties: false,
+    },
+    build: (args) => {
+      const argv = authoringArgv(['test'], args);
+      bool(argv, '--live', args.live);
+      return argv;
+    },
+  },
+  {
+    name: 'connectors_build',
+    description:
+      'Build/rebuild the local dist/<artifact>/<version> artifact. Explicit output uses a fresh exact directory. Never deploys or publishes; no Supaflow login required.',
+    write: true,
+    timeoutMs: 300000,
+    inputSchema: {
+      type: 'object',
+      properties: { ...authoringProjectProperties, output: { type: 'string', minLength: 1 } },
+      additionalProperties: false,
+    },
+    build: (args) => {
+      const argv = authoringArgv(['build'], args);
+      opt(argv, '--output', args.output);
+      return argv;
+    },
+  },
+  {
+    name: 'connectors_lock',
+    description:
+      'Select an initial runtime or refresh dependency locks while preserving an existing runtime.lock. check=true is read-only; replacing a runtime requires upgrade_runtime=true. No Supaflow login required.',
+    write: true,
+    timeoutMs: 300000,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...authoringProjectProperties,
+        check: { type: 'boolean' },
+        upgrade_runtime: { type: 'boolean' },
+        to: {
+          type: 'string',
+          minLength: 1,
+          description:
+            'Explicit SDK version for SDK-only projects; runtime version otherwise. Requires upgrade_runtime=true.',
+        },
+      },
+      additionalProperties: false,
+    },
+    build: (args) => {
+      const argv = authoringArgv(['lock'], args);
+      bool(argv, '--check', args.check);
+      bool(argv, '--upgrade-runtime', args.upgrade_runtime);
+      opt(argv, '--to', args.to);
+      return argv;
+    },
+  },
+];
 export const TOOLS: ToolSpec[] = [
+  ...(CONNECTOR_AUTHORING_ENABLED ? AUTHORING_TOOLS : []),
   // ---------- read-only ----------
   {
     name: 'auth_status',

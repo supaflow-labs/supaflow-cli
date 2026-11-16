@@ -6,9 +6,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { registerBundledConnectorAuthoringCommands } from './connector-bundled-authoring.js';
-
-// Enable separately after packed authoring and public-package availability gates.
-const CONNECTOR_AUTHORING_ENABLED = false;
+import { CONNECTOR_AUTHORING_ENABLED } from '../lib/connector-authoring-feature.js';
 
 function formatCapabilities(caps: string[]): string {
   if (!caps || caps.length === 0) return '';
