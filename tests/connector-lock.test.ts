@@ -1,11 +1,20 @@
 import { Command } from 'commander';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { lstat } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../src/lib/connector-lock.js', async (original) => {
   const module = await original<typeof import('../src/lib/connector-lock.js')>();
-  return { ...module, refreshConnectorDependencyLocks: vi.fn() };
+  return {
+    ...module,
+    refreshConnectorDependencyLocks: vi.fn(),
+    initializeConnectorRuntimeLocks: vi.fn(),
+  };
 });
+vi.mock('node:fs/promises', async (original) => ({
+  ...(await original<typeof import('node:fs/promises')>()),
+  lstat: vi.fn(),
+}));
 vi.mock('../src/lib/connector-toolchain.js', async (original) => {
   const module = await original<typeof import('../src/lib/connector-toolchain.js')>();
   return { ...module, runConnectorToolchain: vi.fn() };
@@ -13,6 +22,7 @@ vi.mock('../src/lib/connector-toolchain.js', async (original) => {
 import {
   refreshConnectorDependencyLocks,
   ConnectorLockOperationError,
+  initializeConnectorRuntimeLocks,
 } from '../src/lib/connector-lock.js';
 import { runConnectorToolchain, ToolchainTransportError } from '../src/lib/connector-toolchain.js';
 import {
@@ -34,6 +44,8 @@ beforeEach(() => {
   process.exitCode = undefined;
   listeners = [process.listeners('SIGINT'), process.listeners('SIGTERM')];
   bootstrap.mockResolvedValue(tools);
+  vi.mocked(lstat).mockResolvedValue({} as Awaited<ReturnType<typeof lstat>>);
+  vi.mocked(initializeConnectorRuntimeLocks).mockResolvedValue();
   vi.mocked(refreshConnectorDependencyLocks).mockResolvedValue();
   vi.mocked(runConnectorToolchain).mockResolvedValue({
     protocolVersion: 1,
@@ -59,6 +71,53 @@ const output = () => {
   return JSON.parse(logs.mock.calls[0][0] as string);
 };
 describe('inactive ordinary connector lock command', () => {
+  it.each([true, false])(
+    'selects an initial runtime only for an absent lock (json=%s)',
+    async (json) => {
+      const runtimeProposal = {
+        sdkVersion: '1.2.3',
+        runtimeVersion: '2.0.0',
+        requiredHostProtocol: 2,
+        agentExecutionPython: '>=3.14,<3.15',
+      };
+      bootstrap.mockResolvedValue({ ...tools, runtimeProposal });
+      vi.mocked(lstat).mockRejectedValue(Object.assign(new Error('absent'), { code: 'ENOENT' }));
+      await parse([...(json ? ['--json'] : []), 'connectors', 'lock', '--offline']);
+      expect(initializeConnectorRuntimeLocks).toHaveBeenCalledExactlyOnceWith(
+        process.cwd(),
+        { ...tools, runtimeProposal },
+        runtimeProposal,
+        { offline: true, signal: bootstrap.mock.calls[0][1].signal, timeoutMs: 17_000 },
+      );
+      expect(refreshConnectorDependencyLocks).not.toHaveBeenCalled();
+      expect(runConnectorToolchain).not.toHaveBeenCalled();
+      if (json) expect(output()).toEqual({ locked: true });
+      else
+        expect(logs).toHaveBeenCalledExactlyOnceWith(
+          'Initial runtime and dependency locks written.',
+        );
+      expect(process.exitCode).toBeUndefined();
+    },
+  );
+
+  it('requires a recommendation for initial selection without starting the producer', async () => {
+    vi.mocked(lstat).mockRejectedValue(Object.assign(new Error('absent'), { code: 'ENOENT' }));
+    await parse(['--json', 'connectors', 'lock']);
+    expect(output().error.code).toBe('UNAVAILABLE');
+    expect(initializeConnectorRuntimeLocks).not.toHaveBeenCalled();
+    expect(refreshConnectorDependencyLocks).not.toHaveBeenCalled();
+  });
+
+  it('does not turn unreadable locks into initial selection or expose filesystem details', async () => {
+    vi.mocked(lstat).mockRejectedValue(
+      Object.assign(new Error('PRIVATE_STORAGE_DETAIL'), { code: 'EACCES' }),
+    );
+    await parse(['--json', 'connectors', 'lock']);
+    expect(output().error.code).toBe('INTERNAL_ERROR');
+    expect(JSON.stringify(output())).not.toContain('PRIVATE_STORAGE_DETAIL');
+    expect(initializeConnectorRuntimeLocks).not.toHaveBeenCalled();
+    expect(refreshConnectorDependencyLocks).not.toHaveBeenCalled();
+  });
   it.each([false, true])('forwards supplied inventory through lock check=%s', async (checking) => {
     const agentTargets = [{ name: 'wire-fixture', environment: {}, wheelTags: ['py3-none-any'] }];
     bootstrap.mockResolvedValue({ ...tools, agentTargets });

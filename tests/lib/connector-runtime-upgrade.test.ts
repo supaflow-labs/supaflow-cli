@@ -12,7 +12,10 @@ vi.mock('../../src/lib/connector-toolchain.js', async (original) => ({
   runConnectorToolchain: vi.fn(),
 }));
 import { runConnectorToolchain } from '../../src/lib/connector-toolchain.js';
-import { upgradeConnectorRuntimeLocks } from '../../src/lib/connector-lock.js';
+import {
+  upgradeConnectorRuntimeLocks,
+  initializeConnectorRuntimeLocks,
+} from '../../src/lib/connector-lock.js';
 const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
 const files = ['runtime.lock', 'deps/pyproject.toml', 'deps/uv.lock'];
 const old = ['old runtime selection\n', 'old dependency metadata\n', 'old dependency lock\n'];
@@ -55,6 +58,70 @@ afterEach(async () => {
 const contents = () => Promise.all(files.map((name) => fs.readFile(join(root, name), 'utf8')));
 const run = (signal?: AbortSignal) =>
   upgradeConnectorRuntimeLocks(root, tools, selection, { offline: true, signal });
+const initialize = (signal?: AbortSignal) =>
+  initializeConnectorRuntimeLocks(root, tools, selection, { offline: true, signal });
+
+it('initializes a complete three-file lock without altering authored inputs', async () => {
+  await Promise.all(files.map((name) => fs.rm(join(root, name))));
+  await initialize();
+  expect(await contents()).toEqual(next);
+  expect(vi.mocked(runConnectorToolchain).mock.calls[0][1]).toMatchObject({
+    operation: 'runtime.propose',
+    options: { ...selection, initialSelection: true, agentTargets: tools.agentTargets },
+  });
+  expect(await fs.readFile(join(root, 'pyproject.toml'), 'utf8')).toBe('authored root constraints');
+  expect(await fs.readFile(join(root, 'deps/uv.toml'), 'utf8')).toBe(
+    'authored registry configuration',
+  );
+});
+
+it('refuses initial selection with an existing runtime lock before running a producer', async () => {
+  await expect(initialize()).rejects.toMatchObject({ code: 'LOCK_FAILED' });
+  expect(runConnectorToolchain).not.toHaveBeenCalled();
+  expect(await contents()).toEqual(old);
+});
+
+it.each([0, 1, 2])(
+  'restores initially absent locks after publication failure at file %s',
+  async (position) => {
+    await Promise.all(files.map((name) => fs.rm(join(root, name))));
+    vi.mocked(fs.rename).mockImplementation(async (from, to) => {
+      if (basename(String(from)) === `new-${position}`) throw Error('PRIVATE_RENAME_DETAIL');
+      return actual.rename(from, to);
+    });
+    await expect(initialize()).rejects.toMatchObject({
+      code: 'LOCK_PUBLICATION_FAILED',
+      message: expect.stringContaining('original files restored'),
+    });
+    for (const name of files)
+      await expect(fs.lstat(join(root, name))).rejects.toMatchObject({ code: 'ENOENT' });
+  },
+);
+
+it('restores existing dependency files and removes the new runtime after initial failure', async () => {
+  await fs.rm(join(root, 'runtime.lock'));
+  vi.mocked(fs.rename).mockImplementation(async (from, to) => {
+    if (basename(String(from)) === 'new-2') throw Error('PRIVATE_RENAME_DETAIL');
+    return actual.rename(from, to);
+  });
+  await expect(initialize()).rejects.toMatchObject({ code: 'LOCK_PUBLICATION_FAILED' });
+  await expect(fs.lstat(join(root, 'runtime.lock'))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await fs.readFile(join(root, files[1]), 'utf8')).toBe(old[1]);
+  expect(await fs.readFile(join(root, files[2]), 'utf8')).toBe(old[2]);
+});
+
+it('preserves a runtime lock that appears during initial generation', async () => {
+  await fs.rm(join(root, 'runtime.lock'));
+  const previous = vi.mocked(runConnectorToolchain).getMockImplementation()!;
+  vi.mocked(runConnectorToolchain).mockImplementation(async (...args) => {
+    const response = await previous(...args);
+    await fs.writeFile(join(root, 'runtime.lock'), 'new authored selection');
+    return response;
+  });
+  await expect(initialize()).rejects.toMatchObject({ code: 'PROCESS_FAILED' });
+  expect(await contents()).toEqual(['new authored selection', old[1], old[2]]);
+  expect(fs.rename).not.toHaveBeenCalled();
+});
 
 it('publishes the checked three-file selection and returns exact bytes for the diff', async () => {
   const change = await run();

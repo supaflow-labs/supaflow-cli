@@ -162,6 +162,7 @@ export type ToolchainRequest =
         requiredHostProtocol: number;
         agentExecutionPython: string;
         offline: boolean;
+        initialSelection?: boolean;
         agentTargets?: readonly ConnectorAgentTarget[];
       };
     }

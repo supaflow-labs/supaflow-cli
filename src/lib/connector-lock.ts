@@ -72,11 +72,27 @@ export async function upgradeConnectorRuntimeLocks(
   return refreshLocks(projectDir, tools, options, selection);
 }
 
+/** Initial selection shares the upgrade writer, but cannot replace a runtime lock. */
+export async function initializeConnectorRuntimeLocks(
+  projectDir: string,
+  tools: LockTools,
+  selection: ConnectorRuntimeProposal,
+  options: LockOptions,
+): Promise<void> {
+  if (!selection)
+    throw new ToolchainTransportError(
+      'INVALID_INPUT',
+      'Choose the bundled runtime recommendation before initial locking',
+    );
+  await refreshLocks(projectDir, tools, options, selection, true);
+}
+
 async function refreshLocks(
   projectDir: string,
   tools: LockTools,
   options: LockOptions,
   selection?: ConnectorRuntimeProposal,
+  initial = false,
 ): Promise<ConnectorRuntimeLockChange> {
   const files: readonly (typeof INPUTS)[number][] = selection ? ['runtime.lock', ...FILES] : FILES;
   const active = () => {
@@ -109,17 +125,22 @@ async function refreshLocks(
       'Cannot read connector lock inputs; check project permissions',
     );
   }
-  if (before[1] === null)
+  if (before[1] === null && !initial)
     throw new ConnectorLockOperationError(
       'MISSING_RUNTIME_LOCK',
       'Commit pyproject.toml and runtime.lock before locking dependencies; use connectors init for initial selection',
+    );
+  if (initial && before[1] !== null)
+    throw new ConnectorLockOperationError(
+      'LOCK_FAILED',
+      'Initial selection requires an absent runtime.lock; use --upgrade-runtime for an existing lock',
     );
   if (before[0] === null)
     throw new ConnectorLockOperationError(
       'LOCK_FAILED',
       'Declare pyproject.toml before locking connector dependencies',
     );
-  const runtimeBefore = before[1];
+  const runtimeBefore = before[1] ?? Buffer.alloc(0);
   const previous = files.map((name) => before[INPUTS.indexOf(name)]);
   const scratch = await mkdtemp(join(tmpdir(), 'supaflow-connector-lock-'));
   let replacement: string | undefined;
@@ -136,6 +157,7 @@ async function refreshLocks(
             uvExecutable: tools.uvExecutable,
             outputDir,
             offline: options.offline,
+            ...(initial ? { initialSelection: true } : {}),
             ...(tools.agentTargets === undefined ? {} : { agentTargets: tools.agentTargets }),
           },
         }
