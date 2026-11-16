@@ -7,6 +7,14 @@ vi.mock('../src/lib/connector-toolchain.js', async (original) => {
   const module = await original<typeof import('../src/lib/connector-toolchain.js')>();
   return { ...module, runConnectorToolchain: vi.fn() };
 });
+vi.mock('../src/lib/connector-build.js', async (original) => ({
+  ...(await original<typeof import('../src/lib/connector-build.js')>()),
+  buildVersionedConnectorArtifact: vi.fn(),
+}));
+import {
+  buildVersionedConnectorArtifact,
+  ConnectorBuildOperationError,
+} from '../src/lib/connector-build.js';
 import { runConnectorToolchain, ToolchainTransportError } from '../src/lib/connector-toolchain.js';
 import { CliError, ErrorCode, formatError } from '../src/lib/errors.js';
 import {
@@ -71,7 +79,7 @@ describe('inactive unauthenticated authoring adapters', () => {
   });
   it.each([
     {
-      args: ['build'],
+      args: ['build', '--output', 'dist'],
       operation: 'artifact.build',
       result: { artifactDir: resolve('./fixture ; project/dist') },
       options: {
@@ -163,6 +171,75 @@ describe('inactive unauthenticated authoring adapters', () => {
     },
   );
 
+  it.each([true, false])('publishes the default versioned output (json=%s)', async (json) => {
+    const project = resolve('./fixture ; project');
+    const artifactDir = resolve(project, 'dist/fixture/1.2.3.dev1');
+    vi.mocked(buildVersionedConnectorArtifact).mockResolvedValue(artifactDir);
+    await parse([
+      ...(json ? ['--json'] : []),
+      'connectors',
+      'build',
+      '--project',
+      project,
+      '--offline',
+    ]);
+    expect(buildVersionedConnectorArtifact).toHaveBeenCalledExactlyOnceWith(project, tools, {
+      offline: true,
+      signal: bootstrap.mock.calls[0][1].signal,
+      timeoutMs: 10_000,
+    });
+    expect(runConnectorToolchain).not.toHaveBeenCalled();
+    if (json) expect(jsonOutput()).toEqual({ artifactDir });
+    else expect(logs).toHaveBeenCalledExactlyOnceWith(`Built connector artifact: ${artifactDir}`);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('keeps the producer error from default publication', async () => {
+    vi.mocked(buildVersionedConnectorArtifact).mockRejectedValue(
+      new ConnectorBuildOperationError('CHECK_FAILED', 'Refresh the manifest'),
+    );
+    await parse(['--json', 'connectors', 'build']);
+    expect(jsonOutput()).toEqual({
+      error: { code: 'CHECK_FAILED', message: 'Refresh the manifest' },
+    });
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('reports successful publication even when interrupted during cutover', async () => {
+    vi.mocked(buildVersionedConnectorArtifact).mockImplementation(
+      async (_project, _tools, options) => {
+        process
+          .listeners('SIGINT')
+          .filter((listener) => !signalListeners.SIGINT.includes(listener))[0]();
+        expect(options.signal!.aborted).toBe(true);
+        return '/project/dist/fixture/1.2.3.dev1';
+      },
+    );
+    await parse(['--json', 'connectors', 'build']);
+    expect(jsonOutput()).toEqual({ artifactDir: '/project/dist/fixture/1.2.3.dev1' });
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('preserves recovery instructions over an interruption', async () => {
+    vi.mocked(buildVersionedConnectorArtifact).mockImplementation(async () => {
+      process
+        .listeners('SIGINT')
+        .filter((listener) => !signalListeners.SIGINT.includes(listener))[0]();
+      throw new ConnectorBuildOperationError(
+        'BUILD_PUBLICATION_FAILED',
+        'Restore the retained previous artifact',
+      );
+    });
+    await parse(['--json', 'connectors', 'build']);
+    expect(jsonOutput()).toEqual({
+      error: {
+        code: 'BUILD_PUBLICATION_FAILED',
+        message: 'Restore the retained previous artifact',
+      },
+    });
+    expect(process.exitCode).toBe(1);
+  });
+
   it.each(['./output ; folder', '/absolute/artifact'])(
     'resolves build output %s from the project',
     async (output) => {
@@ -191,6 +268,7 @@ describe('inactive unauthenticated authoring adapters', () => {
       );
       expect(logs).toHaveBeenCalledExactlyOnceWith(`Built connector artifact: ${outputDir}`);
       expect(errors).not.toHaveBeenCalled();
+      expect(buildVersionedConnectorArtifact).not.toHaveBeenCalled();
     },
   );
 
@@ -213,7 +291,7 @@ describe('inactive unauthenticated authoring adapters', () => {
       ok: false,
       error: { code: 'BUILD_FAILED', message: 'Artifact output already exists' },
     });
-    await parse(['--json', 'connectors', 'build']);
+    await parse(['--json', 'connectors', 'build', '--output', 'dist']);
     expect(runConnectorToolchain).toHaveBeenCalledOnce();
     expect(jsonOutput()).toEqual({
       error: { code: 'BUILD_FAILED', message: 'Artifact output already exists' },
