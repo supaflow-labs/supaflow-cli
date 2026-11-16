@@ -189,6 +189,7 @@ import {cpSync,readFileSync,readdirSync,existsSync,mkdirSync,writeFileSync,statS
 import {join} from 'node:path';
 import {registerConnectorInitCommand} from ${JSON.stringify(initModule)};
 import {registerConnectorLockCommand} from ${JSON.stringify(lockModule)};
+import {refreshConnectorDependencyLocks} from ${JSON.stringify(pathToFileURL(join(root, 'compiled/lib/connector-lock.js')).href)};
 import * as templates from ${JSON.stringify(templatesModule)};
 import {runConnectorToolchain} from ${JSON.stringify(transportModule)};
 import {prepareOfflineConnectorEnvironment,prepareConnectorProjectEnvironment} from ${JSON.stringify(environmentModule)};
@@ -196,6 +197,7 @@ import {registerConnectorAuthoringCommands} from ${JSON.stringify(commandsModule
 import commander from ${JSON.stringify(commanderModule)};
 const tools=${JSON.stringify(options)},target=${JSON.stringify(target)},id=${JSON.stringify(templateId)};
 const projectEnvironment={bundleRequirementsFile:${JSON.stringify(join(root, 'bundle-requirements.txt'))},uvCacheDir:${JSON.stringify(join(root, 'authoring-cache'))},agentTargets:${JSON.stringify([agentTarget])}};
+tools.agentTargets=projectEnvironment.agentTargets;
 const render=id==='custom-source'?templates.renderCustomSourceTemplate:id==='api-source'?templates.renderApiSourceTemplate:templates.renderSqlSourceTemplate;
 const template=render(${JSON.stringify(metadata)});
 if(id==='custom-source') {
@@ -298,6 +300,12 @@ async function checkLock() {
 const beforeLockCheck=projectFiles(lockProject);
 assert.deepEqual(await checkLock(),{checked:true});
 assert.equal(process.exitCode,undefined);assert.deepEqual(projectFiles(lockProject),beforeLockCheck);
+const coveredTargets=tools.agentTargets;
+tools.agentTargets=[{...coveredTargets[0],name:'fixture-uncovered-agent',wheelTags:['cp399-cp399-linux_x86_64']}];
+assert.equal((await checkLock()).error.code,'LOCK_FAILED');assert.equal(process.exitCode,1);process.exitCode=undefined;
+assert.deepEqual(projectFiles(lockProject),beforeLockCheck);
+await assert.rejects(refreshConnectorDependencyLocks(lockProject,tools,{offline:true}),error=>error.code==='LOCK_FAILED');
+assert.deepEqual(projectFiles(lockProject),beforeLockCheck);tools.agentTargets=coveredTargets;
 writeFileSync(lockRootPath,editedRoot.replace('packaging>=24','packaging>=900'));
 const staleLockInputs=projectFiles(lockProject);
 assert.equal((await checkLock()).error.code,'LOCK_FAILED');assert.equal(process.exitCode,1);process.exitCode=undefined;
@@ -307,7 +315,7 @@ assert.deepEqual(projectFiles(target),beforeExport);
 assert.deepEqual(await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'dependencies.check',projectDir:target,options:{uvExecutable:tools.uvExecutable,offline:true}}),{protocolVersion:1,ok:true,result:{checked:true}});
 assert.deepEqual(projectFiles(target),beforeExport);
 const requirementsDir=target+'-requirements';
-const exported=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'dependencies.export',projectDir:target,options:{uvExecutable:tools.uvExecutable,outputDir:requirementsDir}});
+const exported=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'dependencies.export',projectDir:target,options:{uvExecutable:tools.uvExecutable,outputDir:requirementsDir,agentTargets:tools.agentTargets}});
 assert.deepEqual(exported,{protocolVersion:1,ok:true,result:{requirementsDir}});
 const python=await prepareOfflineConnectorEnvironment(target+'-runtime',readFileSync(join(requirementsDir,'requirements.txt')),{
  uvExecutable:tools.uvExecutable,pythonExecutable:tools.pythonExecutable,

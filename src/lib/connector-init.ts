@@ -176,6 +176,9 @@ export async function initializeLockedConnectorProject(
           requiredHostProtocol: tools.requiredHostProtocol,
           agentExecutionPython: tools.agentExecutionPython,
           offline: tools.offline,
+          ...(tools.projectEnvironment === undefined
+            ? {}
+            : { agentTargets: tools.projectEnvironment.agentTargets }),
         },
       });
       await rename(join(proposal, 'runtime.lock'), join(staging, 'runtime.lock'));

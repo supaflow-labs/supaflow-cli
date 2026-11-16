@@ -60,7 +60,11 @@ export function registerConnectorLockCommand(
               protocolVersion: 1,
               operation: 'dependencies.check',
               projectDir,
-              options: { uvExecutable: tools.uvExecutable, offline: context.offline },
+              options: {
+                uvExecutable: tools.uvExecutable,
+                offline: context.offline,
+                ...(tools.agentTargets === undefined ? {} : { agentTargets: tools.agentTargets }),
+              },
             },
             { ...context, timeoutMs: transport.timeoutMs },
           );

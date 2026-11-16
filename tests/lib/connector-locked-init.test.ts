@@ -134,6 +134,9 @@ describe('locked project initialization composition', () => {
       transport,
     );
     expect(prepareConnectorProjectEnvironment).toHaveBeenCalledOnce();
+    expect(vi.mocked(runConnectorToolchain).mock.calls[0][1]).toMatchObject({
+      options: { agentTargets: projectEnvironment.agentTargets },
+    });
     expect(
       vi.mocked(runConnectorToolchain).mock.calls.map((call) => [call[0], call[1].operation]),
     ).toEqual([

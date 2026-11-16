@@ -6,6 +6,7 @@ import {
   ToolchainTransportError,
   type AuthoringDiagnostics,
   type ToolchainRequest,
+  type ConnectorAgentTarget,
 } from '../lib/connector-toolchain.js';
 import { VERSION } from '../version.js';
 
@@ -21,6 +22,7 @@ export interface ConnectorAuthoringTools {
   pythonExecutable: string;
   uvExecutable: string;
   nodeExecutable: string;
+  agentTargets?: readonly ConnectorAgentTarget[];
 }
 
 export type ConnectorAuthoringBootstrap = (
