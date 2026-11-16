@@ -130,8 +130,9 @@ print(json.dumps([*versions,f'>={major}.{minor},<{major}.{minor+1}']))
         join(process.cwd(), 'node_modules/commander/index.js'),
       ).href;
       const program = `import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import {readFileSync,readdirSync,existsSync} from 'node:fs';
+import {readFileSync,readdirSync,existsSync,mkdirSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {initializeLockedConnectorProject} from ${JSON.stringify(initModule)};
 import * as templates from ${JSON.stringify(templatesModule)};
@@ -145,6 +146,21 @@ const template=render(${JSON.stringify(metadata)});
 await initializeLockedConnectorProject(target,template,tools);
 for(const [path,raw] of Object.entries(template.files))assert.equal(readFileSync(join(target,path),'utf8'),raw);
 const before=readFileSync(join(target,'runtime.lock'));
+const inspection=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'runtime.inspect',projectDir:target,options:{}});
+assert.deepEqual(inspection,{protocolVersion:1,ok:true,result:{runtime:JSON.parse(before),runtimeSha256:createHash('sha256').update(before).digest('hex')}});
+if(id==='custom-source') {
+ const missing=target+'-missing';
+ const absent=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'runtime.inspect',projectDir:missing,options:{}});
+ assert.equal(absent.ok,false);assert.equal(absent.error.code,'MISSING_RUNTIME_LOCK');assert.equal(existsSync(missing),false);
+ const invalid=target+'-invalid';mkdirSync(invalid);
+ const tooLarge=JSON.parse(before);tooLarge.connectorApiVersion=Number.MAX_SAFE_INTEGER+1;
+ for(const raw of ['{"schemaVersion":2}','{"schemaVersion":',JSON.stringify(tooLarge)]) {
+  writeFileSync(join(invalid,'runtime.lock'),raw);
+  const malformed=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'runtime.inspect',projectDir:invalid,options:{}});
+  assert.equal(malformed.ok,false);assert.equal(malformed.error.code,'CHECK_FAILED');
+  assert.equal(readFileSync(join(invalid,'runtime.lock'),'utf8'),raw);
+ }
+}
 const result=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'check',projectDir:target,options:{uvExecutable:tools.uvExecutable,nodeExecutable:tools.nodeExecutable,runtimeWheelDir:tools.runtimeWheelDir}});
 assert.deepEqual(result,{protocolVersion:1,ok:true,result:{checked:true}});
 assert.deepEqual(readFileSync(join(target,'runtime.lock')),before);
