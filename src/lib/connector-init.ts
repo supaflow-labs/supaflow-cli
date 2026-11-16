@@ -37,7 +37,8 @@ export interface LockedConnectorInitOptions {
   pythonExecutable: string;
   uvExecutable: string;
   nodeExecutable: string;
-  runtimeWheels: string[];
+  sdkVersion: string;
+  runtimeVersion: string | null;
   requiredHostProtocol: number;
   agentExecutionPython: string;
   offline: boolean;
@@ -164,7 +165,8 @@ export async function initializeLockedConnectorProject(
         options: {
           uvExecutable: tools.uvExecutable,
           outputDir: proposal,
-          runtimeWheels: tools.runtimeWheels,
+          sdkVersion: tools.sdkVersion,
+          runtimeVersion: tools.runtimeVersion,
           requiredHostProtocol: tools.requiredHostProtocol,
           agentExecutionPython: tools.agentExecutionPython,
           offline: tools.offline,
