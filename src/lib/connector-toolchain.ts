@@ -91,6 +91,12 @@ export type ToolchainRequest =
     }
   | {
       protocolVersion: 1;
+      operation: 'dependencies.export';
+      projectDir: string;
+      options: { uvExecutable: string; runtimeWheelDir: string; outputDir: string };
+    }
+  | {
+      protocolVersion: 1;
       operation: 'runtime.propose';
       projectDir: string;
       options: {
@@ -119,6 +125,7 @@ export type ToolchainResponse =
         | { tested: true }
         | { artifactDir: string }
         | { dependencyDir: string }
+        | { requirementsDir: string }
         | { proposalDir: string }
         | { diagnostics: AuthoringDiagnostics }
         | { manifest: 'connector.yaml' };
@@ -138,7 +145,7 @@ function keys(value: Record<string, unknown>, expected: string[]): boolean {
 
 function stagingDirectory(
   result: Record<string, unknown>,
-  field: 'artifactDir' | 'dependencyDir' | 'proposalDir',
+  field: 'artifactDir' | 'dependencyDir' | 'requirementsDir' | 'proposalDir',
   outputDir: string,
 ): boolean {
   const value = result[field];
@@ -296,11 +303,13 @@ function response(
                 ? stagingDirectory(result, 'artifactDir', request.options.outputDir)
                 : request.operation === 'dependencies.generate'
                   ? stagingDirectory(result, 'dependencyDir', request.options.outputDir)
-                  : request.operation === 'runtime.propose'
-                    ? stagingDirectory(result, 'proposalDir', request.options.outputDir)
-                    : request.operation === 'doctor'
-                      ? keys(result, ['diagnostics']) && diagnosticReport(result.diagnostics)
-                      : keys(result, ['manifest']) && result.manifest === 'connector.yaml';
+                  : request.operation === 'dependencies.export'
+                    ? stagingDirectory(result, 'requirementsDir', request.options.outputDir)
+                    : request.operation === 'runtime.propose'
+                      ? stagingDirectory(result, 'proposalDir', request.options.outputDir)
+                      : request.operation === 'doctor'
+                        ? keys(result, ['diagnostics']) && diagnosticReport(result.diagnostics)
+                        : keys(result, ['manifest']) && result.manifest === 'connector.yaml';
       if (valid) return value as ToolchainResponse;
     }
     if (

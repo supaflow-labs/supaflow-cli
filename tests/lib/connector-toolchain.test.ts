@@ -284,6 +284,60 @@ describe('connector toolchain subprocess', () => {
     },
   );
 
+  it('forwards requirements export and preserves its staged output and failures', async () => {
+    const request: ToolchainRequest = {
+      protocolVersion: 1,
+      operation: 'dependencies.export',
+      projectDir: '/fixture/project with spaces',
+      options: {
+        uvExecutable: '/fixture/uv',
+        runtimeWheelDir: '/fixture/locked wheels',
+        outputDir: '/fixture/requirements ; quoted',
+      },
+    };
+    for (const requirementsDir of [
+      '/fixture/requirements ; quoted',
+      '/fixture/./requirements ; quoted/',
+    ]) {
+      const exported = { protocolVersion: 1, ok: true, result: { requirementsDir } };
+      configure(JSON.stringify(exported) + '\n');
+      expect(await runConnectorToolchain(python, request)).toEqual(exported);
+      expect(JSON.parse(readFileSync(captured, 'utf8')).request).toEqual(request);
+    }
+    const failure = {
+      protocolVersion: 1,
+      ok: false,
+      error: { code: 'LOCK_FAILED', message: 'Cannot export installer requirements' },
+    };
+    configure(JSON.stringify(failure) + '\n', 1);
+    expect(await runConnectorToolchain(python, request)).toEqual(failure);
+  });
+
+  it.each([
+    { requirementsDir: 'relative' },
+    { requirementsDir: '/different/requirements' },
+    { requirementsDir: '/fixture/invalid\0path' },
+    { requirementsDir: 1 },
+    { requirementsDir: '/fixture/requirements', extra: true },
+    { dependencyDir: '/fixture/requirements' },
+    { checked: true },
+  ])('rejects invalid requirements staging responses (%#)', async (result) => {
+    configure(JSON.stringify({ protocolVersion: 1, ok: true, result }) + '\n');
+    const request: ToolchainRequest = {
+      protocolVersion: 1,
+      operation: 'dependencies.export',
+      projectDir: '/fixture/project',
+      options: {
+        uvExecutable: '/fixture/uv',
+        runtimeWheelDir: '/fixture/wheels',
+        outputDir: '/fixture/requirements',
+      },
+    };
+    await expect(runConnectorToolchain(python, request)).rejects.toMatchObject({
+      code: 'INVALID_RESPONSE',
+    });
+  });
+
   it.each([
     { dependencyDir: 'relative' },
     { dependencyDir: '/different/deps' },
