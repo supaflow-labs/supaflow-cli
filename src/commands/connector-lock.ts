@@ -1,10 +1,12 @@
 import type { Command } from 'commander';
-import { resolve } from 'node:path';
+import { lstat } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import type { ConnectorAuthoringTools } from './connector-authoring.js';
 import {
   refreshConnectorDependencyLocks,
   ConnectorLockOperationError,
   upgradeConnectorRuntimeLocks,
+  initializeConnectorRuntimeLocks,
   type ConnectorRuntimeProposal,
 } from '../lib/connector-lock.js';
 import { runConnectorToolchain, ToolchainTransportError } from '../lib/connector-toolchain.js';
@@ -23,7 +25,7 @@ export function registerConnectorLockCommand(
 ): void {
   connectors
     .command('lock')
-    .description('Refresh dependency locks; explicitly select a runtime with --upgrade-runtime')
+    .description('Select an initial runtime or refresh dependency locks; upgrade explicitly')
     .allowExcessArguments(false)
     .option('--project <directory>', 'Connector project directory (default: current directory)')
     .option('--check', 'Check lock freshness without changing project files')
@@ -75,6 +77,7 @@ export function registerConnectorLockCommand(
         const tools = await bootstrap(projectDir, context);
         const checking = options.check === true;
         let runtimeDiff: { before: string; after: string } | undefined;
+        let initialized = false;
         if (upgrading) {
           if (!tools.runtimeProposal)
             throw new ToolchainTransportError(
@@ -143,11 +146,29 @@ export function registerConnectorLockCommand(
             throw new ConnectorLockOperationError(result.error.code, result.error.message);
           if (controller.signal.aborted)
             throw new ToolchainTransportError('CANCELLED', 'Connector operation cancelled');
-        } else
-          await refreshConnectorDependencyLocks(projectDir, tools, {
-            ...context,
-            timeoutMs: transport.timeoutMs,
-          });
+        } else {
+          try {
+            await lstat(join(projectDir, 'runtime.lock'));
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+            initialized = true;
+          }
+          if (initialized) {
+            if (!tools.runtimeProposal)
+              throw new ToolchainTransportError(
+                'UNAVAILABLE',
+                'The selected CLI toolchain has no runtime recommendation',
+              );
+            await initializeConnectorRuntimeLocks(projectDir, tools, tools.runtimeProposal, {
+              ...context,
+              timeoutMs: transport.timeoutMs,
+            });
+          } else
+            await refreshConnectorDependencyLocks(projectDir, tools, {
+              ...context,
+              timeoutMs: transport.timeoutMs,
+            });
+        }
         if (json)
           printOutput(
             formatGetJson(
@@ -179,7 +200,9 @@ export function registerConnectorLockCommand(
           printOutput(
             checking
               ? 'Dependency locks are current; project files unchanged.'
-              : 'Dependency locks updated; runtime.lock preserved.',
+              : initialized
+                ? 'Initial runtime and dependency locks written.'
+                : 'Dependency locks updated; runtime.lock preserved.',
           );
       } catch (error) {
         let code: string, message: string;

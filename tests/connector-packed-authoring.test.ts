@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -256,6 +257,18 @@ print(json.dumps({'versions':versions,'target':{'name':'fixture-local-agent','en
       ).toEqual({ projectDir: project });
       const inputs = ['runtime.lock', 'deps/pyproject.toml', 'deps/uv.lock', 'pyproject.toml'];
       const before = inputs.map((name) => readFileSync(join(project, name)));
+      // A hand-authored project's first lock uses the same native selector as init.
+      for (const name of inputs.slice(0, 3)) rmSync(join(project, name));
+      const missing = spawnSync(
+        process.execPath,
+        [executable, '--json', 'connectors', 'lock', '--check', '--project', project, '--offline'],
+        { cwd: root, env: environment, encoding: 'utf8', timeout: 120_000 },
+      );
+      expect(missing.status).toBe(1);
+      expect(JSON.parse(missing.stdout).error.code).toBe('MISSING_RUNTIME_LOCK');
+      expect(existsSync(join(project, 'runtime.lock'))).toBe(false);
+      expect(invoke(['lock', '--project', project])).toEqual({ locked: true });
+      inputs.forEach((name, i) => expect(readFileSync(join(project, name))).toEqual(before[i]));
       expect(invoke(['lock', '--check', '--project', project])).toEqual({ checked: true });
       expect(invoke(['lock', '--project', project])).toEqual({ locked: true });
       const unchangedDiff = {
