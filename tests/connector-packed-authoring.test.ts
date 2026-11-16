@@ -15,6 +15,8 @@ import { basename, delimiter, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { VERSION } from '../src/version.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const python = process.env.SUPAFLOW_TEST_TOOLCHAIN_PYTHON;
 const uv = process.env.SUPAFLOW_TEST_UV;
@@ -46,7 +48,7 @@ describe.skipIf(!python)('packed connector authoring from a clean prefix', () =>
     // Build tooling may use the checkout; the installed package below cannot.
     symlinkSync(join(process.cwd(), 'node_modules'), join(build, 'node_modules'), 'dir');
     writeFileSync(join(build, '.npmrc'), 'ignore-scripts=true\n');
-    const featureFile = join(build, 'src/commands/connectors.ts');
+    const featureFile = join(build, 'src/lib/connector-authoring-feature.ts');
     const source = readFileSync(featureFile, 'utf8');
     expect(source).toContain('const CONNECTOR_AUTHORING_ENABLED = false;');
     // This non-production build enables the same reviewed entrypoint with test-index assets.
@@ -236,7 +238,7 @@ print(json.dumps({'versions':versions,'target':{'name':'fixture-local-agent','en
     ['custom-source', 'io.supaflow'],
   ])(
     'runs init/lock/check/test/build for %s (%s) without checkout imports or login',
-    (template, group) => {
+    async (template, group) => {
       const project = join(root, template + (group === 'io.supaflow' ? '-first-party' : ''));
       const invoke = (args: string[]) =>
         JSON.parse(
@@ -348,6 +350,80 @@ assert (importlib.util.find_spec('dlt') is None)==(sys.argv[3]=='custom-source')
           ],
           { cwd: root, env: environment, stdio: 'pipe', timeout: 30_000 },
         );
+      if (group === 'io.supaflow') {
+        const client = new Client({ name: 'packed-authoring-fixture', version: '1' });
+        const transport = new StdioClientTransport({
+          command: process.execPath,
+          args: [executable, 'mcp'],
+          cwd: root,
+          env: Object.fromEntries(
+            Object.entries(environment).filter(
+              (entry): entry is [string, string] => typeof entry[1] === 'string',
+            ),
+          ),
+          stderr: 'pipe',
+        });
+        try {
+          await client.connect(transport);
+          const listed = await client.listTools();
+          expect(listed.tools).toHaveLength(61);
+          const call = async (name: string, args: Record<string, unknown> = {}) => {
+            const result = await client.callTool(
+              { name, arguments: { project_dir: project, offline: true, ...args } },
+              undefined,
+              { timeout: 120_000 },
+            );
+            expect(result.isError).not.toBe(true);
+            const content = result.content as { type: string; text: string }[];
+            expect(content).toHaveLength(1);
+            expect(content[0].type).toBe('text');
+            return JSON.parse(content[0].text);
+          };
+          expect(await call('connectors_check')).toEqual({ checked: true });
+          expect(await call('connectors_test')).toEqual({ tested: true });
+          expect((await call('connectors_doctor')).diagnostics).toBeDefined();
+          expect(await call('connectors_manifest_check')).toEqual({ manifest: 'connector.yaml' });
+          expect(await call('connectors_manifest_generate')).toEqual({
+            manifest: 'connector.yaml',
+          });
+          expect(await call('connectors_lock', { check: true })).toEqual({ checked: true });
+          expect(await call('connectors_build')).toEqual(defaultBuild);
+          const fresh = join(root, 'mcp-first-party');
+          const initialized = await client.callTool(
+            {
+              name: 'connectors_init',
+              arguments: {
+                directory: fresh,
+                template: 'custom-source',
+                name: 'ACME',
+                group: 'io.supaflow',
+                offline: true,
+              },
+            },
+            undefined,
+            { timeout: 120_000 },
+          );
+          expect(initialized.isError).not.toBe(true);
+          expect(JSON.parse((initialized.content as { text: string }[])[0].text)).toEqual({
+            projectDir: fresh,
+          });
+          const rejected = await client.callTool(
+            {
+              name: 'connectors_build',
+              arguments: { project_dir: project, output: artifactDir, offline: true },
+            },
+            undefined,
+            { timeout: 120_000 },
+          );
+          expect(rejected.isError).toBe(true);
+          expect(JSON.parse((rejected.content as { text: string }[])[0].text).error.code).toBe(
+            'BUILD_FAILED',
+          );
+        } finally {
+          await client.close();
+        }
+        inputs.forEach((name, i) => expect(readFileSync(join(project, name))).toEqual(before[i]));
+      }
     },
     180_000,
   );
