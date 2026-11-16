@@ -82,6 +82,7 @@ print(json.dumps([*versions,f'>={major}.{minor},<{major}.{minor+1}']))
       'src/lib/connector-init.ts',
       'src/lib/connector-templates.ts',
       'src/lib/connector-environment.ts',
+      'src/commands/connector-authoring.ts',
     ]);
   }, 60_000);
 
@@ -122,6 +123,12 @@ print(json.dumps([*versions,f'>={major}.{minor},<{major}.{minor+1}']))
       const environmentModule = pathToFileURL(
         join(root, 'compiled/lib/connector-environment.js'),
       ).href;
+      const commandsModule = pathToFileURL(
+        join(root, 'compiled/commands/connector-authoring.js'),
+      ).href;
+      const commanderModule = pathToFileURL(
+        join(process.cwd(), 'node_modules/commander/index.js'),
+      ).href;
       const program = `import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {readFileSync,readdirSync,existsSync} from 'node:fs';
@@ -130,6 +137,8 @@ import {initializeLockedConnectorProject} from ${JSON.stringify(initModule)};
 import * as templates from ${JSON.stringify(templatesModule)};
 import {runConnectorToolchain} from ${JSON.stringify(transportModule)};
 import {prepareOfflineConnectorEnvironment} from ${JSON.stringify(environmentModule)};
+import {registerConnectorAuthoringCommands} from ${JSON.stringify(commandsModule)};
+import commander from ${JSON.stringify(commanderModule)};
 const tools=${JSON.stringify(options)},target=${JSON.stringify(target)},id=${JSON.stringify(templateId)};
 const render=id==='custom-source'?templates.renderCustomSourceTemplate:id==='api-source'?templates.renderApiSourceTemplate:templates.renderSqlSourceTemplate;
 const template=render(${JSON.stringify(metadata)});
@@ -183,7 +192,33 @@ assert.deepEqual(projectFiles(target),beforeExport);
 assert.equal(existsSync(join(target,'.venv')),false);
 assert.equal(existsSync(join(target,'deps/.venv')),false);
 for(const [path,raw] of Object.entries(template.files))assert.equal(readFileSync(join(target,path),'utf8'),raw);
-console.log(JSON.stringify({template:id,checked:true,sourceUnchanged:true,runtimeUnchanged:true,runtimeEnvironment:true}));`;
+const bootstrapCalls=[];
+async function command(args,json=true) {
+ const cli=new commander.Command().exitOverride().option('--json');
+ registerConnectorAuthoringCommands(cli.command('connectors'),async(project,options)=>{
+  assert.equal(project,target);assert.equal(options.offline,true);
+  assert(options.signal instanceof AbortSignal);bootstrapCalls.push(options.operation);return tools;
+ },{timeoutMs:60_000});
+ const lines=[],original=console.log;
+ try {
+  console.log=(value)=>lines.push(value);
+  await cli.parseAsync([...(json?['--json']:[]),'connectors',...args,'--project',target,'--offline'],{from:'user'});
+ } finally {console.log=original;}
+ assert.equal(process.exitCode,undefined);assert.equal(lines.length,1);
+ return json?JSON.parse(lines[0]):lines[0];
+}
+assert.deepEqual(await command(['check']),{checked:true});
+assert.deepEqual(await command(['test']),{tested:true});
+const diagnostic=await command(['doctor']);
+assert.equal(diagnostic.diagnostics.selected.sdkDistributionVersion,${JSON.stringify(versions[0])});
+assert.equal(diagnostic.diagnostics.selected.runtimeDistributionVersion,id==='custom-source'?null:${JSON.stringify(versions[1])});
+assert.match(await command(['doctor'],false),/Execution ranges are local declarations/);
+assert.deepEqual(await command(['manifest','check']),{manifest:'connector.yaml'});
+assert.deepEqual(await command(['manifest','generate']),{manifest:'connector.yaml'});
+assert.deepEqual(bootstrapCalls,['check','test','doctor','doctor','manifest.check','manifest.generate']);
+for(const [path,raw] of Object.entries(template.files))assert.equal(readFileSync(join(target,path),'utf8'),raw);
+assert.deepEqual(readFileSync(join(target,'runtime.lock')),before);
+console.log(JSON.stringify({template:id,checked:true,sourceUnchanged:true,runtimeUnchanged:true,runtimeEnvironment:true,commands:true}));`;
       const result = execFileSync(process.execPath, ['--input-type=module', '-e', program], {
         cwd: root,
         encoding: 'utf8',
@@ -205,6 +240,7 @@ console.log(JSON.stringify({template:id,checked:true,sourceUnchanged:true,runtim
         sourceUnchanged: true,
         runtimeUnchanged: true,
         runtimeEnvironment: true,
+        commands: true,
       });
     },
     270_000,
