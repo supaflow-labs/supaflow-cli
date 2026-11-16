@@ -105,7 +105,6 @@ export type ToolchainRequest =
       projectDir: string;
       options: {
         uvExecutable: string;
-        runtimeWheelDir: string;
         outputDir: string;
         offline: boolean;
       };
@@ -114,13 +113,13 @@ export type ToolchainRequest =
       protocolVersion: 1;
       operation: 'dependencies.export';
       projectDir: string;
-      options: { uvExecutable: string; runtimeWheelDir: string; outputDir: string };
+      options: { uvExecutable: string; outputDir: string };
     }
   | {
       protocolVersion: 1;
       operation: 'dependencies.check';
       projectDir: string;
-      options: { uvExecutable: string; runtimeWheelDir: string };
+      options: { uvExecutable: string; offline: boolean };
     }
   | {
       protocolVersion: 1;

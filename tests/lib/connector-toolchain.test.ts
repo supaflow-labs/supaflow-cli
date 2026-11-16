@@ -252,7 +252,7 @@ describe('connector toolchain subprocess', () => {
       protocolVersion: 1,
       operation: 'dependencies.check',
       projectDir: '/fixture/project ; quoted',
-      options: { uvExecutable: '/fixture/uv', runtimeWheelDir: '/fixture/wheels' },
+      options: { uvExecutable: '/fixture/uv', offline: true },
     };
     const checked = { protocolVersion: 1, ok: true, result: { checked: true } };
     configure(JSON.stringify(checked) + '\n');
@@ -286,7 +286,7 @@ describe('connector toolchain subprocess', () => {
         protocolVersion: 1,
         operation: 'dependencies.check',
         projectDir: '/fixture/project',
-        options: { uvExecutable: '/fixture/uv', runtimeWheelDir: '/fixture/wheels' },
+        options: { uvExecutable: '/fixture/uv', offline: true },
       }),
     ).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
@@ -353,7 +353,6 @@ describe('connector toolchain subprocess', () => {
         projectDir: '/fixture/project with spaces',
         options: {
           uvExecutable: '/fixture/uv',
-          runtimeWheelDir: '/fixture/locked wheels',
           outputDir: '/fixture/deps ; quoted',
           offline,
         },
@@ -381,7 +380,6 @@ describe('connector toolchain subprocess', () => {
       projectDir: '/fixture/project with spaces',
       options: {
         uvExecutable: '/fixture/uv',
-        runtimeWheelDir: '/fixture/locked wheels',
         outputDir: '/fixture/requirements ; quoted',
       },
     };
@@ -419,7 +417,6 @@ describe('connector toolchain subprocess', () => {
       projectDir: '/fixture/project',
       options: {
         uvExecutable: '/fixture/uv',
-        runtimeWheelDir: '/fixture/wheels',
         outputDir: '/fixture/requirements',
       },
     };
@@ -445,7 +442,6 @@ describe('connector toolchain subprocess', () => {
       projectDir: '/fixture/project',
       options: {
         uvExecutable: '/fixture/uv',
-        runtimeWheelDir: '/fixture/wheels',
         outputDir: '/fixture/deps',
         offline: true,
       },

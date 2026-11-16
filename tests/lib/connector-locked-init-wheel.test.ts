@@ -34,8 +34,10 @@ describe.skipIf(!python)('locked initialization with installed public packages',
         copyFileSync(join(directory, wheel), join(root, 'index-wheels', wheel));
       }
     }
-    for (const wheel of [sdk!, runtime!])
+    for (const wheel of [sdk!, runtime!]) {
       copyFileSync(wheel, join(root, 'install-wheels', basename(wheel)));
+      copyFileSync(wheel, join(root, 'index-wheels', basename(wheel)));
+    }
     versions = JSON.parse(
       execFileSync(
         python!,
@@ -183,10 +185,10 @@ function projectFiles(directory,prefix='') {
  return result;
 }
 const beforeExport=projectFiles(target);
-assert.deepEqual(await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'dependencies.check',projectDir:target,options:{uvExecutable:tools.uvExecutable,runtimeWheelDir:tools.runtimeWheelDir}}),{protocolVersion:1,ok:true,result:{checked:true}});
+assert.deepEqual(await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'dependencies.check',projectDir:target,options:{uvExecutable:tools.uvExecutable,offline:true}}),{protocolVersion:1,ok:true,result:{checked:true}});
 assert.deepEqual(projectFiles(target),beforeExport);
 const requirementsDir=target+'-requirements';
-const exported=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'dependencies.export',projectDir:target,options:{uvExecutable:tools.uvExecutable,runtimeWheelDir:tools.runtimeWheelDir,outputDir:requirementsDir}});
+const exported=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'dependencies.export',projectDir:target,options:{uvExecutable:tools.uvExecutable,outputDir:requirementsDir}});
 assert.deepEqual(exported,{protocolVersion:1,ok:true,result:{requirementsDir}});
 const python=await prepareOfflineConnectorEnvironment(target+'-runtime',readFileSync(join(requirementsDir,'requirements.txt')),{
  uvExecutable:tools.uvExecutable,pythonExecutable:tools.pythonExecutable,
