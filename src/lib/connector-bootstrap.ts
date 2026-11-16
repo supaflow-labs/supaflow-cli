@@ -94,7 +94,6 @@ export async function bootstrapConnectorToolchain(
     .update(
       JSON.stringify([
         bundle.schemaVersion,
-        bundle.requiresPython,
         bundle.toolchainVersion,
         bundle.sdkVersion,
         bundle.runtimeVersion,

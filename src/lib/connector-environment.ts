@@ -26,7 +26,7 @@ type Source =
 type Options = { signal?: AbortSignal; timeoutMs?: number };
 
 export interface ConnectorProjectEnvironment {
-  bundleRequirementsFile: string;
+  bundleRequirements: Uint8Array;
   uvCacheDir: string;
   agentTargets: readonly ConnectorAgentTarget[];
 }
@@ -47,12 +47,23 @@ export async function prepareConnectorProjectEnvironment(
   tools: BaseTools & ConnectorProjectEnvironment,
   options: Options & { offline: boolean },
 ): Promise<string> {
-  if (!Array.isArray(tools.agentTargets) || tools.agentTargets.length === 0)
-    throw new ToolchainTransportError('INVALID_INPUT', 'Supply the bundled agent target inventory');
+  if (
+    !Array.isArray(tools.agentTargets) ||
+    tools.agentTargets.length === 0 ||
+    !(tools.bundleRequirements instanceof Uint8Array) ||
+    tools.bundleRequirements.byteLength === 0
+  )
+    throw new ToolchainTransportError(
+      'INVALID_INPUT',
+      'Supply checked bundled requirements and agent target inventory',
+    );
+  const requirements = Buffer.from(tools.bundleRequirements);
   requireActive(options.signal);
   const scratch = await mkdtemp(join(tmpdir(), 'supaflow-authoring-'));
   try {
     const outputDir = join(scratch, 'inputs');
+    const bundleRequirementsFile = join(scratch, 'requirements.txt');
+    await writeFile(bundleRequirementsFile, requirements, { flag: 'wx' });
     const prepared = await runConnectorToolchain(
       tools.pythonExecutable,
       {
@@ -62,7 +73,7 @@ export async function prepareConnectorProjectEnvironment(
         options: {
           uvExecutable: tools.uvExecutable,
           outputDir,
-          bundleRequirementsFile: tools.bundleRequirementsFile,
+          bundleRequirementsFile,
           offline: options.offline,
           agentTargets: tools.agentTargets,
         },

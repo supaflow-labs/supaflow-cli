@@ -133,6 +133,18 @@ it('separates environments for a different selected interpreter', async () => {
   expect(prepareIndexedToolchainEnvironment).toHaveBeenCalledTimes(2);
 });
 
+it('reuses the same verified interpreter and wheel set across compatible selection ranges', async () => {
+  const first = await bootstrapConnectorToolchain(bundle, requirements, options());
+  const second = await bootstrapConnectorToolchain(
+    { ...bundle, requiresPython: '>=3.12,<3.13' },
+    requirements,
+    options(),
+  );
+  expect(second).toEqual(first);
+  expect(discoverConnectorAuthoringPrerequisites).toHaveBeenCalledTimes(2);
+  expect(prepareIndexedToolchainEnvironment).toHaveBeenCalledTimes(1);
+});
+
 it.each([
   'supaflow-connector-toolchain',
   'supaflow-python-sdk',

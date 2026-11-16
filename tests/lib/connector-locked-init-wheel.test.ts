@@ -196,7 +196,7 @@ import {prepareOfflineConnectorEnvironment,prepareConnectorProjectEnvironment} f
 import {registerConnectorAuthoringCommands} from ${JSON.stringify(commandsModule)};
 import commander from ${JSON.stringify(commanderModule)};
 const tools=${JSON.stringify(options)},target=${JSON.stringify(target)},id=${JSON.stringify(templateId)};
-const projectEnvironment={bundleRequirementsFile:${JSON.stringify(join(root, 'bundle-requirements.txt'))},uvCacheDir:${JSON.stringify(join(root, 'authoring-cache'))},agentTargets:${JSON.stringify([agentTarget])}};
+const projectEnvironment={bundleRequirements:readFileSync(${JSON.stringify(join(root, 'bundle-requirements.txt'))}),uvCacheDir:${JSON.stringify(join(root, 'authoring-cache'))},agentTargets:${JSON.stringify([agentTarget])}};
 tools.agentTargets=projectEnvironment.agentTargets;
 const render=id==='custom-source'?templates.renderCustomSourceTemplate:id==='api-source'?templates.renderApiSourceTemplate:templates.renderSqlSourceTemplate;
 const template=render(${JSON.stringify(metadata)});

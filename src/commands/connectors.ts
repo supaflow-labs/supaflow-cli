@@ -2,15 +2,34 @@ import { Command } from 'commander';
 import { withAuthOnly } from '../lib/middleware.js';
 import { formatTable, formatListJson, printOutput } from '../lib/output.js';
 import { fetchConnectors } from '../lib/connector.js';
+import { homedir } from 'node:os';
+import { isAbsolute, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { registerBundledConnectorAuthoringCommands } from './connector-bundled-authoring.js';
+
+// Enable separately after packed authoring and public-package availability gates.
+const CONNECTOR_AUTHORING_ENABLED = false;
 
 function formatCapabilities(caps: string[]): string {
   if (!caps || caps.length === 0) return '';
   // Shorten for table display: REPLICATION_SOURCE -> repl_source, etc.
-  return caps.map((c) => c.toLowerCase().replace('replication_', 'repl_').replace('reverse_etl_', 'retl_')).join(', ');
+  return caps
+    .map((c) => c.toLowerCase().replace('replication_', 'repl_').replace('reverse_etl_', 'retl_'))
+    .join(', ');
 }
 
 export function registerConnectorsCommands(program: Command): void {
   const connectors = program.command('connectors').description('Browse available connectors');
+  if (CONNECTOR_AUTHORING_ENABLED) {
+    const configuredCache = process.env.XDG_CACHE_HOME;
+    const cacheHome =
+      configuredCache && isAbsolute(configuredCache) ? configuredCache : join(homedir(), '.cache');
+    registerBundledConnectorAuthoringCommands(
+      connectors,
+      fileURLToPath(new URL('./connectors/', import.meta.url)),
+      { cacheDir: join(cacheHome, 'supaflow', 'connector-toolchains') },
+    );
+  }
 
   connectors
     .command('list')
@@ -22,17 +41,19 @@ export function registerConnectorsCommands(program: Command): void {
         const sorted = all.sort((a, b) => a.type.localeCompare(b.type));
 
         if (outputOptions.json) {
-          printOutput(formatListJson(
-            sorted.map((c) => ({
-              type: c.type,
-              name: c.name,
-              version: c.latest_version,
-              capabilities: c.connector_capabilities || [],
-            })),
-            sorted.length,
-            sorted.length,
-            0,
-          ));
+          printOutput(
+            formatListJson(
+              sorted.map((c) => ({
+                type: c.type,
+                name: c.name,
+                version: c.latest_version,
+                capabilities: c.connector_capabilities || [],
+              })),
+              sorted.length,
+              sorted.length,
+              0,
+            ),
+          );
         } else {
           const headers = ['TYPE', 'NAME', 'CAPABILITIES', 'VERSION'];
           const rows = sorted.map((c) => [

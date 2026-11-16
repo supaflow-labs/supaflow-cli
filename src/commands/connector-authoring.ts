@@ -9,6 +9,7 @@ import {
   type ConnectorAgentTarget,
 } from '../lib/connector-toolchain.js';
 import { VERSION } from '../version.js';
+import { ConnectorProjectPreparationError } from '../lib/connector-environment.js';
 
 type Operation =
   | 'check'
@@ -174,7 +175,11 @@ export function registerConnectorAuthoringCommands(
       }
     } catch (error) {
       if (controller.signal.aborted) failure('CANCELLED', 'Connector operation cancelled');
-      else if (error instanceof ToolchainTransportError) failure(error.code, error.message);
+      else if (
+        error instanceof ToolchainTransportError ||
+        error instanceof ConnectorProjectPreparationError
+      )
+        failure(error.code, error.message);
       else failure('INTERNAL_ERROR', 'Connector operation failed; verify the selected toolchain.');
     } finally {
       process.off('SIGINT', interrupt);
