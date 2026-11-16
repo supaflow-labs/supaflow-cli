@@ -13,6 +13,7 @@ import {
   renderSqlSourceTemplate,
 } from '../lib/connector-templates.js';
 import { ToolchainTransportError } from '../lib/connector-toolchain.js';
+import { ConnectorProjectPreparationError } from '../lib/connector-environment.js';
 import { formatGetJson, printOutput } from '../lib/output.js';
 
 export type ConnectorInitBootstrap = (
@@ -130,6 +131,7 @@ export function registerConnectorInitCommand(
           message = error.message;
         } else if (
           error instanceof ToolchainTransportError ||
+          error instanceof ConnectorProjectPreparationError ||
           error instanceof ConnectorInitOperationError
         ) {
           code = error.code;

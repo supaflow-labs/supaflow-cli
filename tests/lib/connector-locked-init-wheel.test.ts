@@ -185,22 +185,37 @@ print(json.dumps([*versions,f'>={major}.{minor},<{major}.{minor+1}']))
       const program = `import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import {cpSync,readFileSync,readdirSync,existsSync,mkdirSync,writeFileSync} from 'node:fs';
+import {cpSync,readFileSync,readdirSync,existsSync,mkdirSync,writeFileSync,statSync} from 'node:fs';
 import {join} from 'node:path';
 import {registerConnectorInitCommand} from ${JSON.stringify(initModule)};
 import {registerConnectorLockCommand} from ${JSON.stringify(lockModule)};
 import * as templates from ${JSON.stringify(templatesModule)};
 import {runConnectorToolchain} from ${JSON.stringify(transportModule)};
-import {prepareOfflineConnectorEnvironment,prepareLockedProjectEnvironment} from ${JSON.stringify(environmentModule)};
+import {prepareOfflineConnectorEnvironment,prepareConnectorProjectEnvironment} from ${JSON.stringify(environmentModule)};
 import {registerConnectorAuthoringCommands} from ${JSON.stringify(commandsModule)};
 import commander from ${JSON.stringify(commanderModule)};
 const tools=${JSON.stringify(options)},target=${JSON.stringify(target)},id=${JSON.stringify(templateId)};
+const projectEnvironment={bundleRequirementsFile:${JSON.stringify(join(root, 'bundle-requirements.txt'))},uvCacheDir:${JSON.stringify(join(root, 'authoring-cache'))},agentTargets:${JSON.stringify([agentTarget])}};
 const render=id==='custom-source'?templates.renderCustomSourceTemplate:id==='api-source'?templates.renderApiSourceTemplate:templates.renderSqlSourceTemplate;
 const template=render(${JSON.stringify(metadata)});
+if(id==='custom-source') {
+ const failedTarget=target+'-uncovered-init';
+ const failedProgram=new commander.Command().version('0.0.0').exitOverride().option('--json');
+ registerConnectorInitCommand(failedProgram.command('connectors'),async()=>({...tools,projectEnvironment:{...projectEnvironment,agentTargets:[{...projectEnvironment.agentTargets[0],name:'fixture-uncovered-agent',wheelTags:['cp399-cp399-linux_x86_64']}]},testkitVersion:${JSON.stringify(versions[2])},projectRequiresPython:'>=3.11,<3.15'}),{timeoutMs:60_000});
+ const lines=[],original=console.log;
+ try {
+  console.log=value=>lines.push(value);
+  await failedProgram.parseAsync(['--json','connectors','init',failedTarget,'--template',id,'--name','ACME','--group',${JSON.stringify(groupId)},'--offline'],{from:'user'});
+ } finally { console.log=original; }
+ assert.equal(process.exitCode,1);process.exitCode=undefined;
+ assert.equal(lines.length,1);assert.equal(JSON.parse(lines[0]).error.code,'LOCK_FAILED');
+ assert.equal(existsSync(failedTarget),false);
+ assert.equal(readdirSync(${JSON.stringify(root)}).some(name=>name.startsWith('.supaflow-init-')),false);
+}
 const initProgram = new commander.Command().version('0.0.0').exitOverride().option('--json');
 registerConnectorInitCommand(initProgram.command('connectors'), async(project,options)=>{
  assert.equal(project,target);assert.equal(options.offline,true);assert(options.signal instanceof AbortSignal);
- return {...tools,testkitVersion:${JSON.stringify(versions[2])},projectRequiresPython:'>=3.11,<3.15'};
+ return {...tools,projectEnvironment,testkitVersion:${JSON.stringify(versions[2])},projectRequiresPython:'>=3.11,<3.15'};
 },{timeoutMs:60_000});
 const initLines=[],initLog=console.log;
 try {
@@ -208,6 +223,8 @@ try {
  await initProgram.parseAsync(['--json','connectors','init',target,'--template',id,'--name','ACME','--display-name','Acme','--group',${JSON.stringify(groupId)},'--connector-version','1.2.3.dev1','--offline'],{from:'user'});
 } finally {console.log=initLog;}
 assert.equal(process.exitCode,undefined);assert.deepEqual(initLines.map(value=>JSON.parse(value)),[{projectDir:target}]);
+tools.pythonExecutable=join(target,'.venv',process.platform==='win32'?'Scripts/python.exe':'bin/python');
+assert(existsSync(tools.pythonExecutable));
 const manifestType=execFileSync(tools.pythonExecutable,['-I','-c',"import pathlib,sys,yaml; print(yaml.safe_load(pathlib.Path(sys.argv[1]).read_bytes())['connector']['type'])",join(target,'connector.yaml')],{encoding:'utf8'}).trim();
 assert.equal(manifestType,${JSON.stringify(groupId === 'io.supaflow' ? 'ACME' : 'CUSTOM__COM_ACME__ACME')});
 for(const [path,raw] of Object.entries(template.files))assert.equal(readFileSync(join(target,path),'utf8'),raw);
@@ -232,10 +249,11 @@ assert.deepEqual(result,{protocolVersion:1,ok:true,result:{checked:true}});
 assert.deepEqual(readFileSync(join(target,'runtime.lock')),before);
 assert.equal(JSON.parse(before).wheels.length,id==='custom-source'?1:2);
 assert.equal(JSON.parse(readFileSync(join(target,'.supaflow/template.json'),'utf8')).templateId,id);
-assert.equal(existsSync(join(target,'.venv')),false);
+assert.equal(existsSync(join(target,'.venv')),true);
 function projectFiles(directory,prefix='') {
  const result={};
  for(const entry of readdirSync(directory,{withFileTypes:true})) {
+  if(prefix===''&&entry.name==='.venv')continue;
   const relative=prefix+entry.name,path=join(directory,entry.name);
   if(entry.isDirectory())Object.assign(result,projectFiles(path,relative+'/'));
   else {assert(entry.isFile());result[relative]=readFileSync(path);}
@@ -243,7 +261,7 @@ function projectFiles(directory,prefix='') {
  return result;
 }
 const beforeExport=projectFiles(target);
-const lockProject=target+'-lock-update';cpSync(target,lockProject,{recursive:true});
+const lockProject=target+'-lock-update';cpSync(target,lockProject,{recursive:true,filter:path=>path!==join(target,'.venv')});
 const lockRuntime=readFileSync(join(lockProject,'runtime.lock'));
 const lockRootPath=join(lockProject,'pyproject.toml');
 const editedRoot=readFileSync(lockRootPath,'utf8').replace('dependencies = [','dependencies = ["packaging>=24",');
@@ -316,7 +334,7 @@ print(json.dumps([m.version('supaflow-python-sdk'),runtime]))
 `)};
 assert.deepEqual(JSON.parse(execFileSync(python,['-I','-B','-c',runtimeProbe,target,id],{encoding:'utf8'})),[${JSON.stringify(versions[0])},id==='custom-source'?null:${JSON.stringify(versions[1])}]);
 assert.deepEqual(projectFiles(target),beforeExport);
-assert.equal(existsSync(join(target,'.venv')),false);
+assert.equal(existsSync(join(target,'.venv')),true);
 assert.equal(existsSync(join(target,'deps/.venv')),false);
 for(const [path,raw] of Object.entries(template.files))assert.equal(readFileSync(join(target,path),'utf8'),raw);
 const authoringDir=target+'-scratch/deep/authoring-inputs';
@@ -330,9 +348,9 @@ if(id==='custom-source') {
 }
 const prepared=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'authoring.prepare',projectDir:target,options:{uvExecutable:tools.uvExecutable,outputDir:authoringDir,bundleRequirementsFile:${JSON.stringify(join(root, 'bundle-requirements.txt'))},offline:true,agentTargets}});
 assert.deepEqual(prepared,{protocolVersion:1,ok:true,result:{requirementsDir:authoringDir}});
-tools.pythonExecutable=await prepareLockedProjectEnvironment(target+'-authoring-environment',readFileSync(join(authoringDir,'pylock.toml')),{
- uvExecutable:tools.uvExecutable,pythonExecutable:tools.pythonExecutable,uvCacheDir:${JSON.stringify(join(root, 'authoring-cache'))},
-},{offline:true});
+const environmentInode=statSync(join(target,'.venv')).ino;
+tools.pythonExecutable=await prepareConnectorProjectEnvironment(target,{...tools,...projectEnvironment},{offline:true});
+assert.equal(statSync(join(target,'.venv')).ino,environmentInode);
 const authoringProbe=${JSON.stringify(`import importlib.metadata as m,importlib.util as u,sys
 assert m.version('supaflow-python-sdk') == sys.argv[1]
 assert m.version('supaflow-connector-toolchain') == sys.argv[4]
