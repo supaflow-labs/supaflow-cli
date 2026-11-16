@@ -6,11 +6,15 @@ vi.mock('../src/lib/connector-lock.js', async (original) => {
   const module = await original<typeof import('../src/lib/connector-lock.js')>();
   return { ...module, refreshConnectorDependencyLocks: vi.fn() };
 });
+vi.mock('../src/lib/connector-toolchain.js', async (original) => {
+  const module = await original<typeof import('../src/lib/connector-toolchain.js')>();
+  return { ...module, runConnectorToolchain: vi.fn() };
+});
 import {
   refreshConnectorDependencyLocks,
   ConnectorLockOperationError,
 } from '../src/lib/connector-lock.js';
-import { ToolchainTransportError } from '../src/lib/connector-toolchain.js';
+import { runConnectorToolchain, ToolchainTransportError } from '../src/lib/connector-toolchain.js';
 import {
   registerConnectorLockCommand,
   type ConnectorLockBootstrap,
@@ -31,6 +35,11 @@ beforeEach(() => {
   listeners = [process.listeners('SIGINT'), process.listeners('SIGTERM')];
   bootstrap.mockResolvedValue(tools);
   vi.mocked(refreshConnectorDependencyLocks).mockResolvedValue();
+  vi.mocked(runConnectorToolchain).mockResolvedValue({
+    protocolVersion: 1,
+    ok: true,
+    result: { checked: true },
+  });
   logs = vi.spyOn(console, 'log').mockImplementation(() => {});
   errors = vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -50,6 +59,66 @@ const output = () => {
   return JSON.parse(logs.mock.calls[0][0] as string);
 };
 describe('inactive ordinary connector lock command', () => {
+  it.each([true, false])(
+    'checks freshness with offline=%s without invoking the writer',
+    async (offline) => {
+      const projectDir = resolve('./project ; path');
+      await parse([
+        '--json',
+        'connectors',
+        'lock',
+        '--check',
+        '--project',
+        projectDir,
+        ...(offline ? ['--offline'] : []),
+      ]);
+      expect(runConnectorToolchain).toHaveBeenCalledExactlyOnceWith(
+        tools.pythonExecutable,
+        {
+          protocolVersion: 1,
+          operation: 'dependencies.check',
+          projectDir,
+          options: { uvExecutable: tools.uvExecutable, offline },
+        },
+        { offline, signal: bootstrap.mock.calls[0][1].signal, timeoutMs: 17_000 },
+      );
+      expect(refreshConnectorDependencyLocks).not.toHaveBeenCalled();
+      expect(output()).toEqual({ checked: true });
+      expect(process.exitCode).toBeUndefined();
+    },
+  );
+
+  it('reports a stale check without repairing it', async () => {
+    vi.mocked(runConnectorToolchain).mockResolvedValue({
+      protocolVersion: 1,
+      ok: false,
+      error: { code: 'LOCK_FAILED', message: 'Lock is stale' },
+    });
+    await parse(['--json', 'connectors', 'lock', '--check']);
+    expect(output()).toEqual({ error: { code: 'LOCK_FAILED', message: 'Lock is stale' } });
+    expect(refreshConnectorDependencyLocks).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('uses plain output for a current lock', async () => {
+    await parse(['connectors', 'lock', '--check']);
+    expect(logs).toHaveBeenCalledExactlyOnceWith(
+      'Dependency locks are current; project files unchanged.',
+    );
+    expect(refreshConnectorDependencyLocks).not.toHaveBeenCalled();
+  });
+
+  it('keeps cancellation from a completed read-only check', async () => {
+    vi.mocked(runConnectorToolchain).mockImplementation(async () => {
+      process.emit('SIGINT');
+      return { protocolVersion: 1, ok: true, result: { checked: true } };
+    });
+    await parse(['--json', 'connectors', 'lock', '--check']);
+    expect(output().error.code).toBe('CANCELLED');
+    expect(process.exitCode).toBe(130);
+    expect(refreshConnectorDependencyLocks).not.toHaveBeenCalled();
+  });
+
   it('keeps shipped lock inactive', () => {
     const help = execFileSync(process.execPath, ['bin/supaflow.mjs', 'connectors', '--help'], {
       encoding: 'utf8',

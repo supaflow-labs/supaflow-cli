@@ -252,6 +252,25 @@ assert(Buffer.isBuffer(beforeExport['deps/pyproject.toml']));
 assert.notDeepEqual(readFileSync(join(lockProject,'deps/pyproject.toml')),beforeExport['deps/pyproject.toml']);
 assert.notDeepEqual(readFileSync(join(lockProject,'deps/uv.lock')),beforeExport['deps/uv.lock']);
 assert.deepEqual(await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'dependencies.check',projectDir:lockProject,options:{uvExecutable:tools.uvExecutable,offline:true}}),{protocolVersion:1,ok:true,result:{checked:true}});
+async function checkLock() {
+ const checkProgram=new commander.Command().version('0.0.0').exitOverride().option('--json');
+ registerConnectorLockCommand(checkProgram.command('connectors'),async(project,options)=>{
+  assert.equal(project,lockProject);assert.equal(options.offline,true);assert(options.signal instanceof AbortSignal);return tools;
+ },{timeoutMs:60_000});
+ const lines=[],original=console.log;
+ try {
+  console.log=(value)=>lines.push(value);
+  await checkProgram.parseAsync(['--json','connectors','lock','--check','--project',lockProject,'--offline'],{from:'user'});
+ } finally {console.log=original;}
+ assert.equal(lines.length,1);return JSON.parse(lines[0]);
+}
+const beforeLockCheck=projectFiles(lockProject);
+assert.deepEqual(await checkLock(),{checked:true});
+assert.equal(process.exitCode,undefined);assert.deepEqual(projectFiles(lockProject),beforeLockCheck);
+writeFileSync(lockRootPath,editedRoot.replace('packaging>=24','packaging>=900'));
+const staleLockInputs=projectFiles(lockProject);
+assert.equal((await checkLock()).error.code,'LOCK_FAILED');assert.equal(process.exitCode,1);process.exitCode=undefined;
+assert.deepEqual(projectFiles(lockProject),staleLockInputs);writeFileSync(lockRootPath,editedRoot);
 assert.deepEqual(projectFiles(target),beforeExport);
 
 assert.deepEqual(await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'dependencies.check',projectDir:target,options:{uvExecutable:tools.uvExecutable,offline:true}}),{protocolVersion:1,ok:true,result:{checked:true}});

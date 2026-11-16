@@ -5,7 +5,7 @@ import {
   refreshConnectorDependencyLocks,
   ConnectorLockOperationError,
 } from '../lib/connector-lock.js';
-import { ToolchainTransportError } from '../lib/connector-toolchain.js';
+import { runConnectorToolchain, ToolchainTransportError } from '../lib/connector-toolchain.js';
 import { formatGetJson, printOutput } from '../lib/output.js';
 
 export type ConnectorLockBootstrap = (
@@ -24,6 +24,7 @@ export function registerConnectorLockCommand(
     .description('Refresh dependencies without changing runtime.lock')
     .allowExcessArguments(false)
     .option('--project <directory>', 'Connector project directory (default: current directory)')
+    .option('--check', 'Check lock freshness without changing project files')
     .option('--offline', 'Use available local packages without network access')
     .action(async (_options: unknown, command: Command) => {
       const options = command.opts(),
@@ -51,12 +52,34 @@ export function registerConnectorLockCommand(
         const projectDir = resolve(options.project ?? process.cwd());
         const context = { signal: controller.signal, offline: options.offline === true };
         const tools = await bootstrap(projectDir, context);
-        await refreshConnectorDependencyLocks(projectDir, tools, {
-          ...context,
-          timeoutMs: transport.timeoutMs,
-        });
-        if (json) printOutput(formatGetJson({ locked: true }));
-        else printOutput('Dependency locks updated; runtime.lock preserved.');
+        const checking = options.check === true;
+        if (checking) {
+          const result = await runConnectorToolchain(
+            tools.pythonExecutable,
+            {
+              protocolVersion: 1,
+              operation: 'dependencies.check',
+              projectDir,
+              options: { uvExecutable: tools.uvExecutable, offline: context.offline },
+            },
+            { ...context, timeoutMs: transport.timeoutMs },
+          );
+          if (!result.ok)
+            throw new ConnectorLockOperationError(result.error.code, result.error.message);
+          if (controller.signal.aborted)
+            throw new ToolchainTransportError('CANCELLED', 'Connector operation cancelled');
+        } else
+          await refreshConnectorDependencyLocks(projectDir, tools, {
+            ...context,
+            timeoutMs: transport.timeoutMs,
+          });
+        if (json) printOutput(formatGetJson(checking ? { checked: true } : { locked: true }));
+        else
+          printOutput(
+            checking
+              ? 'Dependency locks are current; project files unchanged.'
+              : 'Dependency locks updated; runtime.lock preserved.',
+          );
       } catch (error) {
         let code: string, message: string;
         if (
