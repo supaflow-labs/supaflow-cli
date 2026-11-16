@@ -1,4 +1,14 @@
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -48,6 +58,135 @@ afterEach(async () => {
 });
 
 describe('offline environment staging', () => {
+  async function existingProject() {
+    await mkdir(output);
+    await writeFile(join(output, 'pyvenv.cfg'), 'include-system-site-packages = false\n');
+    tools.pythonExecutable = join(root, 'base-python');
+    await writeFile(tools.pythonExecutable, 'selected interpreter');
+    const facts = [await realpath(output), await realpath(tools.pythonExecutable)];
+    vi.mocked(runPythonProcess).mockImplementation(async (_executable, args, _input, validate) =>
+      validate(args[0] === '-I' ? Buffer.from(JSON.stringify(facts) + '\n') : Buffer.alloc(0), 0),
+    );
+    return facts;
+  }
+
+  it('explicitly syncs a matching project venv with the same native installer and no recreation', async () => {
+    await existingProject();
+    const configuration = await readFile(join(output, 'pyvenv.cfg'));
+    const selected = await prepareLockedProjectEnvironment(
+      output,
+      Buffer.from('checked native lock'),
+      tools,
+      {
+        offline: true,
+        reuseExisting: true,
+      },
+    );
+    expect(selected).toBe(
+      join(output, process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'),
+    );
+    expect(vi.mocked(runPythonProcess).mock.calls.map((call) => call[1].slice(0, 2))).toEqual([
+      ['-I', '-S'],
+      ['pip', 'sync'],
+      ['pip', 'check'],
+    ]);
+    const sync = vi.mocked(runPythonProcess).mock.calls[1][1];
+    expect(sync).toEqual(
+      expect.arrayContaining([
+        '--python',
+        selected,
+        '--require-hashes',
+        '--link-mode=copy',
+        '--offline',
+      ]),
+    );
+    expect(await readFile(join(output, 'pyvenv.cfg'))).toEqual(configuration);
+    expect(
+      (await readdir(root)).filter((name) => name.startsWith('.supaflow-environment-')),
+    ).toEqual([]);
+  });
+
+  it.each(['system-site', 'foreign-prefix', 'base-python'])(
+    'rejects a %s existing target before uv can modify it',
+    async (kind) => {
+      const facts = await existingProject();
+      if (kind === 'system-site')
+        await writeFile(join(output, 'pyvenv.cfg'), 'include-system-site-packages = true\n');
+      if (kind === 'foreign-prefix') facts[0] = root;
+      if (kind === 'base-python') facts[1] = root;
+      const configuration = await readFile(join(output, 'pyvenv.cfg'));
+      await expect(
+        prepareLockedProjectEnvironment(output, Buffer.from('checked native lock'), tools, {
+          offline: true,
+          reuseExisting: true,
+        }),
+      ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+      expect(
+        vi.mocked(runPythonProcess).mock.calls.some((call) => call[0] === tools.uvExecutable),
+      ).toBe(false);
+      expect(await readFile(join(output, 'pyvenv.cfg'))).toEqual(configuration);
+    },
+  );
+
+  it.each(['CANCELLED', 'TIMEOUT'] as const)('preserves %s from the reuse probe', async (code) => {
+    await existingProject();
+    vi.mocked(runPythonProcess).mockRejectedValueOnce(
+      new ToolchainTransportError(code, 'probe interrupted'),
+    );
+    await expect(
+      prepareLockedProjectEnvironment(output, Buffer.from('checked native lock'), tools, {
+        offline: true,
+        reuseExisting: true,
+      }),
+    ).rejects.toMatchObject({ code });
+    expect(await readFile(join(output, 'pyvenv.cfg'), 'utf8')).toContain('false');
+    expect(vi.mocked(runPythonProcess).mock.calls).toHaveLength(1);
+  });
+
+  it('preserves an existing project on native sync failure and does not claim it ready', async () => {
+    await existingProject();
+    const native = vi.mocked(runPythonProcess).getMockImplementation()!;
+    vi.mocked(runPythonProcess).mockImplementation(async (...args) => {
+      if (args[1][1] === 'sync')
+        throw new ToolchainTransportError('PROCESS_FAILED', 'native failure');
+      return native(...args);
+    });
+    await expect(
+      prepareLockedProjectEnvironment(output, Buffer.from('checked native lock'), tools, {
+        offline: true,
+        reuseExisting: true,
+      }),
+    ).rejects.toMatchObject({ code: 'PROCESS_FAILED' });
+    expect(await readFile(join(output, 'pyvenv.cfg'), 'utf8')).toContain('false');
+    expect(vi.mocked(runPythonProcess).mock.calls.some((call) => call[1][1] === 'check')).toBe(
+      false,
+    );
+    expect((await readdir(root)).some((name) => name.startsWith('.supaflow-environment-'))).toBe(
+      false,
+    );
+  });
+
+  it('preserves an ordinary directory or symlink instead of recreating it for reuse', async () => {
+    await mkdir(output);
+    await writeFile(join(output, 'sentinel'), 'keep');
+    await expect(
+      prepareLockedProjectEnvironment(output, Buffer.from('checked native lock'), tools, {
+        offline: true,
+        reuseExisting: true,
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    const alias = join(root, 'alias');
+    await symlink(output, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    await expect(
+      prepareLockedProjectEnvironment(alias, Buffer.from('checked native lock'), tools, {
+        offline: true,
+        reuseExisting: true,
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    expect(await readFile(join(output, 'sentinel'), 'utf8')).toBe('keep');
+    expect(runPythonProcess).not.toHaveBeenCalled();
+  });
+
   it('uses the same lifecycle for a frozen native project pylock without index/config redirects', async () => {
     vi.stubEnv('UV_TARGET', join(root, 'foreign'));
     vi.stubEnv('UV_CONFIG_FILE', join(root, 'author-config.toml'));
