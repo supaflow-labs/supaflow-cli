@@ -44,7 +44,7 @@ export interface LockedConnectorInitOptions {
   offline: boolean;
 }
 
-async function requireAbsent(targetDir: string): Promise<void> {
+export async function requireNewConnectorProject(targetDir: string): Promise<void> {
   try {
     await lstat(targetDir);
   } catch (error) {
@@ -90,7 +90,7 @@ export async function initializeConnectorProject(
     }
   }
   requireActive(options.signal);
-  await requireAbsent(target);
+  await requireNewConnectorProject(target);
   const scratch = await mkdtemp(join(dirname(target), '.supaflow-init-'));
   const staging = join(scratch, 'project');
   try {
@@ -127,7 +127,7 @@ export async function initializeConnectorProject(
     await prepareAndValidate(staging);
     // One caller owns the target. Recheck observed conflicts before publishing;
     // concurrent writers and power-loss durability are outside this primitive.
-    await requireAbsent(target);
+    await requireNewConnectorProject(target);
     requireActive(options.signal);
     await rename(staging, target);
   } finally {
