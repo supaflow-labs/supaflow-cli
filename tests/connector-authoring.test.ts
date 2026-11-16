@@ -67,10 +67,21 @@ describe('inactive unauthenticated authoring adapters', () => {
       encoding: 'utf8',
     });
     expect(help).toMatch(/^\s+list\b/m);
-    expect(help).not.toMatch(/^\s+(check|test|doctor|manifest)\b/m);
+    expect(help).not.toMatch(/^\s+(check|test|doctor|manifest|build)\b/m);
     expect(bootstrap).not.toHaveBeenCalled();
   });
   it.each([
+    {
+      args: ['build'],
+      operation: 'artifact.build',
+      result: { artifactDir: resolve('./fixture ; project/dist') },
+      options: {
+        uvExecutable: tools.uvExecutable,
+        nodeExecutable: tools.nodeExecutable,
+        runtimeWheelDir: tools.runtimeWheelDir,
+        outputDir: resolve('./fixture ; project/dist'),
+      },
+    },
     {
       args: ['check'],
       operation: 'check',
@@ -145,13 +156,71 @@ describe('inactive unauthenticated authoring adapters', () => {
       expect(runConnectorToolchain).toHaveBeenCalledExactlyOnceWith(
         tools.pythonExecutable,
         { protocolVersion: 1, operation, projectDir, options },
-        { signal: bootstrap.mock.calls[0][1].signal, timeoutMs: 10_000 },
+        { signal: bootstrap.mock.calls[0][1].signal, timeoutMs: 10_000, offline: true },
       );
       expect(jsonOutput()).toEqual(result);
       expect(errors).not.toHaveBeenCalled();
       expect(process.exitCode).toBeUndefined();
     },
   );
+
+  it.each(['./output ; folder', '/absolute/artifact'])(
+    'resolves build output %s from the project',
+    async (output) => {
+      const project = resolve('./project'),
+        outputDir = resolve(project, output);
+      vi.mocked(runConnectorToolchain).mockResolvedValue({
+        protocolVersion: 1,
+        ok: true,
+        result: { artifactDir: outputDir },
+      });
+      await parse(['connectors', 'build', '--project', project, '--output', output]);
+      expect(runConnectorToolchain).toHaveBeenCalledExactlyOnceWith(
+        tools.pythonExecutable,
+        {
+          protocolVersion: 1,
+          operation: 'artifact.build',
+          projectDir: project,
+          options: {
+            uvExecutable: tools.uvExecutable,
+            nodeExecutable: tools.nodeExecutable,
+            runtimeWheelDir: tools.runtimeWheelDir,
+            outputDir,
+          },
+        },
+        { signal: expect.any(AbortSignal), timeoutMs: 10_000, offline: false },
+      );
+      expect(logs).toHaveBeenCalledExactlyOnceWith(`Built connector artifact: ${outputDir}`);
+      expect(errors).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['', 'bad\0path'])('rejects an invalid output before bootstrap: %j', async (output) => {
+    await parse(['--json', 'connectors', 'build', '--output', output]);
+    expect(bootstrap).not.toHaveBeenCalled();
+    expect(runConnectorToolchain).not.toHaveBeenCalled();
+    expect(jsonOutput()).toEqual({
+      error: {
+        code: 'INVALID_INPUT',
+        message: 'Provide a nonempty artifact output path without NUL characters',
+      },
+    });
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('preserves a build rejection without retrying or changing outputs', async () => {
+    vi.mocked(runConnectorToolchain).mockResolvedValue({
+      protocolVersion: 1,
+      ok: false,
+      error: { code: 'BUILD_FAILED', message: 'Artifact output already exists' },
+    });
+    await parse(['--json', 'connectors', 'build']);
+    expect(runConnectorToolchain).toHaveBeenCalledOnce();
+    expect(jsonOutput()).toEqual({
+      error: { code: 'BUILD_FAILED', message: 'Artifact output already exists' },
+    });
+    expect(process.exitCode).toBe(1);
+  });
 
   it('defaults to cwd, keeps live tests off and prints a concise human result', async () => {
     vi.mocked(runConnectorToolchain).mockResolvedValue({
@@ -174,6 +243,10 @@ describe('inactive unauthenticated authoring adapters', () => {
 
   it.each([
     ['connectors', 'check', '--help'],
+    ['connectors', 'build', '--help'],
+    ['connectors', 'build', '--live'],
+    ['connectors', 'build', '--output'],
+    ['connectors', 'build', 'stray'],
     ['connectors', 'manifest', 'generate', '--help'],
     ['connectors', 'check', '--live'],
     ['connectors', 'doctor', '--live'],

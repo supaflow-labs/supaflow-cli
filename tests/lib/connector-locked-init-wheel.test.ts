@@ -11,6 +11,7 @@ const sdk = process.env.SUPAFLOW_TEST_SDK_WHEEL;
 const runtime = process.env.SUPAFLOW_TEST_RUNTIME_WHEEL;
 const testkit = process.env.SUPAFLOW_TEST_TESTKIT_WHEEL;
 const wheelhouse = process.env.SUPAFLOW_TEST_RUNTIME_WHEELHOUSE;
+const buildWheelhouse = process.env.SUPAFLOW_TEST_BUILD_WHEELHOUSE;
 
 // The caller-owned public toolchain includes SQL authoring dependencies. This gate
 // separately installs only the exported production graph in fresh offline envs.
@@ -19,15 +20,20 @@ describe.skipIf(!python)('locked initialization with installed public packages',
   let versions: string[];
 
   beforeAll(() => {
-    expect(python && uv && sdk && runtime && testkit && wheelhouse).toBeTruthy();
+    expect(python && uv && sdk && runtime && testkit && wheelhouse && buildWheelhouse).toBeTruthy();
     root = mkdtempSync(join(tmpdir(), 'supaflow locked public init ; '));
     writeFileSync(join(root, 'package.json'), '{"type":"module"}\n');
     mkdirSync(join(root, 'wheels'));
     for (const wheel of [sdk!, runtime!])
       copyFileSync(wheel, join(root, 'wheels', basename(wheel)));
     mkdirSync(join(root, 'install-wheels'));
-    for (const wheel of readdirSync(wheelhouse!).filter((name) => name.endsWith('.whl')))
-      copyFileSync(join(wheelhouse!, wheel), join(root, 'install-wheels', wheel));
+    mkdirSync(join(root, 'index-wheels'));
+    for (const directory of [wheelhouse!, buildWheelhouse!]) {
+      for (const wheel of readdirSync(directory).filter((name) => name.endsWith('.whl'))) {
+        copyFileSync(join(directory, wheel), join(root, 'install-wheels', wheel));
+        copyFileSync(join(directory, wheel), join(root, 'index-wheels', wheel));
+      }
+    }
     for (const wheel of [sdk!, runtime!])
       copyFileSync(wheel, join(root, 'install-wheels', basename(wheel)));
     versions = JSON.parse(
@@ -56,7 +62,7 @@ for filename in sys.argv[3:]:
 major,minor=sys.version_info[:2]
 print(json.dumps([*versions,f'>={major}.{minor},<{major}.{minor+1}']))
 `,
-          wheelhouse!,
+          join(root, 'index-wheels'),
           join(root, 'simple'),
           sdk!,
           runtime!,
@@ -209,18 +215,20 @@ assert.equal(existsSync(join(target,'.venv')),false);
 assert.equal(existsSync(join(target,'deps/.venv')),false);
 for(const [path,raw] of Object.entries(template.files))assert.equal(readFileSync(join(target,path),'utf8'),raw);
 const bootstrapCalls=[];
-async function command(args,json=true) {
+let buildUv=tools.uvExecutable;
+async function command(args,json=true,expectedExit=undefined) {
  const cli=new commander.Command().exitOverride().option('--json');
  registerConnectorAuthoringCommands(cli.command('connectors'),async(project,options)=>{
   assert.equal(project,target);assert.equal(options.offline,true);
-  assert(options.signal instanceof AbortSignal);bootstrapCalls.push(options.operation);return tools;
+  assert(options.signal instanceof AbortSignal);bootstrapCalls.push(options.operation);
+  return options.operation==='artifact.build'?{...tools,uvExecutable:buildUv}:tools;
  },{timeoutMs:60_000});
  const lines=[],original=console.log;
  try {
   console.log=(value)=>lines.push(value);
   await cli.parseAsync([...(json?['--json']:[]),'connectors',...args,'--project',target,'--offline'],{from:'user'});
  } finally {console.log=original;}
- assert.equal(process.exitCode,undefined);assert.equal(lines.length,1);
+ assert.equal(process.exitCode,expectedExit);process.exitCode=undefined;assert.equal(lines.length,1);
  return json?JSON.parse(lines[0]):lines[0];
 }
 assert.deepEqual(await command(['check']),{checked:true});
@@ -231,7 +239,52 @@ assert.equal(diagnostic.diagnostics.selected.runtimeDistributionVersion,id==='cu
 assert.match(await command(['doctor'],false),/Execution ranges are local declarations/);
 assert.deepEqual(await command(['manifest','check']),{manifest:'connector.yaml'});
 assert.deepEqual(await command(['manifest','generate']),{manifest:'connector.yaml'});
-assert.deepEqual(bootstrapCalls,['check','test','doctor','doctor','manifest.check','manifest.generate']);
+const beforeBuild=projectFiles(target),artifactDir=target+'-artifact';
+const uvObservations=target+'-uv-offline.jsonl';
+if(id==='custom-source'&&process.platform!=='win32') {
+ buildUv=target+'-recording-uv';
+ const wrapper=${JSON.stringify(`import json,os,pathlib,sys
+target=pathlib.Path(sys.argv[1]);uv=sys.argv[2];log=sys.argv[3]
+target.write_text('#!'+sys.executable+' -I\\nimport json,os,sys\\n'
+    +'with open('+repr(log)+',"a") as output: output.write(json.dumps({"phase":"build" if sys.argv[1:2]==["build"] else "other","offline":os.environ.get("UV_OFFLINE")})+"\\\\n")\\n'
+    +'os.execv('+repr(uv)+',['+repr(uv)+',*sys.argv[1:]])\\n')
+target.chmod(0o755)
+`)};
+ execFileSync(tools.pythonExecutable,['-I','-B','-c',wrapper,buildUv,tools.uvExecutable,uvObservations]);
+}
+process.env.UV_OFFLINE='false';
+assert.deepEqual(await command(['build','--output',artifactDir]),{artifactDir});
+assert.equal(process.env.UV_OFFLINE,'false');process.env.UV_OFFLINE='true';
+if(buildUv!==tools.uvExecutable) {
+ const observations=readFileSync(uvObservations,'utf8').trim().split('\\n').map(line=>JSON.parse(line));
+ assert(observations.some(value=>value.phase==='build'));assert(observations.every(value=>value.offline==='true'));
+}
+const artifactFiles=projectFiles(artifactDir);
+const artifactCheck=${JSON.stringify(`import pathlib,sys,zipfile
+from supaflow_connector_toolchain.connector_lock import parse_connector_lock,verify_connector_payloads
+root=pathlib.Path(sys.argv[1])
+files={path.relative_to(root).as_posix():path.read_bytes() for path in root.rglob('*') if path.is_file()}
+lock=parse_connector_lock(files['connector.lock'])
+verify_connector_payloads(lock.raw_bytes,files)
+assert set(files)=={'connector.lock','connector.yaml','runtime.lock','deps/pyproject.toml','deps/uv.lock',lock.connector_wheel.path}
+with zipfile.ZipFile(root/lock.connector_wheel.path) as wheel:
+    roots={name.split('/',1)[0] for name in wheel.namelist()}
+    assert 'supaflow_connector_acme' in roots
+    assert roots.isdisjoint({'supaflow_python_sdk','supaflow_python_runtime','supaflow_connector','supaflow_dlt_runtime','supaflow_python_testkit','supaflow_connector_toolchain','supaflow_connector_cli'})
+`)};
+execFileSync(tools.pythonExecutable,['-I','-B','-c',artifactCheck,artifactDir]);
+assert.deepEqual(await command(['build','--output',artifactDir],true,1),{error:{code:'BUILD_FAILED',message:'Artifact output already exists; supply a fresh staging destination'}});
+assert.deepEqual(projectFiles(artifactDir),artifactFiles);
+assert.deepEqual(projectFiles(target),beforeBuild);
+const defaultOutput=join(target,'dist');
+assert.deepEqual(await command(['build']),{artifactDir:defaultOutput});
+assert.deepEqual(await command(['check']),{checked:true});
+assert.deepEqual(await command(['test']),{tested:true});
+assert.deepEqual(await command(['manifest','generate']),{manifest:'connector.yaml'});
+const afterDefault=projectFiles(target);
+for(const path of Object.keys(afterDefault))if(path.startsWith('dist/'))delete afterDefault[path];
+assert.deepEqual(afterDefault,beforeBuild);
+assert.deepEqual(bootstrapCalls,['check','test','doctor','doctor','manifest.check','manifest.generate','artifact.build','artifact.build','artifact.build','check','test','manifest.generate']);
 for(const [path,raw] of Object.entries(template.files))assert.equal(readFileSync(join(target,path),'utf8'),raw);
 assert.deepEqual(readFileSync(join(target,'runtime.lock')),before);
 console.log(JSON.stringify({template:id,checked:true,sourceUnchanged:true,runtimeUnchanged:true,runtimeEnvironment:true,commands:true}));`;

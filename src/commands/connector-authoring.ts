@@ -9,7 +9,13 @@ import {
 } from '../lib/connector-toolchain.js';
 import { VERSION } from '../version.js';
 
-type Operation = 'check' | 'test' | 'doctor' | 'manifest.generate' | 'manifest.check';
+type Operation =
+  | 'check'
+  | 'test'
+  | 'doctor'
+  | 'manifest.generate'
+  | 'manifest.check'
+  | 'artifact.build';
 
 export interface ConnectorAuthoringTools {
   pythonExecutable: string;
@@ -90,6 +96,15 @@ export function registerConnectorAuthoringCommands(
     process.on('SIGTERM', terminate);
     try {
       const projectDir = resolve(options.project ?? process.cwd());
+      if (
+        operation === 'artifact.build' &&
+        (typeof options.output !== 'string' || !options.output || options.output.includes('\0'))
+      ) {
+        throw new ToolchainTransportError(
+          'INVALID_INPUT',
+          'Provide a nonempty artifact output path without NUL characters',
+        );
+      }
       const tools = await bootstrap(projectDir, {
         operation,
         offline: options.offline === true,
@@ -104,6 +119,18 @@ export function registerConnectorAuthoringCommands(
           operation,
           projectDir,
           options: { nodeExecutable: tools.nodeExecutable },
+        };
+      } else if (operation === 'artifact.build') {
+        request = {
+          protocolVersion: 1,
+          operation,
+          projectDir,
+          options: {
+            uvExecutable: tools.uvExecutable,
+            nodeExecutable: tools.nodeExecutable,
+            runtimeWheelDir: tools.runtimeWheelDir,
+            outputDir: resolve(projectDir, options.output),
+          },
         };
       } else {
         request = {
@@ -121,6 +148,7 @@ export function registerConnectorAuthoringCommands(
       const response = await runConnectorToolchain(tools.pythonExecutable, request, {
         signal: controller.signal,
         timeoutMs: transport.timeoutMs,
+        offline: options.offline === true,
       });
       if (controller.signal.aborted)
         throw new ToolchainTransportError('CANCELLED', 'Connector operation cancelled');
@@ -130,6 +158,8 @@ export function registerConnectorAuthoringCommands(
         printOutput(formatGetJson(response.result));
       } else if ('diagnostics' in response.result) {
         printOutput(doctorText(response.result.diagnostics));
+      } else if ('artifactDir' in response.result) {
+        printOutput(`Built connector artifact: ${response.result.artifactDir}`);
       } else {
         printOutput(
           operation === 'check'
@@ -174,6 +204,16 @@ export function registerConnectorAuthoringCommands(
   configure(
     connectors.command('doctor').description('Report local authoring diagnostics'),
     'doctor',
+  );
+  configure(
+    connectors
+      .command('build')
+      .description('Build a connector artifact in a fresh output directory'),
+    'artifact.build',
+  ).option(
+    '--output <directory>',
+    'Fresh artifact output directory, relative to the project',
+    'dist',
   );
   const manifest = connectors.command('manifest').description('Manage the connector manifest');
   configure(

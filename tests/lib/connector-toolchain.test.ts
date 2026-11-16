@@ -106,7 +106,8 @@ from pathlib import Path
 root = Path(__file__).parent
 request = json.load(sys.stdin)
 scenario = json.loads((root / 'scenario.json').read_text())
-details = {'request': request, 'isolated': sys.flags.isolated, 'pid': os.getpid()}
+details = {'request': request, 'isolated': sys.flags.isolated, 'pid': os.getpid(),
+           'uvOffline': os.environ.get('UV_OFFLINE')}
 if scenario.get('descendant'):
     descendant = subprocess.Popen([sys.executable, '-I', '-c', 'import time; time.sleep(10)'])
     details['descendantPid'] = descendant.pid
@@ -140,6 +141,22 @@ function configure(
 }
 
 describe('connector toolchain subprocess', () => {
+  it.each([undefined, false, true])(
+    'keeps offline control in the child environment (%j)',
+    async (offline) => {
+      vi.stubEnv('UV_OFFLINE', 'false');
+      try {
+        configure();
+        expect(await runConnectorToolchain(python, info, { offline })).toEqual(success);
+        expect(JSON.parse(readFileSync(captured, 'utf8')).uvOffline).toBe(
+          offline ? 'true' : 'false',
+        );
+        expect(process.env.UV_OFFLINE).toBe('false');
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
   it('uses isolated Python, stdin JSON and executable paths with spaces/metacharacters', async () => {
     configure();
     expect(await runConnectorToolchain(python, info)).toEqual(success);
