@@ -360,4 +360,18 @@ with zipfile.ZipFile(sys.argv[1],'w') as archive:
     expect((await readdir(root)).includes('foreign')).toBe(false);
     expect(requests).toContain(`/wheels/${filename}`);
   });
+  it('honors inherited offline mode on a cold native index cache', async () => {
+    vi.stubEnv('UV_OFFLINE', 'true');
+    const result = await prepareIndexedToolchainEnvironment(
+      join(root, 'cold'),
+      requirements,
+      tools,
+      {
+        offline: false,
+      },
+    ).catch((error) => error);
+    expect(requests).toEqual([]);
+    expect(result).toMatchObject({ code: 'PROCESS_FAILED' });
+    await expect(readFile(join(root, 'cold'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
 });
