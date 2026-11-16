@@ -114,19 +114,28 @@ export type ToolchainRequest =
         uvExecutable: string;
         outputDir: string;
         offline: boolean;
+        agentTargets?: readonly ConnectorAgentTarget[];
       };
     }
   | {
       protocolVersion: 1;
       operation: 'dependencies.export';
       projectDir: string;
-      options: { uvExecutable: string; outputDir: string };
+      options: {
+        uvExecutable: string;
+        outputDir: string;
+        agentTargets?: readonly ConnectorAgentTarget[];
+      };
     }
   | {
       protocolVersion: 1;
       operation: 'dependencies.check';
       projectDir: string;
-      options: { uvExecutable: string; offline: boolean };
+      options: {
+        uvExecutable: string;
+        offline: boolean;
+        agentTargets?: readonly ConnectorAgentTarget[];
+      };
     }
   | {
       protocolVersion: 1;
@@ -152,6 +161,7 @@ export type ToolchainRequest =
         requiredHostProtocol: number;
         agentExecutionPython: string;
         offline: boolean;
+        agentTargets?: readonly ConnectorAgentTarget[];
       };
     }
   | {

@@ -1,7 +1,11 @@
 import { mkdtemp, mkdir, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runConnectorToolchain, ToolchainTransportError } from './connector-toolchain.js';
+import {
+  runConnectorToolchain,
+  ToolchainTransportError,
+  type ConnectorAgentTarget,
+} from './connector-toolchain.js';
 
 const FILES = ['deps/pyproject.toml', 'deps/uv.lock'] as const;
 const INPUTS = ['pyproject.toml', 'runtime.lock', ...FILES, 'uv.toml', 'deps/uv.toml'] as const;
@@ -31,7 +35,11 @@ async function snapshot(root: string): Promise<(Buffer | null)[]> {
 /** One caller owns the project; normal errors roll back, power loss needs re-locking. */
 export async function refreshConnectorDependencyLocks(
   projectDir: string,
-  tools: { pythonExecutable: string; uvExecutable: string },
+  tools: {
+    pythonExecutable: string;
+    uvExecutable: string;
+    agentTargets?: readonly ConnectorAgentTarget[];
+  },
   options: { offline: boolean; signal?: AbortSignal; timeoutMs?: number },
 ): Promise<void> {
   const active = () => {
@@ -84,7 +92,12 @@ export async function refreshConnectorDependencyLocks(
         protocolVersion: 1,
         operation: 'dependencies.generate',
         projectDir,
-        options: { uvExecutable: tools.uvExecutable, outputDir, offline: options.offline },
+        options: {
+          uvExecutable: tools.uvExecutable,
+          outputDir,
+          offline: options.offline,
+          ...(tools.agentTargets === undefined ? {} : { agentTargets: tools.agentTargets }),
+        },
       },
       options,
     );

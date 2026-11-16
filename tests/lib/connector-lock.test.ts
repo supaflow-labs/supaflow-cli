@@ -68,6 +68,12 @@ const run = (options: { offline: boolean; signal?: AbortSignal } = { offline: tr
   refreshConnectorDependencyLocks(root, tools, options);
 
 describe('ordinary native dependency lock publication', () => {
+  it('forwards advertised target facts without changing runtime selection', async () => {
+    const agentTargets = [{ name: 'wire-fixture', environment: {}, wheelTags: ['py3-none-any'] }];
+    generated = (request) => expect(request.options.agentTargets).toEqual(agentTargets);
+    await refreshConnectorDependencyLocks(root, { ...tools, agentTargets }, { offline: true });
+    expect(read('runtime.lock')).toBe('exact runtime bytes');
+  });
   it.each([true, false])('replaces only generated files with offline=%s', async (offline) => {
     await run({ offline });
     expect(read('runtime.lock')).toBe('exact runtime bytes');

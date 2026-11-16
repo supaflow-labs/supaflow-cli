@@ -59,6 +59,23 @@ const output = () => {
   return JSON.parse(logs.mock.calls[0][0] as string);
 };
 describe('inactive ordinary connector lock command', () => {
+  it.each([false, true])('forwards supplied inventory through lock check=%s', async (checking) => {
+    const agentTargets = [{ name: 'wire-fixture', environment: {}, wheelTags: ['py3-none-any'] }];
+    bootstrap.mockResolvedValue({ ...tools, agentTargets });
+    await parse(['--json', 'connectors', 'lock', ...(checking ? ['--check'] : [])]);
+    if (checking) {
+      expect(vi.mocked(runConnectorToolchain).mock.calls[0][1]).toMatchObject({
+        options: { agentTargets },
+      });
+      expect(refreshConnectorDependencyLocks).not.toHaveBeenCalled();
+    } else {
+      expect(vi.mocked(refreshConnectorDependencyLocks).mock.calls[0][1]).toEqual({
+        ...tools,
+        agentTargets,
+      });
+    }
+    expect(process.exitCode).toBeUndefined();
+  });
   it.each([true, false])(
     'checks freshness with offline=%s without invoking the writer',
     async (offline) => {
