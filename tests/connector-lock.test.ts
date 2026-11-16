@@ -179,7 +179,7 @@ describe('inactive ordinary connector lock command', () => {
       expect(output().error.code).toBe('INVALID_INPUT');
     },
   );
-  it.each([['--help'], ['--upgrade-runtime'], ['extra'], ['--project']])(
+  it.each([['--help'], ['--upgrade-unknown'], ['extra'], ['--project']])(
     'does not bootstrap for parser exits: %j',
     async (...args) => {
       await expect(parse(['connectors', 'lock', ...args])).rejects.toThrow();

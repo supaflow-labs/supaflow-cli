@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   cpSync,
@@ -258,6 +258,42 @@ print(json.dumps({'versions':versions,'target':{'name':'fixture-local-agent','en
       const before = inputs.map((name) => readFileSync(join(project, name)));
       expect(invoke(['lock', '--check', '--project', project])).toEqual({ checked: true });
       expect(invoke(['lock', '--project', project])).toEqual({ locked: true });
+      const unchangedDiff = {
+        before: before[0].toString('utf8'),
+        after: before[0].toString('utf8'),
+      };
+      expect(invoke(['lock', '--upgrade-runtime', '--project', project])).toEqual({
+        locked: true,
+        runtimeLockDiff: unchangedDiff,
+      });
+      expect(
+        invoke([
+          'lock',
+          '--upgrade-runtime',
+          '--to',
+          versions[template === 'custom-source' ? 0 : 1],
+          '--project',
+          project,
+        ]),
+      ).toEqual({ locked: true, runtimeLockDiff: unchangedDiff });
+      const rejected = spawnSync(
+        process.execPath,
+        [
+          executable,
+          '--json',
+          'connectors',
+          'lock',
+          '--upgrade-runtime',
+          '--to',
+          '999.0.0',
+          '--project',
+          project,
+          '--offline',
+        ],
+        { cwd: root, env: environment, encoding: 'utf8', timeout: 120_000 },
+      );
+      expect(rejected.status).toBe(1);
+      expect(JSON.parse(rejected.stdout).error.code).toBe('LOCK_FAILED');
       expect(invoke(['check', '--project', project])).toEqual({ checked: true });
       expect(invoke(['test', '--project', project])).toEqual({ tested: true });
       const artifactDir = join(root, basename(project) + '-artifact');

@@ -66,7 +66,16 @@ export function registerBundledConnectorAuthoringCommands(
     connectors,
     async (project, context) => {
       const { bundle, tools } = await selected(project, context);
-      return { ...tools, agentTargets: bundle.agentTargets };
+      return {
+        ...tools,
+        agentTargets: bundle.agentTargets,
+        runtimeProposal: {
+          sdkVersion: bundle.sdkVersion,
+          runtimeVersion: bundle.runtimeVersion,
+          requiredHostProtocol: bundle.requiredHostProtocol,
+          agentExecutionPython: bundle.agentExecutionPython,
+        },
+      };
     },
     options,
   );
