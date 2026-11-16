@@ -118,6 +118,12 @@ export type ToolchainRequest =
     }
   | {
       protocolVersion: 1;
+      operation: 'dependencies.check';
+      projectDir: string;
+      options: { uvExecutable: string; runtimeWheelDir: string };
+    }
+  | {
+      protocolVersion: 1;
       operation: 'runtime.propose';
       projectDir: string;
       options: {
@@ -367,7 +373,7 @@ function response(
           ? keys(result, ['operations']) &&
             Array.isArray(result.operations) &&
             result.operations.every((item) => typeof item === 'string')
-          : request.operation === 'check'
+          : request.operation === 'check' || request.operation === 'dependencies.check'
             ? keys(result, ['checked']) && result.checked === true
             : request.operation === 'test'
               ? keys(result, ['tested']) && result.tested === true

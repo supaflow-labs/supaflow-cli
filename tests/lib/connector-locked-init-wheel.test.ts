@@ -183,6 +183,8 @@ function projectFiles(directory,prefix='') {
  return result;
 }
 const beforeExport=projectFiles(target);
+assert.deepEqual(await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'dependencies.check',projectDir:target,options:{uvExecutable:tools.uvExecutable,runtimeWheelDir:tools.runtimeWheelDir}}),{protocolVersion:1,ok:true,result:{checked:true}});
+assert.deepEqual(projectFiles(target),beforeExport);
 const requirementsDir=target+'-requirements';
 const exported=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'dependencies.export',projectDir:target,options:{uvExecutable:tools.uvExecutable,runtimeWheelDir:tools.runtimeWheelDir,outputDir:requirementsDir}});
 assert.deepEqual(exported,{protocolVersion:1,ok:true,result:{requirementsDir}});
