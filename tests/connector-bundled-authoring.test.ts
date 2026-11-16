@@ -14,6 +14,10 @@ vi.mock('../src/lib/connector-init.js', async (original) => ({
   ...(await original<typeof import('../src/lib/connector-init.js')>()),
   initializeLockedConnectorProject: vi.fn(),
 }));
+vi.mock('../src/lib/connector-lock.js', async (original) => ({
+  ...(await original<typeof import('../src/lib/connector-lock.js')>()),
+  upgradeConnectorRuntimeLocks: vi.fn(),
+}));
 vi.mock('../src/lib/connector-toolchain.js', async (original) => ({
   ...(await original<typeof import('../src/lib/connector-toolchain.js')>()),
   runConnectorToolchain: vi.fn(),
@@ -25,6 +29,7 @@ import {
   ConnectorProjectPreparationError,
 } from '../src/lib/connector-environment.js';
 import { initializeLockedConnectorProject } from '../src/lib/connector-init.js';
+import { upgradeConnectorRuntimeLocks } from '../src/lib/connector-lock.js';
 import { runConnectorToolchain } from '../src/lib/connector-toolchain.js';
 import { registerBundledConnectorAuthoringCommands } from '../src/commands/connector-bundled-authoring.js';
 
@@ -214,6 +219,29 @@ it('selects the recommended project Python when init has no explicit range', asy
     `${bundle.requiresPython},${bundle.projectRequiresPython}`,
   );
   expect(process.exitCode).toBeUndefined();
+});
+
+it('supplies the checked bundle recommendation to the explicit upgrade command', async () => {
+  vi.mocked(runConnectorToolchain).mockResolvedValue({
+    protocolVersion: 1,
+    ok: true,
+    result: {
+      runtime: { wheels: [{ name: 'supaflow-python-sdk' }] } as never,
+      runtimeSha256: 'a'.repeat(64),
+    },
+  });
+  vi.mocked(upgradeConnectorRuntimeLocks).mockResolvedValue({
+    before: Buffer.from('before'),
+    after: Buffer.from('after'),
+  });
+  await parse(['lock', '--upgrade-runtime', '--project', project]);
+  expect(vi.mocked(upgradeConnectorRuntimeLocks).mock.calls[0][2]).toEqual({
+    sdkVersion: bundle.sdkVersion,
+    runtimeVersion: null,
+    requiredHostProtocol: bundle.requiredHostProtocol,
+    agentExecutionPython: bundle.agentExecutionPython,
+  });
+  expect(prepareConnectorProjectEnvironment).not.toHaveBeenCalled();
 });
 
 it.each(['doctor', 'lock'])('keeps %s read-only for the project environment', async (operation) => {
