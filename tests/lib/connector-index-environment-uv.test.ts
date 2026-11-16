@@ -5,7 +5,11 @@ import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { prepareIndexedToolchainEnvironment } from '../../src/lib/connector-environment.js';
+import {
+  prepareIndexedToolchainEnvironment,
+  prepareLockedProjectEnvironment,
+} from '../../src/lib/connector-environment.js';
+import { runPythonProcess } from '../../src/lib/connector-python-process.js';
 
 const uv = process.env.SUPAFLOW_TEST_UV;
 
@@ -16,6 +20,8 @@ describe.skipIf(!uv)('native index toolchain preparation', () => {
   let requirements: Buffer;
   let wheel: Buffer;
   let corrupt: boolean;
+  let authentication: boolean;
+  let authorizedRequests: number;
   let filename: string;
   let indexUrl: string;
   let tools: {
@@ -57,7 +63,8 @@ root='env_fixture-1.0.0.dist-info/'
 with zipfile.ZipFile(sys.argv[1],'w') as archive:
     archive.writestr(root+'METADATA','Metadata-Version: 2.4\\nName: env-fixture\\nVersion: 1.0.0\\nRequires-Python: >=3.11\\n'+sys.argv[2])
     archive.writestr(root+'WHEEL','Wheel-Version: 1.0\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n')
-    archive.writestr('env_fixture.py','VALUE = "original"\\n')
+    archive.writestr('env_fixture.py','import sys\\nVALUE = "original"\\ndef main():\\n    print(sys.prefix)\\n')
+    archive.writestr(root+'entry_points.txt','[console_scripts]\\nenv-fixture = env_fixture:main\\n')
     archive.writestr('env_fixture-1.0.0.data/scripts/fixture-native','#!/bin/sh\\nexit 0\\n')
     archive.writestr(root+'RECORD',''.join(path+',,\\n' for path in archive.namelist())+root+'RECORD,,\\n')
 `,
@@ -70,6 +77,8 @@ with zipfile.ZipFile(sys.argv[1],'w') as archive:
     requirements = Buffer.from(`env-fixture==1.0.0 --hash=sha256:${hash}\n`);
     requests = [];
     corrupt = false;
+    authentication = false;
+    authorizedRequests = 0;
     server = createServer((request, response) => {
       requests.push(request.url ?? '');
       response.setHeader('Connection', 'close');
@@ -79,6 +88,16 @@ with zipfile.ZipFile(sys.argv[1],'w') as archive:
           `<a href="/wheels/${filename}#sha256=${createHash('sha256').update(wheel).digest('hex')}">fixture</a>`,
         );
       } else if (request.url === `/wheels/${filename}`) {
+        if (
+          authentication &&
+          request.headers.authorization !==
+            `Basic ${Buffer.from('TEST_USER:TEST_ONLY_PASSWORD').toString('base64')}`
+        ) {
+          response.writeHead(401, { 'WWW-Authenticate': 'Basic realm="fixture"' });
+          response.end();
+          return;
+        }
+        if (authentication) authorizedRequests++;
         response.end(corrupt ? Buffer.concat([wheel, Buffer.from('changed')]) : wheel);
       } else {
         response.writeHead(404);
@@ -135,6 +154,165 @@ link-mode = "symlink"
       ),
     );
   }
+
+  async function nativePylock(): Promise<Buffer> {
+    const input = join(root, 'requirements.in');
+    const output = join(root, 'pylock.toml');
+    await writeFile(input, requirements);
+    await runPythonProcess(
+      uv!,
+      [
+        'pip',
+        'compile',
+        input,
+        '--python',
+        tools.pythonExecutable,
+        '--default-index',
+        indexUrl,
+        '--only-binary=:all:',
+        '--generate-hashes',
+        '--format',
+        'pylock.toml',
+        '--preview-features',
+        'pylock',
+        '--no-header',
+        '--output-file',
+        output,
+        '--no-config',
+        '--no-python-downloads',
+        '--cache-dir',
+        join(root, 'compile-cache'),
+        '--quiet',
+      ],
+      null,
+      (_raw, status) => {
+        expect(status).toBe(0);
+      },
+      {
+        stderr: 'ignore',
+        env: Object.fromEntries(
+          Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('UV_')),
+        ),
+      },
+    );
+    return readFile(output);
+  }
+
+  it('installs native project lock URLs into a normal relocatable venv and reuses copies offline', async () => {
+    const lock = await nativePylock();
+    requests.length = 0;
+    const output = join(root, 'project-venv');
+    const python = await prepareLockedProjectEnvironment(output, lock, tools, { offline: false });
+    expect(requests).toEqual([`/wheels/${filename}`]);
+    const script = join(
+      output,
+      process.platform === 'win32' ? 'Scripts/env-fixture.exe' : 'bin/env-fixture',
+    );
+    expect(await realpath(execFileSync(script, [], { encoding: 'utf8' }).trim())).toBe(
+      await realpath(output),
+    );
+    expect(installed(python).slice(0, 2)).toEqual(['original', '1.0.0']);
+    await writeFile(installed(python)[2], 'VALUE = "changed"\n');
+    requests.length = 0;
+    const second = await prepareLockedProjectEnvironment(
+      join(root, 'second-project-venv'),
+      lock,
+      tools,
+      { offline: true },
+    );
+    expect(installed(second).slice(0, 2)).toEqual(['original', '1.0.0']);
+    expect(requests).toEqual([]);
+    expect((await readdir(root)).some((name) => name.startsWith('forbidden'))).toBe(false);
+  });
+
+  it.each(['offline', 'corrupt', 'hashless'])(
+    'never publishes a native project environment after %s failure',
+    async (kind) => {
+      let lock = await nativePylock();
+      const coldTools = { ...tools, uvCacheDir: join(root, 'cold-cache') };
+      requests.length = 0;
+      if (kind === 'corrupt') corrupt = true;
+      if (kind === 'hashless')
+        lock = Buffer.from(lock.toString('utf8').replace(/,\s*hashes\s*=\s*\{[^}]+\}/g, ''));
+      if (kind === 'hashless') expect(lock).not.toEqual(await readFile(join(root, 'pylock.toml')));
+      vi.stubEnv('UV_HTTP_RETRIES', '0');
+      await expect(
+        prepareLockedProjectEnvironment(join(root, 'failed-project-venv'), lock, coldTools, {
+          offline: kind === 'offline',
+        }),
+      ).rejects.toMatchObject({ code: 'PROCESS_FAILED' });
+      if (kind === 'offline') expect(requests).toEqual([]);
+      expect(
+        (await readdir(root)).filter(
+          (name) => name === 'failed-project-venv' || name.startsWith('.supaflow-environment-'),
+        ),
+      ).toEqual([]);
+    },
+  );
+
+  it('uses native uv credentials for a locked private-mirror URL', async () => {
+    const lock = await nativePylock();
+    const credentials = join(root, 'test-credentials');
+    vi.stubEnv('UV_CREDENTIALS_DIR', credentials);
+    vi.stubEnv('UV_KEYRING_PROVIDER', 'disabled');
+    vi.stubEnv('UV_HTTP_RETRIES', '0');
+    // Verify the native storage override before login can write anything.
+    await runPythonProcess(
+      uv!,
+      ['auth', 'dir', '--no-config', '--no-cache'],
+      null,
+      (raw, status) => {
+        expect(status).toBe(0);
+        expect(raw.toString('utf8').trim()).toBe(credentials);
+      },
+      { stderr: 'ignore' },
+    );
+    authentication = true;
+    requests.length = 0;
+    await expect(
+      prepareLockedProjectEnvironment(
+        join(root, 'unauthorized-project'),
+        lock,
+        { ...tools, uvCacheDir: join(root, 'unauthorized-cache') },
+        { offline: false },
+      ),
+    ).rejects.toMatchObject({ code: 'PROCESS_FAILED' });
+    expect(requests).toContain(`/wheels/${filename}`);
+    expect(authorizedRequests).toBe(0);
+    expect((await readdir(root)).includes('unauthorized-project')).toBe(false);
+    await runPythonProcess(
+      uv!,
+      [
+        'auth',
+        'login',
+        indexUrl.replace('/simple', ''),
+        '--username',
+        'TEST_USER',
+        '--password',
+        'TEST_ONLY_PASSWORD',
+        '--keyring-provider',
+        'disabled',
+        '--no-config',
+        '--no-cache',
+      ],
+      null,
+      (_raw, status) => {
+        expect(status).toBe(0);
+      },
+      { stderr: 'ignore' },
+    );
+    requests.length = 0;
+    const selected = await prepareLockedProjectEnvironment(
+      join(root, 'private-project'),
+      lock,
+      { ...tools, uvCacheDir: join(root, 'private-cache') },
+      { offline: false },
+    );
+    expect(authorizedRequests).toBeGreaterThan(0);
+    expect(requests.length).toBeGreaterThan(0);
+    expect(requests.every((path) => path === `/wheels/${filename}`)).toBe(true);
+    expect(installed(selected).slice(0, 2)).toEqual(['original', '1.0.0']);
+  });
 
   it('uses the configured mirror, fixed target and copies, then reuses cache offline', async () => {
     const first = await prepareIndexedToolchainEnvironment(

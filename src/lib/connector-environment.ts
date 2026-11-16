@@ -15,6 +15,7 @@ interface EnvironmentTools extends BaseTools {
 
 type Source =
   | { kind: 'wheels'; directory: string }
+  | { kind: 'pylock'; offline: boolean }
   | {
       kind: 'index';
       configurationDir: string;
@@ -93,6 +94,30 @@ export async function prepareIndexedToolchainEnvironment(
   return { pythonExecutable: prepared.pythonExecutable, sitePackages: prepared.sitePackages! };
 }
 
+/**
+ * Normal project venv from the toolchain's checked, wheel-only native pylock.
+ * Artifact URLs/hashes are already resolved; this frozen install never searches
+ * an index or reads pip target/prefix configuration. Native uv owns acquisition.
+ * offline=false preserves ambient UV_OFFLINE; true always forces offline.
+ * Input must be the toolchain's validated wheel-only output, not a source lock.
+ */
+export async function prepareLockedProjectEnvironment(
+  outputDir: string,
+  pylock: Uint8Array,
+  tools: BaseTools,
+  options: Options & { offline: boolean },
+): Promise<string> {
+  return (
+    await prepareEnvironment(
+      outputDir,
+      pylock,
+      tools,
+      { kind: 'pylock', offline: options.offline },
+      options,
+    )
+  ).pythonExecutable;
+}
+
 async function prepareEnvironment(
   outputDir: string,
   requirements: Uint8Array,
@@ -100,14 +125,23 @@ async function prepareEnvironment(
   source: Source,
   options: Options,
 ): Promise<{ pythonExecutable: string; sitePackages: string | null }> {
-  const sourcePath = source.kind === 'wheels' ? source.directory : source.configurationDir;
+  const sourcePath =
+    source.kind === 'wheels'
+      ? source.directory
+      : source.kind === 'index'
+        ? source.configurationDir
+        : null;
   if (
     !(requirements instanceof Uint8Array) ||
     requirements.byteLength === 0 ||
-    (source.kind === 'index' && typeof source.offline !== 'boolean') ||
-    [outputDir, tools.uvExecutable, tools.pythonExecutable, sourcePath, tools.uvCacheDir].some(
-      (path) => typeof path !== 'string' || !isAbsolute(path) || path.includes('\0'),
-    )
+    (source.kind !== 'wheels' && typeof source.offline !== 'boolean') ||
+    [
+      outputDir,
+      tools.uvExecutable,
+      tools.pythonExecutable,
+      ...(sourcePath === null ? [] : [sourcePath]),
+      tools.uvCacheDir,
+    ].some((path) => typeof path !== 'string' || !isAbsolute(path) || path.includes('\0'))
   ) {
     throw new ToolchainTransportError(
       'INVALID_INPUT',
@@ -134,6 +168,27 @@ async function prepareEnvironment(
   const environment = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('UV_')),
   );
+  const registryEnvironment = Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) =>
+        !key.toUpperCase().startsWith('UV_') ||
+        /^UV_(OFFLINE|CONFIG_FILE|NO_CONFIG|NO_SYSTEM_CONFIG|CREDENTIALS_DIR|INDEX(?:_.*)?|DEFAULT_INDEX|EXTRA_INDEX_URL|FIND_LINKS|NO_INDEX|KEYRING_PROVIDER|INSECURE_HOST|SYSTEM_CERTS|NATIVE_TLS|HTTP_.*|REQUEST_TIMEOUT|AZURE_ENDPOINT_URL|GCS_ENDPOINT_URL|S3_ENDPOINT_URL)$/.test(
+          key.toUpperCase(),
+        ),
+    ),
+  );
+  // Frozen URLs use credential-store/transport settings, not index selection.
+  // Exact URLs use uv's native credential store, not named-index credentials.
+  // Explicit config files and registry selection are excluded from this phase.
+  const frozenEnvironment = Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) =>
+        !key.toUpperCase().startsWith('UV_') ||
+        /^UV_(OFFLINE|CREDENTIALS_DIR|KEYRING_PROVIDER|INSECURE_HOST|SYSTEM_CERTS|NATIVE_TLS|HTTP_.*|REQUEST_TIMEOUT|AZURE_ENDPOINT_URL|GCS_ENDPOINT_URL|S3_ENDPOINT_URL)$/.test(
+          key.toUpperCase(),
+        ),
+    ),
+  );
   const common = [
     '--offline',
     '--no-config',
@@ -157,7 +212,7 @@ async function prepareEnvironment(
       { signal: options.signal, timeoutMs: options.timeoutMs, stderr: 'ignore', env },
     );
   try {
-    const input = join(scratch, 'requirements.txt');
+    const input = join(scratch, source.kind === 'pylock' ? 'pylock.toml' : 'requirements.txt');
     await writeFile(input, snapshot, { flag: 'wx' });
     await run(
       [
@@ -167,7 +222,7 @@ async function prepareEnvironment(
         tools.pythonExecutable,
         '--no-project',
         '--relocatable',
-        ...(source.kind === 'index' ? ['--no-seed'] : []),
+        ...(source.kind !== 'wheels' ? ['--no-seed'] : []),
         ...common,
       ],
       'create the connector environment',
@@ -221,15 +276,6 @@ async function prepareEnvironment(
       }
       // Retain native registry/configuration and transport settings, while
       // excluding environment redirects and flags that change this operation.
-      const registryEnvironment = Object.fromEntries(
-        Object.entries(process.env).filter(
-          ([key]) =>
-            !key.toUpperCase().startsWith('UV_') ||
-            /^UV_(OFFLINE|CONFIG_FILE|NO_CONFIG|NO_SYSTEM_CONFIG|CREDENTIALS_DIR|INDEX(?:_.*)?|DEFAULT_INDEX|EXTRA_INDEX_URL|FIND_LINKS|NO_INDEX|KEYRING_PROVIDER|INSECURE_HOST|SYSTEM_CERTS|NATIVE_TLS|HTTP_.*|REQUEST_TIMEOUT|AZURE_ENDPOINT_URL|GCS_ENDPOINT_URL|S3_ENDPOINT_URL)$/.test(
-              key.toUpperCase(),
-            ),
-        ),
-      );
       await run(
         [
           'pip',
@@ -254,6 +300,28 @@ async function prepareEnvironment(
         ],
         'install the exact toolchain wheel set',
         registryEnvironment,
+      );
+    } else if (source.kind === 'pylock') {
+      await run(
+        [
+          'pip',
+          'sync',
+          input,
+          '--python',
+          python,
+          '--no-index',
+          '--require-hashes',
+          '--verify-hashes',
+          '--only-binary=:all:',
+          '--link-mode=copy',
+          '--no-allow-empty-requirements',
+          '--preview-features',
+          'pylock',
+          ...common.filter((value) => value !== '--offline'),
+          ...(source.offline ? ['--offline'] : []),
+        ],
+        'install the exact project wheel set',
+        frozenEnvironment,
       );
     } else
       await run(

@@ -15,7 +15,10 @@ import {
   runPythonProcess,
   ToolchainTransportError,
 } from '../../src/lib/connector-python-process.js';
-import { prepareOfflineConnectorEnvironment } from '../../src/lib/connector-environment.js';
+import {
+  prepareLockedProjectEnvironment,
+  prepareOfflineConnectorEnvironment,
+} from '../../src/lib/connector-environment.js';
 
 let root: string;
 let output: string;
@@ -45,6 +48,65 @@ afterEach(async () => {
 });
 
 describe('offline environment staging', () => {
+  it('uses the same lifecycle for a frozen native project pylock without index/config redirects', async () => {
+    vi.stubEnv('UV_TARGET', join(root, 'foreign'));
+    vi.stubEnv('UV_CONFIG_FILE', join(root, 'author-config.toml'));
+    vi.stubEnv('UV_FIND_LINKS', join(root, 'foreign-wheels'));
+    vi.stubEnv('UV_DEFAULT_INDEX', 'https://example.invalid/simple');
+    vi.stubEnv('UV_CREDENTIALS_DIR', join(root, 'credentials'));
+    vi.stubEnv('UV_NATIVE_TLS', 'true');
+    vi.stubEnv('UV_HTTP_TIMEOUT', '37');
+    vi.stubEnv('UV_NO_VERIFY_HASHES', 'true');
+    vi.stubEnv('UV_OFFLINE', 'true');
+    await prepareLockedProjectEnvironment(output, Buffer.from('checked native lock'), tools, {
+      offline: false,
+    });
+    const calls = vi.mocked(runPythonProcess).mock.calls;
+    expect(calls).toHaveLength(3);
+    expect(calls[0][1]).toContain('--no-seed');
+    for (const call of [calls[0], calls[2]])
+      expect(Object.keys(call[4]!.env!).some((name) => name.toUpperCase().startsWith('UV_'))).toBe(
+        false,
+      );
+    const args = calls[1][1];
+    expect(args).toEqual(
+      expect.arrayContaining([
+        'pip',
+        'sync',
+        '--python',
+        '--no-index',
+        '--no-config',
+        '--require-hashes',
+        '--verify-hashes',
+        '--only-binary=:all:',
+        '--link-mode=copy',
+        '--preview-features',
+        'pylock',
+      ]),
+    );
+    expect(args[2]).toMatch(/pylock\.toml$/);
+    expect(args).not.toContain('--target');
+    expect(args).not.toContain('--prefix');
+    expect(args).not.toContain('--offline');
+    expect(calls[1][4]?.env?.UV_OFFLINE).toBe('true');
+    expect(calls[1][4]?.env?.UV_TARGET).toBeUndefined();
+    expect(calls[1][4]?.env?.UV_CONFIG_FILE).toBeUndefined();
+    expect(calls[1][4]?.env?.UV_FIND_LINKS).toBeUndefined();
+    expect(calls[1][4]?.env?.UV_DEFAULT_INDEX).toBeUndefined();
+    expect(calls[1][4]?.env?.UV_CREDENTIALS_DIR).toBe(join(root, 'credentials'));
+    expect(calls[1][4]?.env?.UV_NATIVE_TLS).toBe('true');
+    expect(calls[1][4]?.env?.UV_HTTP_TIMEOUT).toBe('37');
+    expect(calls[1][4]?.env?.UV_NO_VERIFY_HASHES).toBeUndefined();
+    expect(calls[2][1].slice(0, 2)).toEqual(['pip', 'check']);
+  });
+
+  it('forces the frozen install offline even when the native environment says false', async () => {
+    vi.stubEnv('UV_OFFLINE', 'false');
+    await prepareLockedProjectEnvironment(output, Buffer.from('checked native lock'), tools, {
+      offline: true,
+    });
+    expect(vi.mocked(runPythonProcess).mock.calls[1][1]).toContain('--offline');
+  });
   it('uses fixed offline/hash/copy flags, checks dependencies and publishes once', async () => {
     vi.stubEnv('UV_TARGET', join(root, 'must-not-write'));
     vi.stubEnv('uv_target', join(root, 'must-not-write-either'));
