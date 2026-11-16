@@ -459,7 +459,8 @@ describe('connector toolchain subprocess', () => {
       options: {
         uvExecutable: '/fixture/uv',
         outputDir: '/fixture/proposal ; quoted',
-        runtimeWheels: ['/fixture/selected wheels/sdk.whl', '/fixture/selected wheels/runtime.whl'],
+        sdkVersion: '1.0.73.dev0',
+        runtimeVersion: '0.1.0',
         requiredHostProtocol: 2,
         agentExecutionPython: '>=3.12,<3.15',
         offline: true,
@@ -500,7 +501,8 @@ describe('connector toolchain subprocess', () => {
       options: {
         uvExecutable: '/fixture/uv',
         outputDir: '/fixture/proposal',
-        runtimeWheels: ['/fixture/sdk.whl'],
+        sdkVersion: '1.0.73.dev0',
+        runtimeVersion: null,
         requiredHostProtocol: 2,
         agentExecutionPython: '>=3.12,<3.15',
         offline: false,

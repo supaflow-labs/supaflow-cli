@@ -37,7 +37,8 @@ const tools: LockedConnectorInitOptions = {
   pythonExecutable: '/tools/python',
   uvExecutable: '/tools/uv',
   nodeExecutable: process.execPath,
-  runtimeWheels: ['/tools/wheels/sdk.whl'],
+  sdkVersion: '1.0.73.dev0',
+  runtimeVersion: '0.1.0',
   requiredHostProtocol: 2,
   agentExecutionPython: '>=3.12,<3.15',
   offline: true,
@@ -127,7 +128,8 @@ describe('locked project initialization composition', () => {
       expect(calls[0][1]).toMatchObject({
         options: {
           uvExecutable: tools.uvExecutable,
-          runtimeWheels: tools.runtimeWheels,
+          sdkVersion: tools.sdkVersion,
+          runtimeVersion: tools.runtimeVersion,
           requiredHostProtocol: tools.requiredHostProtocol,
           agentExecutionPython: tools.agentExecutionPython,
           offline: true,

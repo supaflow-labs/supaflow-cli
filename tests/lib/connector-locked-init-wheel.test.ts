@@ -99,21 +99,17 @@ print(json.dumps([*versions,f'>={major}.{minor},<{major}.{minor+1}']))
     'publishes, checks and prepares the exact %s runtime outside the checkout',
     (templateId) => {
       const target = join(root, templateId);
-      const selected = target + '-selected';
-      mkdirSync(selected);
-      for (const wheel of [sdk!, runtime!]) copyFileSync(wheel, join(selected, basename(wheel)));
       const options = {
         toolchainVersion: '0.1.0',
         pythonExecutable: python!,
         uvExecutable: uv!,
         nodeExecutable: process.execPath,
-        runtimeWheels: [join(selected, basename(sdk!))],
+        sdkVersion: versions[0],
+        runtimeVersion: templateId === 'custom-source' ? null : versions[1],
         requiredHostProtocol: 2,
         agentExecutionPython: versions[3],
         offline: true,
       };
-      if (templateId !== 'custom-source')
-        options.runtimeWheels.push(join(selected, basename(runtime!)));
       const metadata = {
         connectorName: 'ACME',
         displayName: 'Acme',
@@ -139,7 +135,7 @@ print(json.dumps([*versions,f'>={major}.{minor},<{major}.{minor+1}']))
       const program = `import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import {readFileSync,readdirSync,existsSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
+import {readFileSync,readdirSync,existsSync,mkdirSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {initializeLockedConnectorProject} from ${JSON.stringify(initModule)};
 import * as templates from ${JSON.stringify(templatesModule)};
@@ -151,7 +147,6 @@ const tools=${JSON.stringify(options)},target=${JSON.stringify(target)},id=${JSO
 const render=id==='custom-source'?templates.renderCustomSourceTemplate:id==='api-source'?templates.renderApiSourceTemplate:templates.renderSqlSourceTemplate;
 const template=render(${JSON.stringify(metadata)});
 await initializeLockedConnectorProject(target,template,tools);
-rmSync(${JSON.stringify(selected)},{recursive:true});
 for(const [path,raw] of Object.entries(template.files))assert.equal(readFileSync(join(target,path),'utf8'),raw);
 const before=readFileSync(join(target,'runtime.lock'));
 const inspection=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'runtime.inspect',projectDir:target,options:{}});

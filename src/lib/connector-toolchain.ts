@@ -128,7 +128,8 @@ export type ToolchainRequest =
       options: {
         uvExecutable: string;
         outputDir: string;
-        runtimeWheels: string[];
+        sdkVersion: string;
+        runtimeVersion: string | null;
         requiredHostProtocol: number;
         agentExecutionPython: string;
         offline: boolean;
