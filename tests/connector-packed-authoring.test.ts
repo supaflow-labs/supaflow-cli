@@ -300,19 +300,27 @@ print(json.dumps({'versions':versions,'target':{'name':'fixture-local-agent','en
       expect(invoke(['build', '--project', project, '--output', artifactDir])).toEqual({
         artifactDir,
       });
+      const defaultBuild = invoke(['build', '--project', project]);
+      const defaultArtifact = defaultBuild.artifactDir;
+      expect(defaultArtifact).toBe(
+        join(project, 'dist', 'supaflow-connector-acme-python', '0.1.0.dev1'),
+      );
+      // Rebuild the same coordinate through the actual packed executable.
+      expect(invoke(['build', '--project', project])).toEqual(defaultBuild);
       inputs.forEach((name, i) => expect(readFileSync(join(project, name))).toEqual(before[i]));
       const projectPython = join(
         project,
         '.venv',
         process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python',
       );
-      execFileSync(
-        projectPython,
-        [
-          '-I',
-          '-B',
-          '-c',
-          `
+      for (const checkedArtifact of [artifactDir, defaultArtifact])
+        execFileSync(
+          projectPython,
+          [
+            '-I',
+            '-B',
+            '-c',
+            `
 import importlib.util,pathlib,sys,yaml
 from supaflow_connector_toolchain.connector_lock import parse_connector_lock,verify_connector_payloads
 artifact=pathlib.Path(sys.argv[1]);files={p.relative_to(artifact).as_posix():p.read_bytes() for p in artifact.rglob('*') if p.is_file()}
@@ -321,12 +329,12 @@ assert yaml.safe_load(files['connector.yaml'])['connector']['type']==sys.argv[2]
 assert importlib.util.find_spec('supaflow_python_runtime') is None
 assert (importlib.util.find_spec('dlt') is None)==(sys.argv[3]=='custom-source')
 `,
-          artifactDir,
-          group === 'io.supaflow' ? 'ACME' : 'CUSTOM__COM_ACME__ACME',
-          template,
-        ],
-        { cwd: root, env: environment, stdio: 'pipe', timeout: 30_000 },
-      );
+            checkedArtifact,
+            group === 'io.supaflow' ? 'ACME' : 'CUSTOM__COM_ACME__ACME',
+            template,
+          ],
+          { cwd: root, env: environment, stdio: 'pipe', timeout: 30_000 },
+        );
     },
     180_000,
   );

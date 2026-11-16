@@ -10,6 +10,10 @@ import {
 } from '../lib/connector-toolchain.js';
 import { VERSION } from '../version.js';
 import { ConnectorProjectPreparationError } from '../lib/connector-environment.js';
+import {
+  buildVersionedConnectorArtifact,
+  ConnectorBuildOperationError,
+} from '../lib/connector-build.js';
 
 type Operation =
   | 'check'
@@ -100,6 +104,7 @@ export function registerConnectorAuthoringCommands(
       const projectDir = resolve(options.project ?? process.cwd());
       if (
         operation === 'artifact.build' &&
+        options.output !== undefined &&
         (typeof options.output !== 'string' || !options.output || options.output.includes('\0'))
       ) {
         throw new ToolchainTransportError(
@@ -112,6 +117,19 @@ export function registerConnectorAuthoringCommands(
         offline: options.offline === true,
         signal: controller.signal,
       });
+      if (operation === 'artifact.build' && options.output === undefined) {
+        const artifactDir = await buildVersionedConnectorArtifact(projectDir, tools, {
+          offline: options.offline === true,
+          signal: controller.signal,
+          timeoutMs: transport.timeoutMs,
+        });
+        printOutput(
+          options.json
+            ? formatGetJson({ artifactDir })
+            : `Built connector artifact: ${artifactDir}`,
+        );
+        return;
+      }
       let request: ToolchainRequest;
       if (operation === 'doctor') {
         request = { protocolVersion: 1, operation, projectDir, options: {} };
@@ -174,10 +192,16 @@ export function registerConnectorAuthoringCommands(
         );
       }
     } catch (error) {
-      if (controller.signal.aborted) failure('CANCELLED', 'Connector operation cancelled');
+      if (
+        error instanceof ConnectorBuildOperationError &&
+        error.code === 'BUILD_PUBLICATION_FAILED'
+      )
+        failure(error.code, error.message);
+      else if (controller.signal.aborted) failure('CANCELLED', 'Connector operation cancelled');
       else if (
         error instanceof ToolchainTransportError ||
-        error instanceof ConnectorProjectPreparationError
+        error instanceof ConnectorProjectPreparationError ||
+        error instanceof ConnectorBuildOperationError
       )
         failure(error.code, error.message);
       else failure('INTERNAL_ERROR', 'Connector operation failed; verify the selected toolchain.');
@@ -212,14 +236,11 @@ export function registerConnectorAuthoringCommands(
     'doctor',
   );
   configure(
-    connectors
-      .command('build')
-      .description('Build a connector artifact in a fresh output directory'),
+    connectors.command('build').description('Build or rebuild dist/<artifact>/<version>'),
     'artifact.build',
   ).option(
     '--output <directory>',
-    'Fresh artifact output directory, relative to the project',
-    'dist',
+    'Use a fresh exact output directory instead, relative to the project',
   );
   const manifest = connectors.command('manifest').description('Manage the connector manifest');
   configure(
