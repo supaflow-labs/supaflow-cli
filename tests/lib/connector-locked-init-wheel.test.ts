@@ -30,6 +30,7 @@ const buildWheelhouse = process.env.SUPAFLOW_TEST_BUILD_WHEELHOUSE;
 describe.skipIf(!python)('locked initialization with installed public packages', () => {
   let root: string;
   let versions: string[];
+  let agentTarget: { name: string; environment: Record<string, string>; wheelTags: string[] };
 
   beforeAll(() => {
     expect(
@@ -101,6 +102,18 @@ print(json.dumps([*versions,f'>={major}.{minor},<{major}.{minor+1}']))
       ),
     );
     writeFileSync(join(root, 'bundle-requirements.txt'), readFileSync(bundleRequirements!));
+    // An explicitly local-agent test inventory, not Linux deployment evidence.
+    agentTarget = JSON.parse(
+      execFileSync(
+        python!,
+        [
+          '-I',
+          '-c',
+          'import json; from packaging.markers import default_environment; from packaging.tags import sys_tags; print(json.dumps({"name":"fixture-local-agent","environment":default_environment(),"wheelTags":[str(tag) for tag in sys_tags()]}))',
+        ],
+        { encoding: 'utf8', timeout: 30_000 },
+      ),
+    );
     execFileSync(process.execPath, [
       join(process.cwd(), 'node_modules/typescript/bin/tsc'),
       '--target',
@@ -307,7 +320,15 @@ assert.equal(existsSync(join(target,'.venv')),false);
 assert.equal(existsSync(join(target,'deps/.venv')),false);
 for(const [path,raw] of Object.entries(template.files))assert.equal(readFileSync(join(target,path),'utf8'),raw);
 const authoringDir=target+'-scratch/deep/authoring-inputs';
-const prepared=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'authoring.prepare',projectDir:target,options:{uvExecutable:tools.uvExecutable,outputDir:authoringDir,bundleRequirementsFile:${JSON.stringify(join(root, 'bundle-requirements.txt'))},offline:true}});
+const agentTargets=${JSON.stringify([agentTarget])};
+if(id==='custom-source') {
+ const failedOutput=target+'-uncovered-target';
+ const uncovered=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'authoring.prepare',projectDir:target,options:{uvExecutable:tools.uvExecutable,outputDir:failedOutput,bundleRequirementsFile:${JSON.stringify(join(root, 'bundle-requirements.txt'))},offline:true,agentTargets:[{...agentTargets[0],name:'fixture-uncovered-agent',wheelTags:['cp399-cp399-linux_x86_64']}]}});
+ assert.equal(uncovered.ok,false);assert.equal(uncovered.error.code,'LOCK_FAILED');
+ assert.match(uncovered.error.message,/no compatible wheel for agent target/);assert.equal(existsSync(failedOutput),false);
+ assert.deepEqual(projectFiles(target),beforeExport);
+}
+const prepared=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'authoring.prepare',projectDir:target,options:{uvExecutable:tools.uvExecutable,outputDir:authoringDir,bundleRequirementsFile:${JSON.stringify(join(root, 'bundle-requirements.txt'))},offline:true,agentTargets}});
 assert.deepEqual(prepared,{protocolVersion:1,ok:true,result:{requirementsDir:authoringDir}});
 tools.pythonExecutable=await prepareLockedProjectEnvironment(target+'-authoring-environment',readFileSync(join(authoringDir,'pylock.toml')),{
  uvExecutable:tools.uvExecutable,pythonExecutable:tools.pythonExecutable,uvCacheDir:${JSON.stringify(join(root, 'authoring-cache'))},

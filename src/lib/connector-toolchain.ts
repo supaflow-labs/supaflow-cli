@@ -4,6 +4,13 @@ import { TextDecoder } from 'node:util';
 import { runPythonProcess, ToolchainTransportError } from './connector-python-process.js';
 export { ToolchainTransportError } from './connector-python-process.js';
 
+/** Caller-owned facts from the checked bundle's advertised agent inventory. */
+export interface ConnectorAgentTarget {
+  name: string;
+  environment: Readonly<Record<string, string>>;
+  wheelTags: readonly string[];
+}
+
 /** Validated project selection, not wheel verification or deployment approval. */
 export interface RuntimeSelection {
   schemaVersion: 1;
@@ -130,6 +137,7 @@ export type ToolchainRequest =
         outputDir: string;
         bundleRequirementsFile: string;
         offline: boolean;
+        agentTargets?: readonly ConnectorAgentTarget[];
       };
     }
   | {

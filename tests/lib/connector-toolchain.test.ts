@@ -401,40 +401,69 @@ describe('connector toolchain subprocess', () => {
     expect(await runConnectorToolchain(python, request)).toEqual(failure);
   });
 
-  it('forwards native authoring preparation and requires its exact staging path', async () => {
-    const request: ToolchainRequest = {
-      protocolVersion: 1,
-      operation: 'authoring.prepare',
-      projectDir: '/fixture/project with spaces',
-      options: {
-        uvExecutable: '/fixture/uv',
-        outputDir: '/fixture/authoring ; quoted',
-        bundleRequirementsFile: '/fixture/bundle requirements.txt',
-        offline: true,
-      },
-    };
-    const prepared = {
-      protocolVersion: 1,
-      ok: true,
-      result: { requirementsDir: request.options.outputDir },
-    };
-    configure(JSON.stringify(prepared) + '\n');
-    expect(await runConnectorToolchain(python, request)).toEqual(prepared);
-    expect(JSON.parse(readFileSync(captured, 'utf8')).request).toEqual(request);
-    configure(
-      JSON.stringify({ ...prepared, result: { requirementsDir: '/different/output' } }) + '\n',
-    );
-    await expect(runConnectorToolchain(python, request)).rejects.toMatchObject({
-      code: 'INVALID_RESPONSE',
-    });
-    const failure = {
-      protocolVersion: 1,
-      ok: false,
-      error: { code: 'LOCK_FAILED', message: 'Authoring tools conflict with the production lock' },
-    };
-    configure(JSON.stringify(failure) + '\n', 1);
-    expect(await runConnectorToolchain(python, request)).toEqual(failure);
-  });
+  it.each([false, true])(
+    'forwards authoring preparation with targets=%s and exact staging path',
+    async (withTargets) => {
+      const request: ToolchainRequest = {
+        protocolVersion: 1,
+        operation: 'authoring.prepare',
+        projectDir: '/fixture/project with spaces',
+        options: {
+          uvExecutable: '/fixture/uv',
+          outputDir: '/fixture/authoring ; quoted',
+          bundleRequirementsFile: '/fixture/bundle requirements.txt',
+          offline: true,
+          ...(withTargets
+            ? {
+                agentTargets: [
+                  {
+                    name: 'fixture-linux',
+                    environment: {
+                      implementation_name: 'cpython',
+                      implementation_version: '3.14.8',
+                      os_name: 'posix',
+                      platform_machine: 'x86_64',
+                      platform_release: 'fixture',
+                      platform_system: 'Linux',
+                      platform_version: 'fixture',
+                      platform_python_implementation: 'CPython',
+                      python_full_version: '3.14.8',
+                      python_version: '3.14',
+                      sys_platform: 'linux',
+                    },
+                    wheelTags: ['py3-none-any'],
+                  },
+                ],
+              }
+            : {}),
+        },
+      };
+      const prepared = {
+        protocolVersion: 1,
+        ok: true,
+        result: { requirementsDir: request.options.outputDir },
+      };
+      configure(JSON.stringify(prepared) + '\n');
+      expect(await runConnectorToolchain(python, request)).toEqual(prepared);
+      expect(JSON.parse(readFileSync(captured, 'utf8')).request).toEqual(request);
+      configure(
+        JSON.stringify({ ...prepared, result: { requirementsDir: '/different/output' } }) + '\n',
+      );
+      await expect(runConnectorToolchain(python, request)).rejects.toMatchObject({
+        code: 'INVALID_RESPONSE',
+      });
+      const failure = {
+        protocolVersion: 1,
+        ok: false,
+        error: {
+          code: 'LOCK_FAILED',
+          message: 'Authoring tools conflict with the production lock',
+        },
+      };
+      configure(JSON.stringify(failure) + '\n', 1);
+      expect(await runConnectorToolchain(python, request)).toEqual(failure);
+    },
+  );
 
   it.each([
     { requirementsDir: 'relative' },
