@@ -102,6 +102,7 @@ print(json.dumps([*versions,f'>={major}.{minor},<{major}.{minor+1}']))
       'src/lib/connector-environment.ts',
       'src/commands/connector-authoring.ts',
       'src/commands/connector-init.ts',
+      'src/commands/connector-lock.ts',
     ]);
   }, 60_000);
 
@@ -148,13 +149,15 @@ print(json.dumps([*versions,f'>={major}.{minor},<{major}.{minor+1}']))
       const commandsModule = pathToFileURL(
         join(root, 'compiled/commands/connector-authoring.js'),
       ).href;
+      const lockModule = pathToFileURL(join(root, 'compiled/commands/connector-lock.js')).href;
       const commanderModule = pathToFileURL(join(root, 'node_modules/commander/index.js')).href;
       const program = `import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import {readFileSync,readdirSync,existsSync,mkdirSync,writeFileSync} from 'node:fs';
+import {cpSync,readFileSync,readdirSync,existsSync,mkdirSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {registerConnectorInitCommand} from ${JSON.stringify(initModule)};
+import {registerConnectorLockCommand} from ${JSON.stringify(lockModule)};
 import * as templates from ${JSON.stringify(templatesModule)};
 import {runConnectorToolchain} from ${JSON.stringify(transportModule)};
 import {prepareOfflineConnectorEnvironment} from ${JSON.stringify(environmentModule)};
@@ -209,6 +212,30 @@ function projectFiles(directory,prefix='') {
  return result;
 }
 const beforeExport=projectFiles(target);
+const lockProject=target+'-lock-update';cpSync(target,lockProject,{recursive:true});
+const lockRuntime=readFileSync(join(lockProject,'runtime.lock'));
+const lockRootPath=join(lockProject,'pyproject.toml');
+const editedRoot=readFileSync(lockRootPath,'utf8').replace('dependencies = [','dependencies = ["packaging>=24",');
+writeFileSync(lockRootPath,editedRoot);writeFileSync(join(lockProject,'deps/uv.toml'),'# author-owned configuration\\n');
+const lockProgram=new commander.Command().version('0.0.0').exitOverride().option('--json');
+registerConnectorLockCommand(lockProgram.command('connectors'),async(project,options)=>{
+ assert.equal(project,lockProject);assert.equal(options.offline,true);assert(options.signal instanceof AbortSignal);return tools;
+},{timeoutMs:60_000});
+const lockLines=[],lockLog=console.log;
+try {
+ console.log=(value)=>lockLines.push(value);
+ await lockProgram.parseAsync(['--json','connectors','lock','--project',lockProject,'--offline'],{from:'user'});
+} finally {console.log=lockLog;}
+assert.equal(process.exitCode,undefined);assert.deepEqual(lockLines.map(value=>JSON.parse(value)),[{locked:true}]);
+assert.deepEqual(readFileSync(join(lockProject,'runtime.lock')),lockRuntime);
+assert.equal(readFileSync(lockRootPath,'utf8'),editedRoot);
+assert.equal(readFileSync(join(lockProject,'deps/uv.toml'),'utf8'),'# author-owned configuration\\n');
+assert(Buffer.isBuffer(beforeExport['deps/pyproject.toml']));
+assert.notDeepEqual(readFileSync(join(lockProject,'deps/pyproject.toml')),beforeExport['deps/pyproject.toml']);
+assert.notDeepEqual(readFileSync(join(lockProject,'deps/uv.lock')),beforeExport['deps/uv.lock']);
+assert.deepEqual(await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'dependencies.check',projectDir:lockProject,options:{uvExecutable:tools.uvExecutable,offline:true}}),{protocolVersion:1,ok:true,result:{checked:true}});
+assert.deepEqual(projectFiles(target),beforeExport);
+
 assert.deepEqual(await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'dependencies.check',projectDir:target,options:{uvExecutable:tools.uvExecutable,offline:true}}),{protocolVersion:1,ok:true,result:{checked:true}});
 assert.deepEqual(projectFiles(target),beforeExport);
 const requirementsDir=target+'-requirements';
