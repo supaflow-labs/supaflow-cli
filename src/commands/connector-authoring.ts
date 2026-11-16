@@ -21,7 +21,6 @@ export interface ConnectorAuthoringTools {
   pythonExecutable: string;
   uvExecutable: string;
   nodeExecutable: string;
-  runtimeWheelDir: string;
 }
 
 export type ConnectorAuthoringBootstrap = (
@@ -128,7 +127,7 @@ export function registerConnectorAuthoringCommands(
           options: {
             uvExecutable: tools.uvExecutable,
             nodeExecutable: tools.nodeExecutable,
-            runtimeWheelDir: tools.runtimeWheelDir,
+            offline: options.offline === true,
             outputDir: resolve(projectDir, options.output),
           },
         };
@@ -140,7 +139,7 @@ export function registerConnectorAuthoringCommands(
           options: {
             uvExecutable: tools.uvExecutable,
             nodeExecutable: tools.nodeExecutable,
-            runtimeWheelDir: tools.runtimeWheelDir,
+            offline: options.offline === true,
             ...(operation === 'test' && options.live === true ? { live: true } : {}),
           },
         };
