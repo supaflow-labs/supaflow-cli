@@ -416,7 +416,7 @@ function response(
 export function runConnectorToolchain(
   pythonExecutable: string,
   request: ToolchainRequest,
-  options: { signal?: AbortSignal; timeoutMs?: number } = {},
+  options: { signal?: AbortSignal; timeoutMs?: number; offline?: boolean } = {},
 ): Promise<ToolchainResponse> {
   if (
     !isAbsolute(pythonExecutable) ||
@@ -438,6 +438,19 @@ export function runConnectorToolchain(
     ['-I', '-m', 'supaflow_connector_toolchain'],
     request,
     (raw, status) => response(raw, status, request),
-    { signal: options.signal, timeoutMs: options.timeoutMs },
+    {
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+      ...(options.offline === true
+        ? {
+            env: {
+              ...Object.fromEntries(
+                Object.entries(process.env).filter(([name]) => name.toUpperCase() !== 'UV_OFFLINE'),
+              ),
+              UV_OFFLINE: 'true',
+            },
+          }
+        : {}),
+    },
   );
 }
