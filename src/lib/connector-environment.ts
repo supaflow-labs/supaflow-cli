@@ -229,6 +229,7 @@ async function prepareEnvironment(
   try {
     if (reuse) {
       try {
+        await requireAbsent(join(dirname(python), 'pyvenv.cfg'));
         const configuration = join(output, 'pyvenv.cfg');
         if (!(await lstat(configuration)).isFile()) throw new Error();
         const settings = (await readFile(configuration, 'utf8'))

@@ -340,6 +340,31 @@ with zipfile.ZipFile(sys.argv[1]) as source, zipfile.ZipFile(sys.argv[2],'w') as
     expect(await readFile(join(output, 'pyvenv.cfg'))).toEqual(configuration);
   });
 
+  it('rejects a shadowing interpreter config before it can enable system site packages', async () => {
+    const lock = await nativePylock();
+    const output = join(root, 'shadow-config');
+    await prepareLockedProjectEnvironment(output, lock, tools, { offline: false });
+    const configuration = await readFile(join(output, 'pyvenv.cfg'));
+    const shadow = join(
+      output,
+      process.platform === 'win32' ? 'Scripts/pyvenv.cfg' : 'bin/pyvenv.cfg',
+    );
+    await writeFile(
+      shadow,
+      configuration
+        .toString('utf8')
+        .replace('include-system-site-packages = false', 'include-system-site-packages = true'),
+    );
+    expect(await readFile(shadow, 'utf8')).toContain('include-system-site-packages = true');
+    requests.length = 0;
+    await expect(
+      prepareLockedProjectEnvironment(output, lock, tools, { offline: false, reuseExisting: true }),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    expect(requests).toEqual([]);
+    expect(await readFile(join(output, 'pyvenv.cfg'))).toEqual(configuration);
+    expect(await readFile(shadow, 'utf8')).toContain('include-system-site-packages = true');
+  });
+
   it.each(['offline', 'corrupt', 'hashless'])(
     'never publishes a native project environment after %s failure',
     async (kind) => {
