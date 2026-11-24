@@ -32,6 +32,7 @@ let objectsPath: string;
 let capabilities: Record<string, unknown> | null;
 let currentConfig: Record<string, unknown>;
 let destinationError: boolean;
+let conflictingConnectorType: string | undefined;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -50,6 +51,7 @@ beforeEach(() => {
     custom_backend_field: 'preserve',
   };
   destinationError = false;
+  conflictingConnectorType = undefined;
   mocks.from.mockImplementation((table: string) => {
     const filters: Record<string, unknown> = {};
     const query = {
@@ -98,7 +100,15 @@ beforeEach(() => {
     };
     return query;
   });
-  mocks.rpc.mockImplementation(async (name: string) => {
+  mocks.rpc.mockImplementation(async (name: string, params?: Record<string, unknown>) => {
+    if (name === 'get_and_reserve_schema_prefix') {
+      const prefix = params?.p_requested_prefix;
+      const data = conflictingConnectorType && !params?.p_confirm_cross_type
+        ? { prefix, requires_confirmation: true, conflicting_connector_type: conflictingConnectorType }
+        : { prefix, reservation_id: 'reservation-1' };
+      return { data, error: null };
+    }
+    if (name === 'release_reserved_schema_prefix') return { data: null, error: null };
     if (name === 'get_active_pipeline_version') return { data: [{ id: 'version-1' }], error: null };
     if (name === 'save_pipeline_metadata_mappings')
       return {
@@ -123,7 +133,12 @@ afterEach(() => {
   fs.rmSync(directory, { recursive: true, force: true });
 });
 
-async function run(action: 'create' | 'edit', config: Record<string, unknown>, viaMcp = false) {
+async function run(
+  action: 'create' | 'edit',
+  config: Record<string, unknown>,
+  viaMcp = false,
+  confirmSchemaReuse = false,
+) {
   fs.writeFileSync(configPath, JSON.stringify(config));
   const args =
     action === 'create'
@@ -133,6 +148,7 @@ async function run(action: 'create' | 'edit', config: Record<string, unknown>, v
           project: 'project',
           config_file: configPath,
           objects_file: objectsPath,
+          confirm_schema_reuse: confirmSchemaReuse,
         }
       : { identifier: 'pipeline', config_file: configPath };
   const argv = viaMcp
@@ -151,12 +167,30 @@ async function run(action: 'create' | 'edit', config: Record<string, unknown>, v
           configPath,
           '--objects',
           objectsPath,
+          ...(confirmSchemaReuse ? ['--confirm-schema-reuse'] : []),
         ]
       : ['pipelines', 'edit', 'pipeline', '--config', configPath];
   const program = new Command().exitOverride().option('--json');
   registerPipelinesCommands(program);
   await program.parseAsync(['node', 'test', ...argv]);
 }
+
+describe('destination prefix reservation before pipeline create', () => {
+  it.each([false, true])('requires cross-type confirmation before inserting (MCP=%s)', async (viaMcp) => {
+    conflictingConnectorType = 'ZENDESK';
+    await expect(run('create', { pipeline_prefix: 'zendesk' }, viaMcp)).rejects.toThrow('ZENDESK');
+    expect(mocks.insert).not.toHaveBeenCalled();
+    await run('create', { pipeline_prefix: 'zendesk' }, viaMcp, true);
+    expect(mocks.rpc).toHaveBeenCalledWith('get_and_reserve_schema_prefix', expect.objectContaining({
+      p_workspace_id: 'workspace-1',
+      p_source_datasource_id: 'source-1',
+      p_destination_id: 'destination-1',
+      p_requested_prefix: 'zendesk',
+      p_confirm_cross_type: true,
+    }));
+    expect(mocks.insert).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('keyless policy command persistence', () => {
   it.each([undefined, null, 'UUID', 'ROW_HASH'])(

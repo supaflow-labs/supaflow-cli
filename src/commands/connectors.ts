@@ -1,7 +1,12 @@
 import { Command } from 'commander';
 import { withAuthOnly } from '../lib/middleware.js';
+import { CliError, ErrorCode } from '../lib/errors.js';
 import { formatTable, formatListJson, printOutput } from '../lib/output.js';
 import { fetchConnectors } from '../lib/connector.js';
+import {
+  registerBuiltConnector,
+  registeredConnectorStatus,
+} from '../lib/connector-registration.js';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,6 +33,68 @@ export function registerConnectorsCommands(program: Command): void {
       { cacheDir: join(cacheHome, 'supaflow', 'connector-toolchains') },
     );
   }
+
+  connectors
+    .command('group')
+    .description('Manage the organization connector group')
+    .command('register <group-id>')
+    .description('Reserve a connector group for the active organization')
+    .action(
+      withAuthOnly(async ({ supabase, outputOptions }, groupId) => {
+        const { data, error } = await supabase.rpc('reserve_connector_group', {
+          p_group_id: groupId,
+        });
+        if (error) {
+          const code =
+            error.code === '42501'
+              ? ErrorCode.FORBIDDEN
+              : ['22023', '23505'].includes(error.code)
+                ? ErrorCode.INVALID_INPUT
+                : ErrorCode.API_ERROR;
+          throw new CliError(error.message, code);
+        }
+        if (typeof data !== 'string' || data !== groupId) {
+          throw new CliError(
+            'The connector group reservation could not be verified.',
+            ErrorCode.API_ERROR,
+          );
+        }
+        printOutput(
+          outputOptions.json
+            ? JSON.stringify({ group_id: data })
+            : `Organization connector group: ${data}`,
+        );
+      }),
+    );
+
+  const development = connectors.command('dev').description('Manage tenant development connectors');
+  development
+    .command('status <version-id>')
+    .description('Compare a built artifact with an accessible registered version')
+    .requiredOption('--artifact <directory>', 'Built connector artifact directory')
+    .action(
+      withAuthOnly(async ({ supabase, outputOptions }, versionId, options) => {
+        const { artifact } = options as { artifact: string };
+        const result = await registeredConnectorStatus(artifact, versionId as string, supabase);
+        printOutput(outputOptions.json ? JSON.stringify(result) : result.status);
+      }),
+    );
+
+  development
+    .command('register')
+    .description('Register the exact built connector for the active organization')
+    .requiredOption('--artifact <directory>', 'Built connector artifact directory')
+    .action(
+      withAuthOnly(async ({ conn, outputOptions }, options) => {
+        const { artifact } = options as { artifact: string };
+        const result = await registerBuiltConnector(artifact, conn.bearerToken);
+        printOutput(
+          outputOptions.json
+            ? JSON.stringify(result)
+            : `${result.created ? 'Registered' : 'Already registered'} ${result.type} ${result.version}`,
+        );
+      }),
+    );
 
   connectors
     .command('list')
