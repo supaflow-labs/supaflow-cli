@@ -72,6 +72,11 @@ interface BooleanCapability {
 
 type CapabilitiesConfig = Record<string, FieldCapability | BooleanCapability | unknown>;
 
+function defaultPipelinePrefix(connectorType: string): string {
+  const separator = connectorType.indexOf('__');
+  return (separator < 0 ? connectorType : connectorType.slice(separator + 2)).toLowerCase();
+}
+
 /**
  * Generate a capability-aware pipeline config by resolving defaults from
  * source and destination capabilities, following the same ownership rules
@@ -84,8 +89,8 @@ export function generateCapabilityAwareConfig(
 ): Record<string, unknown> {
   const config = { ...PIPELINE_DEFAULTS };
 
-  // Set default prefix from lowercased source connector type
-  config.pipeline_prefix = sourceConnectorType.toLowerCase();
+  // Default to the lowercased connector name within its group, when qualified
+  config.pipeline_prefix = defaultPipelinePrefix(sourceConnectorType);
 
   for (const [key, ownership] of Object.entries(CAPABILITY_OWNERSHIP)) {
     let caps: CapabilitiesConfig | null = null;
@@ -287,7 +292,7 @@ export function createPipelineConfig(
  * - `is_custom_prefix === true`  -> honor the user's explicit choice verbatim,
  *   INCLUDING an empty string (empty = mirror the destination's default schema).
  * - otherwise                    -> use the prefix if already set (e.g. from
- *   `pipelines init`), else default to the lowercased source connector type.
+ *   `pipelines init`), else default to the lowercased source connector name.
  *
  * Empty is overloaded in the raw config: it means both "user deliberately chose
  * mirror" and "nobody set a prefix". `is_custom_prefix` is the disambiguator --
@@ -303,5 +308,5 @@ export function resolvePipelinePrefix(
   if (config.is_custom_prefix === true) {
     return current;
   }
-  return current || (sourceConnectorType || '').toLowerCase();
+  return current || defaultPipelinePrefix(sourceConnectorType || '');
 }

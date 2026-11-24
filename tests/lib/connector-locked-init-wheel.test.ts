@@ -228,7 +228,7 @@ assert.equal(process.exitCode,undefined);assert.deepEqual(initLines.map(value=>J
 tools.pythonExecutable=join(target,'.venv',process.platform==='win32'?'Scripts/python.exe':'bin/python');
 assert(existsSync(tools.pythonExecutable));
 const manifestType=execFileSync(tools.pythonExecutable,['-I','-c',"import pathlib,sys,yaml; print(yaml.safe_load(pathlib.Path(sys.argv[1]).read_bytes())['connector']['type'])",join(target,'connector.yaml')],{encoding:'utf8'}).trim();
-assert.equal(manifestType,${JSON.stringify(groupId === 'io.supaflow' ? 'ACME' : 'CUSTOM__COM_ACME__ACME')});
+assert.equal(manifestType,${JSON.stringify(groupId === 'io.supaflow' ? 'ACME' : 'COM_ACME__ACME')});
 for(const [path,raw] of Object.entries(template.files))assert.equal(readFileSync(join(target,path),'utf8'),raw);
 const before=readFileSync(join(target,'runtime.lock'));
 const inspection=await runConnectorToolchain(tools.pythonExecutable,{protocolVersion:1,operation:'runtime.inspect',projectDir:target,options:{}});

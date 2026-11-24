@@ -147,6 +147,12 @@ describe('resolvePipelinePrefix', () => {
     expect(resolvePipelinePrefix(config, 'SUCCESSFACTORS')).toBe('');
   });
 
+  it('uses the full local name after the group separator for customer defaults', () => {
+    const type = 'COM_ACME__SERVICE__DESK';
+    expect(generateCapabilityAwareConfig(null, null, type).pipeline_prefix).toBe('service__desk');
+    expect(resolvePipelinePrefix(createPipelineConfig(), type)).toBe('service__desk');
+  });
+
   it('lowercases the connector type for the default', () => {
     const config = createPipelineConfig();
     expect(resolvePipelinePrefix(config, 'SQL_SERVER')).toBe('sql_server');

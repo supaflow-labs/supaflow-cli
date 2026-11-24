@@ -49,6 +49,9 @@ const MAX_OBJECT_PREVIEW_LIMIT = 1000;
 export const INTENTIONALLY_UNEXPOSED_CLI_COMMANDS = [
   'auth_login',
   'auth_logout',
+  'connectors_dev_register',
+  'connectors_dev_status',
+  'connectors_group_register',
   'datasources_export_dbt_test_snapshot',
   'encrypt',
   'mcp',
@@ -360,6 +363,7 @@ export function buildPipelineCreateFromPlanArgv({
   project,
   configFile,
   objectsFile,
+  confirmSchemaReuse,
 }: {
   name: string;
   description?: string;
@@ -367,6 +371,7 @@ export function buildPipelineCreateFromPlanArgv({
   project: string;
   configFile: string;
   objectsFile: string;
+  confirmSchemaReuse?: boolean;
 }) {
   const argv = [
     'pipelines',
@@ -385,6 +390,7 @@ export function buildPipelineCreateFromPlanArgv({
   if (description) {
     argv.push('--description', description);
   }
+  if (confirmSchemaReuse) argv.push('--confirm-schema-reuse');
   argv.push('--json');
   return argv;
 }
@@ -1317,6 +1323,11 @@ export const TOOLS: ToolSpec[] = [
       properties: {
         plan_id: { type: 'string', description: 'plan_id returned by pipelines_prepare_create.' },
         name: { type: 'string', description: 'Pipeline name confirmed by the user.' },
+        confirm_schema_reuse: {
+          type: 'boolean',
+          description:
+            'Set true only after the user explicitly approves sharing the named destination schema with the other connector type.',
+        },
         description: { type: 'string', description: 'Optional pipeline description.' },
         confirmed: {
           type: 'boolean',
@@ -1370,6 +1381,11 @@ export const TOOLS: ToolSpec[] = [
           description:
             'JSON file with object selections (default: select all available discovered objects).',
         },
+        confirm_schema_reuse: {
+          type: 'boolean',
+          description:
+            'Set true only after the user explicitly approves sharing the named destination schema with the other connector type.',
+        },
         description: { type: 'string', description: 'Pipeline description.' },
       },
       required: ['name', 'source', 'project'],
@@ -1389,6 +1405,7 @@ export const TOOLS: ToolSpec[] = [
       opt(v, '--config', a.config_file);
       opt(v, '--objects', a.objects_file);
       opt(v, '--description', a.description);
+      if (a.confirm_schema_reuse === true) v.push('--confirm-schema-reuse');
       return v;
     },
   },
@@ -1853,6 +1870,7 @@ async function createPipelineFromPlan(args: ToolArgs) {
     project: plan.resolved.project.id,
     configFile: paths.configFile,
     objectsFile: paths.selectedObjectsFile,
+    confirmSchemaReuse: args.confirm_schema_reuse === true,
   });
 
   const created = parseCliJson(await execSupaflowArgv(createArgv, 180000), 'pipelines create');

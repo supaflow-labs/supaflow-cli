@@ -2,7 +2,12 @@ import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 vi.mock('../src/lib/connector-authoring-feature.js', () => ({ CONNECTOR_AUTHORING_ENABLED: true }));
 import { registerConnectorsCommands } from '../src/commands/connectors.js';
-import { TOOLS, buildSupaflowArgv, listToolDefinitions } from '../src/mcp/server.js';
+import {
+  TOOLS,
+  INTENTIONALLY_UNEXPOSED_CLI_COMMANDS,
+  buildSupaflowArgv,
+  listToolDefinitions,
+} from '../src/mcp/server.js';
 
 const authoring = TOOLS.filter(
   (tool) => tool.name.startsWith('connectors_') && tool.name !== 'connectors_list',
@@ -22,7 +27,13 @@ describe('inactive authoring MCP wrappers in a test-enabled build', () => {
     leaves(program, []);
     expect(authoring).toHaveLength(8);
     expect(authoring.map((tool) => tool.name).sort()).toEqual(
-      names.filter((name) => name !== 'connectors_list').sort(),
+      names
+        .filter(
+          (name) =>
+            name !== 'connectors_list' &&
+            !INTENTIONALLY_UNEXPOSED_CLI_COMMANDS.some((excluded) => excluded === name),
+        )
+        .sort(),
     );
     expect(new Set(TOOLS.map((tool) => tool.name)).size).toBe(61);
   });

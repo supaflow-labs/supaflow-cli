@@ -577,6 +577,7 @@ export function registerPipelinesCommands(program: Command): void {
       'JSON file with object selections (default: select all available discovered objects)',
     )
     .option('--description <desc>', 'Pipeline description')
+    .option('--confirm-schema-reuse', 'Allow the destination schema to be shared with a different connector type')
     .action(
       withAuth(
         async (
@@ -588,6 +589,7 @@ export function registerPipelinesCommands(program: Command): void {
             config?: string;
             objects?: string;
             description?: string;
+            confirmSchemaReuse?: boolean;
           },
         ) => {
           const { supabase, workspaceId, outputOptions, conn } = ctx;
@@ -633,16 +635,6 @@ export function registerPipelinesCommands(program: Command): void {
             dest.connector_version_capabilities_config || null,
           );
 
-          // Resolve the destination schema prefix BEFORE persisting. Without this,
-          // `create` with no (or a prefix-less) --config would store an empty
-          // pipeline_prefix -- a permanent, silently-wrong null schema. Default it
-          // to the source connector type unless the user explicitly chose one
-          // (is_custom_prefix), matching `pipelines init` / the UI.
-          pipelineConfig.pipeline_prefix = resolvePipelinePrefix(
-            pipelineConfig,
-            src.connector_type,
-          );
-
           // 6. Generate api_name and extract user ID from JWT
           const apiName = generateApiName(opts.name);
           const jwtPayload = JSON.parse(
@@ -653,34 +645,73 @@ export function registerPipelinesCommands(program: Command): void {
           ) as { user_id?: string; sub?: string };
           const userId = jwtPayload.user_id || jwtPayload.sub;
 
+          const prefix = resolvePipelinePrefix(pipelineConfig, src.connector_type);
+          const { data: reservation, error: reservationError } = await supabase.rpc(
+            'get_and_reserve_schema_prefix',
+            {
+              p_workspace_id: workspaceId,
+              p_destination_id: dest.id,
+              p_source_datasource_id: src.id,
+              p_requested_prefix: prefix,
+              p_previous_reservation_id: null,
+              p_confirm_cross_type: opts.confirmSchemaReuse === true,
+            },
+          );
+          if (reservationError) {
+            throw new CliError(reservationError.message, ErrorCode.API_ERROR);
+          }
+          if (reservation?.requires_confirmation) {
+            throw new CliError(
+              `Destination schema "${reservation.prefix || '(default)'}" is already used by ${reservation.conflicting_connector_type}. Pass --confirm-schema-reuse after confirming this schema can be shared.`,
+              ErrorCode.INVALID_INPUT,
+            );
+          }
+          if (!reservation?.reservation_id) {
+            throw new CliError('Could not reserve the destination schema.', ErrorCode.API_ERROR);
+          }
+          pipelineConfig.pipeline_prefix = reservation.prefix;
+
           // 7. Insert pipeline in DRAFT state
           if (!outputOptions.json) {
             process.stderr.write('Creating pipeline...\n');
           }
 
-          const { data: pipeline, error: createError } = await supabase
-            .from('pipelines')
-            .insert({
-              project_id: proj.id,
-              name: opts.name,
-              api_name: apiName,
-              description: opts.description || `${src.name} to ${dest.name}`,
-              source_datasource_id: src.id,
-              destination_datasource_id: dest.id,
-              version_id: versionId,
-              configs: pipelineConfig,
-              state: 'draft',
-              created_by: userId,
-              updated_by: userId,
-            })
-            .select('id')
-            .single();
-
-          if (createError) {
-            throw new CliError(
-              `Failed to create pipeline: ${createError.message}`,
-              ErrorCode.API_ERROR,
-            );
+          let pipeline: { id: string };
+          try {
+            const { data, error } = await supabase
+              .from('pipelines')
+              .insert({
+                project_id: proj.id,
+                name: opts.name,
+                api_name: apiName,
+                description: opts.description || `${src.name} to ${dest.name}`,
+                source_datasource_id: src.id,
+                destination_datasource_id: dest.id,
+                version_id: versionId,
+                configs: pipelineConfig,
+                state: 'draft',
+                created_by: userId,
+                updated_by: userId,
+              })
+              .select('id')
+              .single();
+            if (error || !data) {
+              throw new CliError(
+                `Failed to create pipeline: ${error?.message || 'not created'}`,
+                ErrorCode.API_ERROR,
+              );
+            }
+            pipeline = data;
+          } finally {
+            // The release RPC only removes reservations the save did not activate.
+            try {
+              const { error } = await supabase.rpc('release_reserved_schema_prefix', {
+                p_reservation_id: reservation.reservation_id,
+              });
+              if (error) throw error;
+            } catch {
+              process.stderr.write('Could not release the destination schema reservation.\n');
+            }
           }
 
           // Steps 8-9 can fail after the draft insert. Wrap in try/catch

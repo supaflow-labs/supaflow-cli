@@ -33,6 +33,7 @@ describe.skipIf(!python)('packed connector authoring from a clean prefix', () =>
   beforeAll(() => {
     expect(
       uv &&
+        process.env.SUPAFLOW_TEST_BUNDLE_PRODUCER &&
         wheels.every(Boolean) &&
         process.env.SUPAFLOW_TEST_RUNTIME_WHEELHOUSE &&
         process.env.SUPAFLOW_TEST_BUILD_WHEELHOUSE,
@@ -102,9 +103,9 @@ print(json.dumps({'versions':versions,'target':{'name':'fixture-local-agent','en
     );
     versions = inventory.versions;
     const assets = join(build, 'assets/connectors');
-    mkdirSync(assets, { recursive: true });
+    mkdirSync(join(build, 'assets'), { recursive: true });
     const input = join(root, 'bootstrap.in'),
-      requirementsFile = join(assets, 'requirements.txt');
+      requirementsFile = join(root, 'requirements.txt');
     writeFileSync(
       input,
       [
@@ -144,26 +145,40 @@ print(json.dumps({'versions':versions,'target':{'name':'fixture-local-agent','en
       ],
       { env: nativeEnvironment, stdio: 'pipe', timeout: 60_000 },
     );
-    const requirements = readFileSync(requirementsFile);
-    writeFileSync(
-      join(assets, 'toolchain.json'),
-      JSON.stringify({
-        schemaVersion: 1,
-        cliVersion: VERSION,
-        requiresPython: '>=3.14,<3.15',
-        sdkVersion: versions[0],
-        runtimeVersion: versions[1],
-        testkitVersion: versions[2],
-        toolchainVersion: versions[3],
-        uvVersion: versions[4],
-        requirementsSha256: createHash('sha256').update(requirements).digest('hex'),
-        projectRequiresPython: '>=3.11,<3.15',
-        requiredHostProtocol: 2,
-        agentExecutionPython: '>=3.14,<3.15',
-        templateVersions: { 'custom-source': 1, 'api-source': 1, 'sql-source': 1 },
-        // Local fixture inventory only; this does not certify Linux execution.
-        agentTargets: [inventory.target],
-      }),
+    const selected = join(root, 'public-wheels');
+    mkdirSync(selected);
+    for (const wheel of wheels.slice(0, 4)) cpSync(wheel!, join(selected, basename(wheel!)));
+    const targets = join(root, 'targets.json');
+    writeFileSync(targets, JSON.stringify([inventory.target]));
+    // Exercise the production producer with local test-index requirements.
+    execFileSync(
+      python!,
+      [
+        process.env.SUPAFLOW_TEST_BUNDLE_PRODUCER!,
+        '--wheel-dir',
+        selected,
+        '--requirements',
+        requirementsFile,
+        '--targets',
+        targets,
+        '--source-commit',
+        'a'.repeat(40),
+        '--cli-version',
+        VERSION,
+        '--uv-version',
+        versions[4],
+        '--requires-python',
+        '>=3.14,<3.15',
+        '--project-python',
+        '>=3.11,<3.15',
+        '--execution-python',
+        '>=3.14,<3.15',
+        '--host-protocol',
+        '2',
+        '--output',
+        assets,
+      ],
+      { encoding: 'utf8', timeout: 30000 },
     );
     execFileSync('npm', ['run', 'build'], { cwd: build, stdio: 'pipe', timeout: 60_000 });
     const packed = JSON.parse(
@@ -345,7 +360,7 @@ assert importlib.util.find_spec('supaflow_python_runtime') is None
 assert (importlib.util.find_spec('dlt') is None)==(sys.argv[3]=='custom-source')
 `,
             checkedArtifact,
-            group === 'io.supaflow' ? 'ACME' : 'CUSTOM__COM_ACME__ACME',
+            group === 'io.supaflow' ? 'ACME' : 'COM_ACME__ACME',
             template,
           ],
           { cwd: root, env: environment, stdio: 'pipe', timeout: 30_000 },

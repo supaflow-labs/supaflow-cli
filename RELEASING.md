@@ -49,3 +49,44 @@ For legacy partial releases made by the old direct-push script, preserve the rel
 ## 4. Verify completion
 
 Verify the exact npm version and default dist-tag, the remote release tag pointing to the checked commit, and the clean local checkout. Main may advance through other reviewed PRs after publication; the tag remains bound to the release commit. Record PR, commit, package version and tag evidence without credentials. No automated npm publication is configured by the PR-check workflow.
+
+## Prepare the connector authoring bundle
+
+Use the platform's existing public wheel producer and
+`create_public_package_index` validation before preparing CLI authoring assets.
+The source commit identifies the reviewed platform code used to build the four
+public wheels. Resolve exact bootstrap dependencies, including uv, with the
+existing uv hashed-requirements flow used by
+`tests/connector-packed-authoring.test.ts`. Production requirements must use
+portable index pins and hashes. Local file URLs and unpinned requirements fail
+bundle preparation.
+
+The platform command below creates the existing two-file CLI asset format.
+Supply the reviewed execution target inventory explicitly. Its JSON is a list
+of `{name, environment, wheelTags}` objects, matching the CLI target contract.
+The host protocol and Python ranges must match the tested SDK/runtime selection.
+
+```bash
+/path/to/platform/python/.venv/bin/python \
+  /path/to/platform/python/scripts/prepare_cli_authoring_bundle.py \
+  --wheel-dir /absolute/path/to/four-public-wheels \
+  --requirements /absolute/path/to/hashed-bootstrap-requirements.txt \
+  --targets /absolute/path/to/execution-targets.json \
+  --source-commit <reviewed-platform-sha> --cli-version <cli-version> \
+  --uv-version <pinned-uv-version> --requires-python '<tested-authoring-range>' \
+  --project-python '<tested-project-range>' \
+  --execution-python '<tested-execution-range>' --host-protocol <tested-protocol> \
+  --output /absolute/path/to/new-bundle
+```
+
+Review `toolchain.json` and `requirements.txt`, then place them in
+`assets/connectors` for the CLI build's existing asset-copy step. The producer
+checks that the requirements contain the exact reviewed public wheel versions
+and hashes, plus the selected uv pin. It creates a fresh output directory and
+does not publish packages or change the authoring feature flag.
+
+The packed authoring test now calls this producer. In addition to its existing
+wheel and interpreter environment variables, set
+`SUPAFLOW_TEST_BUNDLE_PRODUCER` to the absolute platform script path.
+Public package availability, authoring activation and CLI publication remain
+the existing separately reviewed release steps.

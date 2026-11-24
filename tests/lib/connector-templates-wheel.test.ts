@@ -113,7 +113,7 @@ module, symbol = entry.split(':')
 Connector = getattr(importlib.import_module(module), symbol)
 bound = Connector.with_package_metadata(sdk.ConnectorPackageMetadata('1.2.3.dev1', 'com.acme', entry))
 assert Connector.DEFINITION.type is None
-assert bound.get_definition().type == 'CUSTOM__COM_ACME__ACME_RECORDS'
+assert bound.get_definition().type == 'COM_ACME__ACME_RECORDS'
 assert bound.generated_manifest_dict()['connector']['artifact_id'] == metadata['project']['name']
 from supaflow_python_sdk.connector_identity import parse_customer_connector_type
 for case in json.loads(sys.argv[3]):
@@ -146,7 +146,7 @@ print(json.dumps({'lifecycle': 'passed', 'type': bound.get_definition().type}))
       });
       expect(JSON.parse(output)).toEqual({
         lifecycle: 'passed',
-        type: 'CUSTOM__COM_ACME__ACME_RECORDS',
+        type: 'COM_ACME__ACME_RECORDS',
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -251,7 +251,7 @@ print(json.dumps({'lifecycle':'passed','type':bound.get_definition().type}))
                 ? ['test_source_lifecycle', 'test_missing_connection_url']
                 : ['test_source_lifecycle'],
             ),
-            `CUSTOM__COM_ACME__${variant.name}`,
+            `COM_ACME__${variant.name}`,
           ],
           {
             cwd: root,
@@ -264,7 +264,7 @@ print(json.dumps({'lifecycle':'passed','type':bound.get_definition().type}))
       const lastLine = output.trim().split('\n').at(-1)!;
       expect(JSON.parse(lastLine)).toEqual({
         lifecycle: 'passed',
-        type: `CUSTOM__COM_ACME__${variant.name}`,
+        type: `COM_ACME__${variant.name}`,
       });
     } finally {
       rmSync(root, { recursive: true, force: true });

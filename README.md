@@ -8,7 +8,7 @@ CLI for the [Supaflow](https://www.supa-flow.io) data integration platform. Mana
 |-------|----------|-------------|
 | `auth` | login, logout, status | Authenticate with browser OAuth or API key |
 | `workspaces` | list, select | Choose active workspace |
-| `connectors` | list | Browse available connector types |
+| `connectors` | list, group register, dev register, dev status | Browse connectors and register tenant development artifacts |
 | `datasources` | list, get, init, create, catalog, test, edit, delete, disable, enable, refresh | Full datasource lifecycle |
 | `projects` | list, create | Manage pipeline projects |
 | `pipelines` | list, get, create, edit, delete, disable, enable, sync, schema (list, add, select) | Full pipeline lifecycle |
@@ -163,6 +163,28 @@ List available connector types before creating datasources:
 ```bash
 supaflow connectors list
 ```
+
+Tenant administrators can reserve a connector group and register a built SDK
+artifact. Personal-account owners use the same tenant permissions.
+
+```bash
+supaflow connectors group register com.acme
+supaflow connectors dev register --artifact ./dist/my-connector/1.2.3.dev1 --json
+supaflow connectors dev status <version-id> --artifact ./dist/my-connector/1.2.3.dev1 --json
+```
+
+Registration checks the local artifact against its lock and sends the manifest
+and lock to the server. The server verifies tenant ownership and canonical
+metadata, then makes the version available to that tenant. Repeating registration
+with the same lock returns the same version. A changed lock requires a new
+development version. The response includes the version ID used by `dev status`.
+Status reports `registered`, `different_artifact`, or `unavailable` through
+the existing version-access RPC. Registration requires no enrolled agent.
+
+The SDK authoring commands remain gated until the public package bundle is
+available. Package publication and production promotion are separate release
+steps.
+
 
 Output shows connector type (used in `--connector` flag), display name, and version:
 
