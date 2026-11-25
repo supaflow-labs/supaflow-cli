@@ -1,6 +1,11 @@
 # @getsupaflow/cli
 
-CLI for the [Supaflow](https://www.supa-flow.io) data integration platform. Manage datasources, pipelines, jobs, schedules, and more from the command line or through AI agents.
+Manage your data pipelines, build custom Python connectors, and connect AI
+assistants to [Supaflow](https://www.supa-flow.io) from one CLI.
+
+- [Manage pipelines](#pipelines): connect sources and destinations, run syncs, and inspect jobs.
+- [Build a Python connector](#build-a-python-connector): create, test, and package your own source integration.
+- [Connect an AI assistant](#ai-assistants-mcp): use the same capabilities through the bundled MCP server.
 
 ## Command Map
 
@@ -8,40 +13,27 @@ CLI for the [Supaflow](https://www.supa-flow.io) data integration platform. Mana
 |-------|----------|-------------|
 | `auth` | login, logout, status | Authenticate with browser OAuth or API key |
 | `workspaces` | list, select | Choose active workspace |
-| `connectors` | list, group register, dev register, dev status | Browse connectors and register tenant development artifacts |
+| `connectors` | list, init, lock, check, test, doctor, manifest generate/check, build | Browse connectors and build custom Python source connectors |
+| `connectors group` | register | Reserve your organization connector group |
+| `connectors dev` | register, status, deploy | Register built artifacts and deploy to a local Docker agent |
 | `datasources` | list, get, init, create, catalog, test, edit, delete, disable, enable, refresh | Full datasource lifecycle |
 | `projects` | list, create | Manage pipeline projects |
 | `pipelines` | list, get, create, edit, delete, disable, enable, sync, schema (list, add, select) | Full pipeline lifecycle |
 | `schedules` | list, create, edit, delete, enable, disable, run, history | Cron-based scheduling |
 | `jobs` | list, get, status, cancel, logs | Monitor and cancel async job execution |
-| `agent` | start, stop, status, logs, remove | Local Docker agent lifecycle |
+| `agent` | start, upgrade, stop, status, logs, remove | Local Docker agent lifecycle |
 | `encrypt` | (value or --file) | Encrypt sensitive values |
 | `docs` | (topic), --list | Read connector and platform documentation |
+| `mcp` | (stdio server) | Connect an MCP-compatible AI assistant |
 
 ## Prerequisites
 
-**A Supaflow account** is required. Sign up at [app.supa-flow.io/sign-up](https://app.supa-flow.io/sign-up) if you don't have one.
-
-**Node.js 18 or later** is required. Check your version:
-
-```bash
-node --version
-# v18.x.x or higher
-```
-
-If you don't have Node.js, install it from [nodejs.org](https://nodejs.org/) or via a package manager:
-
-```bash
-# macOS (Homebrew)
-brew install node
-
-# Ubuntu/Debian
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt-get install -y nodejs
-
-# Windows (winget)
-winget install OpenJS.NodeJS.LTS
-```
+| Task | Requirements |
+|------|--------------|
+| Run the CLI or MCP server | Node.js 18 or later. Install Node.js from [nodejs.org](https://nodejs.org/). |
+| Build and test connectors locally | Python 3.14 installed, plus network access for the initial package setup. No Supaflow account, login, workspace, or running agent is needed. The CLI prepares its Python tools and project dependencies. |
+| Manage Supaflow resources or register connectors | A [Supaflow account](https://app.supa-flow.io/sign-up), permitted CLI authentication, and access to the intended organization. Group reservation and connector registration require organization-admin or personal-account-owner access. |
+| Deploy a connector locally | Docker and a running compatible private agent. Local deployment itself does not require CLI login. Follow the existing [Docker agent deployment guide](https://www.supa-flow.io/docs/settings/agents#deploying-a-self-hosted-docker-agent). |
 
 ## Install
 
@@ -107,7 +99,32 @@ supaflow workspaces list
 supaflow workspaces select
 ```
 
-All subsequent commands operate within the selected workspace.
+Commands for workspace resources use the selected workspace. Local connector
+authoring and deployment do not require a workspace; group reservation and
+connector registration use your authenticated organization.
+
+## AI assistants (MCP)
+
+Use the CLI from Claude, Codex, or another MCP-compatible assistant by configuring
+a local **stdio** server with command `supaflow` and argument `mcp`. Clients using
+`mcpServers` JSON configuration can use:
+
+```json
+{
+  "mcpServers": {
+    "supaflow": {
+      "command": "supaflow",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+For other clients, use their equivalent stdio-server settings. The client must
+be able to find the installed `supaflow` executable. Remote operations use your
+existing CLI authentication and permissions; local connector authoring does not
+require login. An AI assistant is optional: the same operations are available
+as ordinary CLI commands.
 
 ## Global Flags
 
@@ -164,13 +181,51 @@ List available connector types before creating datasources:
 supaflow connectors list
 ```
 
-Tenant administrators can reserve a connector group and register a built SDK
-artifact. Personal-account owners use the same tenant permissions.
+### Build a Python connector
+
+Create a working example source, then check, test, and build it locally:
 
 ```bash
-supaflow connectors group register com.acme
-supaflow connectors dev register --artifact ./dist/my-connector/1.2.3.dev1 --json
-supaflow connectors dev status <version-id> --artifact ./dist/my-connector/1.2.3.dev1 --json
+supaflow connectors init ./my-connector --template custom-source --name MY_RECORDS --group com.example
+cd my-connector
+supaflow connectors check
+supaflow connectors test
+supaflow connectors build
+```
+
+The starter discovers a `records` table and reads two example rows. Replace its
+source logic and fixtures with your own API or database integration. The default
+build writes `dist/supaflow-connector-my-records-python/0.1.0.dev1/`.
+The group passed to local `init` does not reserve anything in your organization.
+
+Other templates are `api-source` for a dlt-backed API source and `sql-source`
+for a SQLAlchemy-backed table source. They use the same check/test/build flow.
+
+| Command | Purpose |
+|---------|---------|
+| `connectors doctor` | Inspect the selected project environment and compatibility. |
+| `connectors lock` | Create or refresh dependency locks after intentional dependency changes. |
+| `connectors lock --upgrade-runtime` | Explicitly upgrade the selected SDK/runtime. |
+| `connectors manifest generate` | Generate canonical `connector.yaml` from the connector definition. |
+| `connectors manifest check` | Check that the manifest matches the definition. |
+
+These commands use the current directory by default; use `--project <directory>`
+to select another project. Check, test, and build validate the existing locks;
+they do not silently upgrade your runtime.
+
+### Register with your organization
+
+After building and testing, tenant administrators can reserve a connector group
+and register the artifact. Personal-account owners use the same tenant
+permissions. Choose your organization's group before registration: an
+organization has one reserved group, which cannot be changed. The examples below
+continue from the `my-connector` directory. Use your chosen group instead of
+`com.example` when creating a connector you intend to register.
+
+```bash
+supaflow connectors group register com.example
+supaflow connectors dev register --artifact ./dist/supaflow-connector-my-records-python/0.1.0.dev1 --json
+supaflow connectors dev status <version-id> --artifact ./dist/supaflow-connector-my-records-python/0.1.0.dev1 --json
 ```
 
 Registration checks the local artifact against its lock and sends the manifest
@@ -181,10 +236,12 @@ development version. The response includes the version ID used by `dev status`.
 Status reports `registered`, `different_artifact`, or `unavailable` through
 the existing version-access RPC. Registration requires no enrolled agent.
 
-Deploy a built customer connector to a running local Docker agent separately:
+### Deploy to a private Docker agent
+
+Deploy the built connector to a running compatible local Docker agent:
 
 ```bash
-supaflow connectors dev deploy --artifact ./dist/my-connector/1.2.3.dev1 --name supaflow-agent
+supaflow connectors dev deploy --artifact ./dist/supaflow-connector-my-records-python/0.1.0.dev1 --name supaflow-agent
 ```
 
 Deployment uses local Docker access, with no CLI login or database lookup. It
@@ -200,12 +257,10 @@ reuses the prepared environment; changing an artifact requires a new version.
 Deployment does not start, restart or change the agent's provisioning mode.
 A checkout recovery can remove locally copied artifacts; deploy them again.
 
-The SDK authoring commands remain gated until the public package bundle is
-available. Package publication and production promotion are separate release
-steps.
+### Connector catalog output
 
-
-Output shows connector type (used in `--connector` flag), display name, and version:
+`connectors list` shows connector type (used in the `--connector` flag), display
+name, and version:
 
 ```
 TYPE         NAME           VERSION    CAPABILITIES
@@ -737,6 +792,14 @@ Schedules resolve by **name** or **UUID** (not api_name), since schedule names a
 | `SUPAFLOW_APP_URL` | Override app URL (default: `https://app.supa-flow.io`) |
 | `SUPAFLOW_SUPABASE_URL` | Override Supabase URL (dev/testing) |
 | `SUPAFLOW_SUPABASE_ANON_KEY` | Override Supabase anon key (dev/testing) |
+
+## Documentation and support
+
+- [CLI documentation](https://www.supa-flow.io/docs/cli)
+- [Private Docker agent deployment](https://www.supa-flow.io/docs/settings/agents#deploying-a-self-hosted-docker-agent)
+- [Python connector SDK](https://pypi.org/project/supaflow-python-sdk/)
+
+For help, contact [support@supa-flow.io](mailto:support@supa-flow.io).
 
 ## Maintainer Documentation
 

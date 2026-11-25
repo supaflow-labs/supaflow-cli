@@ -1,7 +1,7 @@
 {
   "name": "@getsupaflow/cli",
   "version": "0.9.0",
-  "description": "CLI for Supaflow data integration platform",
+  "description": "Manage data pipelines, build custom Python connectors, and connect AI assistants to Supaflow with its CLI and MCP server.",
   "type": "module",
   "bin": {
     "supaflow": "bin/supaflow.mjs"
@@ -24,7 +24,11 @@
     "supaflow",
     "cli",
     "data-integration",
-    "pipeline"
+    "data-pipelines",
+    "etl",
+    "custom-connectors",
+    "mcp",
+    "mcp-server"
   ],
   "license": "MIT",
   "repository": {
@@ -52,5 +56,13 @@
     "vitest": {
       "vite": "^7.3.7"
     }
+  },
+  "homepage": "https://www.supa-flow.io/docs/cli",
+  "bugs": {
+    "url": "https://github.com/supaflow-labs/supaflow-cli/issues"
+  },
+  "author": {
+    "name": "Supaflow",
+    "email": "support@supa-flow.io"
   }
 }
