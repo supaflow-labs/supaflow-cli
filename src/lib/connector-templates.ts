@@ -122,7 +122,8 @@ connect to a live service.
 
 pyproject.toml owns package identity, dependencies and Python compatibility.
 The definition declares only its local connector name; the toolchain derives
-the namespaced type from the group. Group ownership is checked at deployment.
+the namespaced type from the group. Registration checks group ownership;
+local deployment copies and prepares the built artifact.
 
 After initialization, use supaflow connectors check, test and build. Ordinary
 checks and builds reject stale locks; use the explicit lock command after a

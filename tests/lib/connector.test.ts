@@ -98,6 +98,14 @@ describe('groupAndSortProperties', () => {
 });
 
 describe('isOAuthOnly', () => {
+  it('allows connectors with no configuration properties', () => {
+    expect(isOAuthOnly([])).toBe(false);
+  });
+
+  it('allows optional configuration without an OAuth property', () => {
+    expect(isOAuthOnly([prop('label', { required: false })])).toBe(false);
+  });
+
   it('returns false when non-OAuth required properties exist', () => {
     const props = [
       prop('host', { required: true }),
