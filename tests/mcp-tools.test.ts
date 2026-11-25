@@ -111,9 +111,9 @@ function cliLeafCommandNames(): string[] {
 }
 
 describe('MCP tool surface', () => {
-  it('exposes 53 unique tools', () => {
+  it('exposes 61 unique tools', () => {
     const names = TOOLS.map((t) => t.name);
-    expect(TOOLS.length).toBe(53);
+    expect(TOOLS.length).toBe(61);
     expect(new Set(names).size).toBe(names.length);
   });
 

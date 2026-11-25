@@ -70,7 +70,7 @@ const output = () => {
   expect(logs).toHaveBeenCalledTimes(1);
   return JSON.parse(logs.mock.calls[0][0] as string);
 };
-describe('inactive ordinary connector lock command', () => {
+describe('ordinary connector lock command', () => {
   it.each([true, false])(
     'selects an initial runtime only for an absent lock (json=%s)',
     async (json) => {
@@ -195,11 +195,11 @@ describe('inactive ordinary connector lock command', () => {
     expect(refreshConnectorDependencyLocks).not.toHaveBeenCalled();
   });
 
-  it('keeps shipped lock inactive', () => {
+  it('ships the lock command', () => {
     const help = execFileSync(process.execPath, ['bin/supaflow.mjs', 'connectors', '--help'], {
       encoding: 'utf8',
     });
-    expect(help).not.toMatch(/^\s+lock\b/m);
+    expect(help).toMatch(/^\s+lock\b/m);
   });
   it.each([true, false])('locks with exact offline=%s and one JSON result', async (offline) => {
     const projectDir = resolve('./project ; path');

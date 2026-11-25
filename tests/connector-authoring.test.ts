@@ -68,13 +68,14 @@ const jsonOutput = () => {
   return JSON.parse(logs.mock.calls[0][0] as string);
 };
 
-describe('inactive unauthenticated authoring adapters', () => {
-  it('keeps the shipped connectors command surface unchanged', () => {
+describe('unauthenticated authoring adapters', () => {
+  it('ships connector authoring commands alongside catalog commands', () => {
     const help = execFileSync(process.execPath, ['bin/supaflow.mjs', 'connectors', '--help'], {
       encoding: 'utf8',
     });
     expect(help).toMatch(/^\s+list\b/m);
-    expect(help).not.toMatch(/^\s+(check|test|doctor|manifest|build)\b/m);
+    for (const name of ['init', 'check', 'test', 'doctor', 'manifest', 'build'])
+      expect(help).toMatch(new RegExp(`^\\s+${name}\\b`, 'm'));
     expect(bootstrap).not.toHaveBeenCalled();
   });
   it.each([
