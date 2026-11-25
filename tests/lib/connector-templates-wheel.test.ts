@@ -103,10 +103,29 @@ assert pathlib.Path(testkit.__file__).resolve().is_relative_to(root)
 for name in ('dlt', 'supaflow_dlt_runtime', 'supaflow_python_runtime', 'supaflow_connector_toolchain', 'supaflow_connector_cli'):
     assert importlib.util.find_spec(name) is None, name
 sys.path[:0] = [str(project / 'src'), str(project / 'tests')]
-from test_connector import test_source_lifecycle
+from test_connector import test_source_lifecycle, test_connection_properties, test_read_uses_connection_properties
 work = root / 'work'
 work.mkdir()
 test_source_lifecycle(work)
+test_connection_properties(work)
+test_read_uses_connection_properties(work)
+# Prove that deleting a required lifecycle implementation fails the starter tests.
+from unittest.mock import patch
+from supaflow_python_sdk.errors import ConnectorException
+from test_connector import Connector
+for method, replacement, contract in (
+    ('init', sdk.BaseConnector.init, test_source_lifecycle),
+    ('schema', sdk.BaseConnector.schema, test_source_lifecycle),
+    ('read', sdk.BaseConnector.read, test_source_lifecycle),
+    ('init', lambda self, request: sdk.InitResult(product_name='Acme', product_version='1'), test_connection_properties),
+):
+    with patch.object(Connector, method, replacement):
+        try:
+            contract(work)
+        except (AssertionError, AttributeError, ConnectorException):
+            pass
+        else:
+            raise AssertionError(f'Missing {method} implementation passed the MVP contract')
 metadata = tomllib.loads((project / 'pyproject.toml').read_text())
 entry, = metadata['project']['entry-points']['supaflow.connectors'].values()
 module, symbol = entry.split(':')
