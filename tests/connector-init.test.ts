@@ -75,12 +75,12 @@ const output = () => {
   return JSON.parse(logs.mock.calls[0][0] as string);
 };
 
-describe('inactive connector init adapter', () => {
-  it('keeps shipped commands inactive', () => {
+describe('connector init adapter', () => {
+  it('ships the init command', () => {
     const help = execFileSync(process.execPath, ['bin/supaflow.mjs', 'connectors', '--help'], {
       encoding: 'utf8',
     });
-    expect(help).not.toMatch(/^\s+init\b/m);
+    expect(help).toMatch(/^\s+init\b/m);
   });
   it.each(['custom-source', 'api-source', 'sql-source'])(
     'uses native staged %s initialization',

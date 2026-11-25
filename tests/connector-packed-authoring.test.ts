@@ -51,15 +51,8 @@ describe.skipIf(!python)('packed connector authoring from a clean prefix', () =>
     writeFileSync(join(build, '.npmrc'), 'ignore-scripts=true\n');
     const featureFile = join(build, 'src/lib/connector-authoring-feature.ts');
     const source = readFileSync(featureFile, 'utf8');
-    expect(source).toContain('const CONNECTOR_AUTHORING_ENABLED = false;');
-    // This non-production build enables the same reviewed entrypoint with test-index assets.
-    writeFileSync(
-      featureFile,
-      source.replace(
-        'const CONNECTOR_AUTHORING_ENABLED = false;',
-        'const CONNECTOR_AUTHORING_ENABLED = true;',
-      ),
-    );
+    // Exercise the release entrypoint without rewriting its activation flag.
+    expect(source).toContain('const CONNECTOR_AUTHORING_ENABLED = true;');
     for (const directory of [
       process.env.SUPAFLOW_TEST_RUNTIME_WHEELHOUSE!,
       process.env.SUPAFLOW_TEST_BUILD_WHEELHOUSE!,

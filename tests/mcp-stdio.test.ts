@@ -28,7 +28,7 @@ function collect(stream: NodeJS.ReadableStream): { value: string } {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe('supaflow mcp stdio', () => {
-  it('emits only valid JSON-RPC and lists 53 tools', async () => {
+  it('emits only valid JSON-RPC and lists 61 tools', async () => {
     const child = spawn(process.execPath, [DIST, 'mcp'], { stdio: ['pipe', 'pipe', 'pipe'] });
     const out = collect(child.stdout);
     child.stdin.write(init);
@@ -40,7 +40,7 @@ describe('supaflow mcp stdio', () => {
     const lines = out.value.split('\n').filter((l) => l.trim());
     expect(lines.length).toBeGreaterThan(0);
     for (const l of lines) expect(JSON.parse(l).jsonrpc).toBe('2.0'); // throws if non-JSON leaked
-    expect(lines.map((l) => JSON.parse(l)).find((m) => m.id === 2)?.result?.tools?.length).toBe(53);
+    expect(lines.map((l) => JSON.parse(l)).find((m) => m.id === 2)?.result?.tools?.length).toBe(61);
   }, 10000);
 
   it.each(['oauth', 'api_key'])(
