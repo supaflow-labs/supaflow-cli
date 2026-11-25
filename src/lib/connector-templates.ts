@@ -114,8 +114,8 @@ export function renderCustomSourceTemplate(input: CustomSourceTemplateInput): {
         '.venv/\n__pycache__/\n.pytest_cache/\nbuild/\ndist/\n*.egg-info/\n.supaflow/state/\n.supaflow-manifest-*/\n.env*\n!.env.example\n',
       'README.md': `# Custom source connector
 
-This template starts with one local example record. Replace source.py with your
-source access, update schemas.py, and update expected rows in
+This MVP source has a required recordPrefix connection property and two local
+records. Replace source.py with your source access, update schemas.py, and update expected rows in
 tests/connector_fixture.py. Keep credentials
 out of source files and fixtures. The tests use local sample data and never
 connect to a live service.
@@ -134,8 +134,9 @@ dependency change. A successful local build is not deployment approval.
       [`src/${moduleName}/source.py`]: `"""Replace this finite example with your source's record iterator."""
 
 
-def records():
-    yield {"id": "example-1"}
+def records(prefix):
+    yield {"id": f"{prefix}-1"}
+    yield {"id": f"{prefix}-2"}
 `,
       [`src/${moduleName}/schemas.py`]: `from supaflow_python_sdk.models import SchemaFieldInfo, SchemaObjectInfo
 
@@ -143,14 +144,14 @@ def records():
 def records_object():
     return SchemaObjectInfo(
         name="records", type="TABLE", fully_qualified_name="records", path_segments=("records",),
-        incremental_strategy="UNSUPPORTED", identity_strategy="SOURCE_PRIMARY_KEY",
+        incremental_strategy="UNSUPPORTED", identity_strategy="SOURCE_KEY",
         fields=[SchemaFieldInfo(
             "id", "STRING", original_data_type="text", cursor_capable=False,
             primary_key_capable=True, source_primary_key=True,
         )],
     )
 `,
-      [`src/${moduleName}/connector.py`]: `from supaflow_python_sdk import BaseConnector, ConnectorDefinition
+      [`src/${moduleName}/connector.py`]: `from supaflow_python_sdk import BaseConnector, ConnectorDefinition, ConnectorProperty
 from supaflow_python_sdk.errors import ErrorType, fail
 from supaflow_python_sdk.models import InitResult, ReadResult, ReadStatistics, SchemaResult
 
@@ -162,10 +163,17 @@ class Connector(BaseConnector):
     DEFINITION = ConnectorDefinition(
         ${literal(input.displayName)}, ${definitionIdentity(input)},
         vendor=${literal(input.displayName)}, description="A custom source connector",
+        properties=(ConnectorProperty(
+            name="recordPrefix", label="Record prefix", type="STRING", required=True,
+            description="Prefix used in the sample record IDs", default_value="example",
+        ),),
         icon='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/></svg>',
     )
 
     def init(self, request):
+        prefix = request.config.get("recordPrefix")
+        if not isinstance(prefix, str) or not prefix.strip():
+            fail(ErrorType.CONFIGURATION, "recordPrefix must be a nonempty string")
         return InitResult(product_name=${literal(input.displayName)}, product_version="1")
 
     def schema(self, request):
@@ -176,7 +184,7 @@ class Connector(BaseConnector):
             fail(ErrorType.CONFIGURATION, "Select the records object")
         if request.record_emitter is None:
             fail(ErrorType.CONFIGURATION, "A record emitter is required")
-        for record in records():
+        for record in records(request.config["recordPrefix"]):
             request.record_emitter.emit(record)
         emitted = request.record_emitter.complete()
         return ReadResult(status="COMPLETED", statistics=ReadStatistics(records_read=emitted.records_emitted))
@@ -187,10 +195,12 @@ class Connector(BaseConnector):
       'tests/connector_fixture.py': `from supaflow_python_testkit import ConnectorFixture
 
 CONNECTOR_FIXTURE = ConnectorFixture(
-    config={}, sample_records_by_resource={"records": [{"id": "example-1"}]},
+    config={"recordPrefix": "example"},
+    sample_records_by_resource={"records": [{"id": "example-1"}, {"id": "example-2"}]},
 )
 `,
-      'tests/test_connector.py': `from ${moduleName}.connector import Connector
+      'tests/test_connector.py': `from supaflow_python_sdk.errors import ConnectorException, ErrorType
+from ${moduleName}.connector import Connector
 from supaflow_python_testkit import ConnectorHarness
 from connector_fixture import CONNECTOR_FIXTURE
 
@@ -201,10 +211,43 @@ def test_source_lifecycle(tmp_path):
         assert harness.run_init().product_name == ${literal(input.displayName)}
         schema = harness.run_schema()
         assert [obj.name for obj in schema.objects] == ["records"]
+        obj, = schema.objects
+        assert obj.identity_strategy == "SOURCE_KEY"
+        assert [(field.name, field.canonical_type, field.source_primary_key) for field in obj.fields] == [("id", "STRING", True)]
+        # A second schema request is the same operation used for schema refresh.
+        assert harness.run_schema() == schema
         result, emitted = harness.run_read("records")
         assert result.status == "COMPLETED"
         assert result.statistics.records_read == len(emitted)
         assert emitted == list(CONNECTOR_FIXTURE.sample_records_by_resource["records"])
+    finally:
+        harness.close()
+
+
+def test_connection_properties(tmp_path):
+    property_, = Connector.get_definition().properties
+    assert (property_.name, property_.type, property_.required) == ("recordPrefix", "STRING", True)
+    assert property_.default_value == CONNECTOR_FIXTURE.config["recordPrefix"]
+    for invalid in ({}, {"recordPrefix": ""}, {"recordPrefix": " "}, {"recordPrefix": 1}):
+        harness = ConnectorHarness(Connector, invalid, work_dir=str(tmp_path))
+        try:
+            try:
+                harness.run_init()
+            except ConnectorException as error:
+                assert error.error.type == ErrorType.CONFIGURATION
+            else:
+                raise AssertionError("Connection test must reject an invalid recordPrefix")
+        finally:
+            harness.close()
+
+
+def test_read_uses_connection_properties(tmp_path):
+    harness = ConnectorHarness(Connector, {"recordPrefix": "another"}, work_dir=str(tmp_path))
+    try:
+        harness.run_schema()
+        result, records = harness.run_read("records")
+        assert result.status == "COMPLETED"
+        assert records == [{"id": "another-1"}, {"id": "another-2"}]
     finally:
         harness.close()
 `,
@@ -229,6 +272,12 @@ export function renderApiSourceTemplate(input: ApiSourceTemplateInput): {
     files: {
       ...base.files,
       'pyproject.toml': projectMetadata(input, API_TEMPLATE_ID, input.runtimeVersion),
+      'tests/connector_fixture.py': `from supaflow_python_testkit import ConnectorFixture
+
+CONNECTOR_FIXTURE = ConnectorFixture(
+    config={}, sample_records_by_resource={"records": [{"id": "example-1"}]},
+)
+`,
       'README.md': `# API source connector
 
 This template uses the public Supaflow source adapter and one finite example
@@ -240,7 +289,7 @@ Never put credentials in source or committed fixtures.
 pyproject.toml owns version, group, entry point and dependency pins. The definition
 declares its local name, resources and normalization flags. Package binding
 derives its full connector type;
-the control plane checks group ownership at deployment.
+registration checks group ownership; local deployment copies and prepares the artifact.
 
 After initialization, use supaflow connectors check, test and build. Refresh
 dependencies with the explicit lock command; ordinary checks/builds do not repair
