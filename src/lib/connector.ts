@@ -85,6 +85,7 @@ export function filterNonOAuth(properties: ConnectorProperty[]): ConnectorProper
 }
 
 export function isOAuthOnly(properties: ConnectorProperty[]): boolean {
+  if (!properties.some((property) => property.type === 'OAUTH_CONFIG')) return false;
   const nonOAuth = filterNonOAuth(properties);
   // If no required non-OAuth properties exist without OAuth dependency, it's OAuth-only
   const hasIndependentRequired = nonOAuth.some((p) => {
