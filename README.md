@@ -181,6 +181,25 @@ development version. The response includes the version ID used by `dev status`.
 Status reports `registered`, `different_artifact`, or `unavailable` through
 the existing version-access RPC. Registration requires no enrolled agent.
 
+Deploy a built customer connector to a running local Docker agent separately:
+
+```bash
+supaflow connectors dev deploy --artifact ./dist/my-connector/1.2.3.dev1 --name supaflow-agent
+```
+
+Deployment uses local Docker access, with no CLI login or database lookup. It
+copies the artifact into the existing connector checkout and prepares its locked
+Python environment. Register before or after deployment; registration does not
+inspect an agent. Datasource and pipeline jobs find the local wheel without a
+connector-libs download. A missing local connector fails the job normally.
+
+If the exact locked SDK/runtime wheels are not already on the agent, supply
+`--runtime-wheels <directory>` with those wheel files. Existing compatibility,
+hash and security-policy checks still apply. Repeating an identical deployment
+reuses the prepared environment; changing an artifact requires a new version.
+Deployment does not start, restart or change the agent's provisioning mode.
+A checkout recovery can remove locally copied artifacts; deploy them again.
+
 The SDK authoring commands remain gated until the public package bundle is
 available. Package publication and production promotion are separate release
 steps.

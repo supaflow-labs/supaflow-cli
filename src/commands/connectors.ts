@@ -1,12 +1,13 @@
 import { Command } from 'commander';
 import { withAuthOnly } from '../lib/middleware.js';
-import { CliError, ErrorCode } from '../lib/errors.js';
+import { CliError, ErrorCode, handleError } from '../lib/errors.js';
 import { formatTable, formatListJson, printOutput } from '../lib/output.js';
 import { fetchConnectors } from '../lib/connector.js';
 import {
   registerBuiltConnector,
   registeredConnectorStatus,
 } from '../lib/connector-registration.js';
+import { deployBuiltConnector } from '../lib/connector-deployment.js';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,6 +69,33 @@ export function registerConnectorsCommands(program: Command): void {
     );
 
   const development = connectors.command('dev').description('Manage tenant development connectors');
+  development
+    .command('deploy')
+    .description('Copy and prepare a built connector on a local Docker agent (no registration)')
+    .requiredOption('--artifact <directory>', 'Built connector artifact directory')
+    .option('--name <container>', 'Target agent container', 'supaflow-agent')
+    .option(
+      '--runtime-wheels <directory>',
+      'Exact locked SDK/runtime wheels, if absent on the agent',
+    )
+    .action(async (...args) => {
+      const cmd = args[args.length - 1] as Command;
+      const options = cmd.optsWithGlobals() as {
+        artifact: string;
+        name: string;
+        runtimeWheels?: string;
+        json?: boolean;
+      };
+      try {
+        const result = await deployBuiltConnector(options);
+        printOutput(
+          options.json ? JSON.stringify(result) : `Prepared local connector on ${result.container}`,
+        );
+      } catch (error) {
+        handleError(error, options.json ?? false);
+      }
+    });
+
   development
     .command('status <version-id>')
     .description('Compare a built artifact with an accessible registered version')

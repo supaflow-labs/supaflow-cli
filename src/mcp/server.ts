@@ -49,6 +49,7 @@ const MAX_OBJECT_PREVIEW_LIMIT = 1000;
 export const INTENTIONALLY_UNEXPOSED_CLI_COMMANDS = [
   'auth_login',
   'auth_logout',
+  'connectors_dev_deploy', // Local Docker filesystem operation; no hosted MCP target.
   'connectors_dev_register',
   'connectors_dev_status',
   'connectors_group_register',
